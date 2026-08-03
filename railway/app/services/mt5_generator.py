@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any
 
-GENERATOR_VERSION = "eve-discovery-mt5-generator-v1"
+GENERATOR_VERSION = "eve-discovery-mt5-generator-v2"
 
 
 def canonical(value: Any) -> str:
@@ -42,6 +42,43 @@ def _or_string(field: str, values: list[str]) -> str:
     if not values:
         return "true"
     return "(" + " || ".join(f'{field} == "{mql_string(v)}"' for v in values) + ")"
+
+
+def condition_expression(condition: dict[str, Any]) -> str:
+    kind = str(condition.get("type") or "")
+    if kind == "direction_matches_trend12":
+        return "f.direction != 0 && SignDouble(f.trend_12_atr) != 0 && f.direction == SignDouble(f.trend_12_atr)"
+    if kind == "direction_opposes_trend12":
+        return "f.direction != 0 && SignDouble(f.trend_12_atr) != 0 && f.direction == -SignDouble(f.trend_12_atr)"
+    if kind == "alignment_abs_min":
+        return f"MathAbs(f.alignment_score) >= {int(float(condition.get('min') or 1))}"
+    if kind == "alignment_matches_direction":
+        return "SignInt(f.alignment_score) != 0 && f.direction != 0 && SignInt(f.alignment_score) == f.direction"
+    if kind == "alignment_opposes_direction":
+        return "SignInt(f.alignment_score) != 0 && f.direction != 0 && SignInt(f.alignment_score) == -f.direction"
+    if kind == "return_3_abs_min":
+        return f"MathAbs(f.return_3_pct) >= {float(condition.get('threshold') or 0.005):.8f}"
+    if kind == "return_3_matches_direction":
+        return "f.direction != 0 && SignDouble(f.return_3_pct) == f.direction"
+    if kind == "impulse_1_vs_3":
+        return f"MathAbs(f.return_3_pct) > 1e-12 && MathAbs(f.return_1_pct) >= MathAbs(f.return_3_pct) * {float(condition.get('ratio') or 0.25):.8f}"
+    if kind == "close_location_extreme":
+        edge = max(0.01, min(0.49, float(condition.get("edge") or 0.20)))
+        return f"(f.close_location <= {edge:.8f} || f.close_location >= {1.0-edge:.8f})"
+    if kind == "wick_body_ratio_min":
+        return f"MathMax(f.upper_wick,f.lower_wick)/MathMax(f.body_price,_Point) >= {float(condition.get('ratio') or 1.5):.8f}"
+    if kind == "trend12_trend48_agree":
+        return "SignDouble(f.trend_12_atr) != 0 && SignDouble(f.trend_48_atr) != 0 && SignDouble(f.trend_12_atr) == SignDouble(f.trend_48_atr)"
+    return "false"
+
+
+def recipe_expression(rules: dict[str, Any]) -> str:
+    entry = dict(rules.get("entry") or {})
+    conditions = [dict(item) for item in entry.get("conditions") or [] if isinstance(item, dict)]
+    if not conditions:
+        return "false"
+    joiner = " || " if str(entry.get("condition_mode") or "all") == "any" else " && "
+    return "(" + joiner.join(f"({condition_expression(item)})" for item in conditions) + ")"
 
 
 def source_expression(rules: dict[str, Any]) -> str:
@@ -82,6 +119,7 @@ def source_expression(rules: dict[str, Any]) -> str:
         "volatility_breakout": "f.direction != 0 && MathAbs(f.return_1_pct) > MathAbs(f.return_3_pct)/4.0",
         "mean_reversion": "f.direction != 0 && (f.close_location <= 0.20 || f.close_location >= 0.80)",
         "candle_reversal": f"MathMax(f.upper_wick,f.lower_wick)/MathMax(f.body_price,_Point) >= {float(rules.get('entry', {}).get('wick_ratio_min') or 1.5):.8f}",
+        "composed_signal": recipe_expression(rules),
     }.get(family, "false")
     expressions.append(family_expr)
     return " &&\n      ".join(f"({expr})" for expr in expressions if expr != "true") or "true"
@@ -387,7 +425,7 @@ def package_payload(frozen: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Generated MQL5 failed static validation: " + "; ".join(issues))
 
     manifest = {
-        "package_format": "eve-evolution-discovery-mt5-v1",
+        "package_format": "eve-evolution-discovery-mt5-v2",
         "generator_version": GENERATOR_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "strategy_code": frozen.get("strategy_code"),

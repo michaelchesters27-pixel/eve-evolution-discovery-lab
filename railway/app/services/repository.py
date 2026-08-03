@@ -296,6 +296,7 @@ class DiscoveryRepository:
             "mutation_lineages",
             {
                 "generation": mutation.get("generation"),
+                "family": mutation.get("family") or mutation.get("rules", {}).get("family"),
                 "champion_kind": "mutation",
                 "champion_id": mutation.get("id"),
                 "champion_rules": mutation.get("rules") or {},
@@ -351,6 +352,12 @@ class DiscoveryRepository:
 
     async def list_lineages(self, limit: int = 100) -> list[dict[str, Any]]:
         return await self.client.get("mutation_lineages", params={"select": "*", "order": "champion_fitness.desc", "limit": str(limit)})
+
+    async def list_mutations(self, limit: int = 100) -> list[dict[str, Any]]:
+        return await self.client.get(
+            "mutation_candidates",
+            params={"select": "*", "order": "requested_at.desc", "limit": str(limit)},
+        )
 
     async def list_frozen(self, limit: int = 100) -> list[dict[str, Any]]:
         return await self.client.get("frozen_strategies", params={"select": "*", "order": "created_at.desc", "limit": str(limit)})

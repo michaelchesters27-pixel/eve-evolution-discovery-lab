@@ -41,7 +41,7 @@ async def lifespan(_: FastAPI):
                 pass
 
 
-app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="1.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -84,6 +84,11 @@ async def candidates(limit: int = Query(default=100, ge=1, le=500)) -> dict[str,
 @app.get("/api/lineages")
 async def lineages(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     return {"items": await discovery_repo.list_lineages(limit)}
+
+
+@app.get("/api/mutations")
+async def mutations(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    return {"items": await discovery_repo.list_mutations(limit)}
 
 
 @app.get("/api/frozen")

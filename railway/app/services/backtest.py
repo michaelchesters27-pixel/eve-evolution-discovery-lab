@@ -110,6 +110,55 @@ def environment_matches(row: dict[str, Any], environment: dict[str, Any]) -> boo
     return True
 
 
+def recipe_condition_matches(row: dict[str, Any], condition: dict[str, Any]) -> bool:
+    kind = str(condition.get("type") or "")
+    direction = sign(row.get("direction"))
+    trend12 = sign(row.get("trend_12_atr"))
+    trend48 = sign(row.get("trend_48_atr"))
+    alignment = sign(row.get("alignment_score"))
+    return_1 = number(row.get("return_1_pct"))
+    return_3 = number(row.get("return_3_pct"))
+    close_location = number(row.get("close_location"), 0.5)
+    upper = number(row.get("upper_wick"))
+    lower = number(row.get("lower_wick"))
+    body = max(number(row.get("body_price")), 1e-9)
+
+    if kind == "direction_matches_trend12":
+        return direction != 0 and trend12 != 0 and direction == trend12
+    if kind == "direction_opposes_trend12":
+        return direction != 0 and trend12 != 0 and direction == -trend12
+    if kind == "alignment_abs_min":
+        return abs(int(number(row.get("alignment_score")))) >= int(number(condition.get("min"), 1))
+    if kind == "alignment_matches_direction":
+        return alignment != 0 and direction != 0 and alignment == direction
+    if kind == "alignment_opposes_direction":
+        return alignment != 0 and direction != 0 and alignment == -direction
+    if kind == "return_3_abs_min":
+        return abs(return_3) >= number(condition.get("threshold"), 0.005)
+    if kind == "return_3_matches_direction":
+        return direction != 0 and sign(return_3) == direction
+    if kind == "impulse_1_vs_3":
+        return abs(return_3) > 1e-12 and abs(return_1) >= abs(return_3) * number(condition.get("ratio"), 0.25)
+    if kind == "close_location_extreme":
+        edge = max(0.01, min(0.49, number(condition.get("edge"), 0.20)))
+        return close_location <= edge or close_location >= 1.0 - edge
+    if kind == "wick_body_ratio_min":
+        return max(upper, lower) / body >= number(condition.get("ratio"), 1.5)
+    if kind == "trend12_trend48_agree":
+        return trend12 != 0 and trend48 != 0 and trend12 == trend48
+    return False
+
+
+def recipe_matches(row: dict[str, Any], rules: dict[str, Any]) -> bool:
+    entry = dict(rules.get("entry") or {})
+    conditions = [dict(item) for item in entry.get("conditions") or [] if isinstance(item, dict)]
+    if not conditions:
+        return False
+    mode = str(entry.get("condition_mode") or "all")
+    outcomes = [recipe_condition_matches(row, condition) for condition in conditions]
+    return any(outcomes) if mode == "any" else all(outcomes)
+
+
 def family_matches(row: dict[str, Any], rules: dict[str, Any]) -> bool:
     family = str(rules.get("family") or "momentum_continuation")
     direction = sign(row.get("direction"))
@@ -133,6 +182,8 @@ def family_matches(row: dict[str, Any], rules: dict[str, Any]) -> bool:
     if family == "candle_reversal":
         ratio = number(rules.get("entry", {}).get("wick_ratio_min"), 1.5)
         return max(upper, lower) / body >= ratio
+    if family == "composed_signal":
+        return recipe_matches(row, rules)
     return False
 
 
@@ -387,6 +438,18 @@ def evaluate_strategy(candidate: dict[str, Any], rows: list[dict[str, Any]], *, 
     no_collapse = recent.expectancy_r > -0.02 and recent.profit_factor >= 0.95
     stable = wf["stability"] >= 0.60
 
+    gate_checks = {
+        "validation_sample": validation.trades >= min_validation_trades,
+        "locked_sample": locked.trades >= min_locked_trades,
+        "recent_sample": recent_enough,
+        "walk_forward_stability": stable,
+        "recent_no_collapse": no_collapse,
+        "neighbour_robustness": robustness["pass_rate"] >= 0.50,
+        "validation_edge": validation.profit_factor >= 1.08 and validation.expectancy_r >= 0.03,
+        "locked_edge": locked.profit_factor >= 1.15 and locked.expectancy_r >= 0.04,
+    }
+    failed_gates = [name for name, passed in gate_checks.items() if not passed]
+
     if (
         enough and recent_enough and stable and no_collapse and robustness["pass_rate"] >= 0.75
         and validation.profit_factor >= 1.20 and locked.profit_factor >= 1.30
@@ -437,6 +500,12 @@ def evaluate_strategy(candidate: dict[str, Any], rows: list[dict[str, Any]], *, 
                 "validation_rows": len(segments["validation"]),
                 "locked_rows": len(segments["locked"]),
                 "recent_rows": len(segments["recent"]),
+            },
+            "decision": {
+                "status": status,
+                "gate_checks": gate_checks,
+                "failed_gates": failed_gates,
+                "plain_reason": "All promotion gates passed." if not failed_gates else "Failed: " + ", ".join(failed_gates),
             },
             "caveats": [
                 "This stage uses EVE's completed market-state outcomes, not broker tick execution.",

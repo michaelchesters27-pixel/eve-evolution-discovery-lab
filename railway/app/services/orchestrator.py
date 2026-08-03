@@ -27,6 +27,24 @@ def canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def compact_value(value: Any, limit: int = 90) -> str:
+    text = json.dumps(value, sort_keys=True, default=str) if isinstance(value, (dict, list)) else str(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def mutation_change_text(mutation: dict[str, Any]) -> str:
+    gene = str(mutation.get("mutation_gene") or "rule")
+    payload = dict(mutation.get("changes") or {}).get(gene) or {}
+    return f"{gene}: {compact_value(payload.get('from'))} → {compact_value(payload.get('to'))}"
+
+
+def result_gate_reason(result: dict[str, Any]) -> str:
+    evidence = dict(result.get("evidence") or {})
+    decision = dict(evidence.get("decision") or {})
+    failed = [str(item).replace("_", " ") for item in decision.get("failed_gates") or []]
+    return ", ".join(failed[:3]) if failed else "all promotion gates passed"
+
+
 class DiscoveryOrchestrator:
     def __init__(self, settings: Settings, source: SourceRepository, repo: DiscoveryRepository) -> None:
         self.settings = settings
@@ -67,8 +85,16 @@ class DiscoveryOrchestrator:
             await self.repo.upsert_snapshots(fetched[start:start + 500])
         self._cache_at = None
         await self.repo.event(
-            "success", "source_bridge", f"Imported {len(fetched):,} completed EVE market-state snapshots.",
-            {"from": local, "to": fetched[-1].get("candle_time"), "source_latest": source_latest},
+            "success",
+            "source_bridge",
+            f"Source memory advanced through {str(fetched[-1].get('candle_time') or '')[:10]} (+{len(fetched):,} snapshots).",
+            {
+                "imported": len(fetched),
+                "from": local,
+                "to": fetched[-1].get("candle_time"),
+                "source_latest": source_latest,
+                "caught_up": len(fetched) < self.settings.bridge_batch_limit,
+            },
         )
         self.last_action = f"Synced {len(fetched):,} source snapshots"
         return len(fetched)
@@ -187,11 +213,23 @@ class DiscoveryOrchestrator:
             if result["result_status"] in {"promising", "validated", "elite"}:
                 await self.repo.ensure_lineage_for_candidate(completed)
             await self.maybe_freeze("seed", candidate, result)
+            locked = dict(result.get("metrics", {}).get("locked") or {})
+            reason = result_gate_reason(result)
             await self.repo.event(
                 "success" if result["result_status"] != "rejected" else "info",
                 "candidate_test",
-                f"{candidate.get('name')} finished as {result['result_status']}.",
-                {"fitness": result.get("fitness_score"), "summary": result.get("evidence", {}).get("summary")},
+                (
+                    f"{candidate.get('name')} → {result['result_status']}. "
+                    f"Locked PF {number(locked.get('profit_factor')):.2f}, "
+                    f"expectancy {number(locked.get('expectancy_r')):+.3f}R, "
+                    f"{int(number(locked.get('trades')))} trades. Decision: {reason}."
+                ),
+                {
+                    "fitness": result.get("fitness_score"),
+                    "summary": result.get("evidence", {}).get("summary"),
+                    "decision": result.get("evidence", {}).get("decision"),
+                    "candidate_key": candidate.get("candidate_key"),
+                },
             )
             self.last_action = f"Candidate {result['result_status']}: {candidate.get('name')}"
         except Exception as exc:
@@ -220,11 +258,26 @@ class DiscoveryOrchestrator:
             )
             if selection.get("promoted"):
                 await self.maybe_freeze("mutation", mutation, selection)
+            change = mutation_change_text(mutation)
             await self.repo.event(
                 "success" if selection.get("promoted") else "info",
                 "mutation_test",
-                selection.get("selection_reason") or "Mutation completed.",
-                {"mutation": mutation.get("name"), "gene": mutation.get("mutation_gene")},
+                (
+                    f"{'PROMOTED' if selection.get('promoted') else 'REJECTED'} mutation — {change}. "
+                    f"Fitness {number(selection.get('fitness_delta')):+.2f}; "
+                    f"validation expectancy {number(selection.get('validation_expectancy_delta')):+.3f}R; "
+                    f"validation PF {number(selection.get('validation_pf_delta')):+.2f}."
+                ),
+                {
+                    "mutation": mutation.get("name"),
+                    "gene": mutation.get("mutation_gene"),
+                    "changes": mutation.get("changes") or {},
+                    "promoted": bool(selection.get("promoted")),
+                    "selection_reason": selection.get("selection_reason"),
+                    "fitness_delta": selection.get("fitness_delta"),
+                    "validation_expectancy_delta": selection.get("validation_expectancy_delta"),
+                    "validation_pf_delta": selection.get("validation_pf_delta"),
+                },
             )
             self.last_action = f"Mutation {'promoted' if selection.get('promoted') else 'rejected'}: {mutation.get('name')}"
         except Exception as exc:

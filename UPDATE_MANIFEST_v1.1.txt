@@ -1,0 +1,32 @@
+EVE EVOLUTION DISCOVERY LAB v1.1 — CHANGED FILES
+
+NO SUPABASE SQL.
+NO ENVIRONMENT VARIABLE CHANGES.
+NO ROOT DIRECTORY CHANGES.
+
+UPLOAD/REPLACE THESE RUNTIME FILES:
+
+frontend/app.js
+frontend/index.html
+frontend/styles.css
+
+railway/app/main.py
+
+railway/app/services/backtest.py
+railway/app/services/composer.py
+railway/app/services/mt5_generator.py
+railway/app/services/orchestrator.py
+railway/app/services/repository.py
+
+OPTIONAL DOCUMENTATION FILES:
+VERSION
+RELEASE_NOTES_v1.1.md
+
+DEPLOYMENT ORDER:
+1. Replace the three files inside GitHub /frontend and commit.
+2. Replace main.py inside GitHub /railway/app and commit.
+3. Replace the five service files inside GitHub /railway/app/services and commit.
+4. Netlify and Railway redeploy automatically.
+
+Existing Supabase data, queued candidates, lineages, packages and the read-only source bridge remain intact.
+New v2 composition starts as the existing candidate queue is processed and refilled.

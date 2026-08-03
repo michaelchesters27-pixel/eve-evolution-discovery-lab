@@ -56,9 +56,9 @@
           <article class="panel">
             <div class="panel-head"><div><p class="eyebrow">PIPELINE</p><h3>How a bot is created</h3></div></div>
             <div class="pipeline">
-              <div><b>1</b><span>Compose</span><small>Controlled, valid rules</small></div>
+              <div><b>1</b><span>Compose</span><small>Independent rule recipes</small></div>
               <i>→</i><div><b>2</b><span>Test</span><small>Chronological years</small></div>
-              <i>→</i><div><b>3</b><span>Mutate</span><small>One gene at a time</small></div>
+              <i>→</i><div><b>3</b><span>Mutate</span><small>Explore and learn</small></div>
               <i>→</i><div><b>4</b><span>Freeze</span><small>Locked survivor</small></div>
               <i>→</i><div><b>5</b><span>MT5</span><small>Download .mq5</small></div>
             </div>
@@ -77,7 +77,7 @@
       </section>
 
       <section class="view" id="view-candidates">
-        <div class="section-intro"><div><p class="eyebrow">INDEPENDENT CREATION</p><h2>New Strategies</h2><p>These are not merely copies of one parent. EVE assembles valid combinations from six strategy families, schedules, regimes, direction logic and risk rules.</p></div></div>
+        <div class="section-intro"><div><p class="eyebrow">INDEPENDENT CREATION</p><h2>New Strategies</h2><p>Most new ideas are independent rule recipes assembled from market relationships, timing, environment, direction and risk. Familiar strategy archetypes remain only as benchmark controls.</p></div></div>
         <div class="filter-row"><button class="chip active" data-candidate-filter="all">All</button><button class="chip" data-candidate-filter="elite">Elite</button><button class="chip" data-candidate-filter="validated">Validated</button><button class="chip" data-candidate-filter="promising">Promising</button><button class="chip" data-candidate-filter="rejected">Rejected</button></div>
         <div id="candidateList" class="cards"></div>
       </section>
@@ -85,6 +85,11 @@
       <section class="view" id="view-evolution">
         <div class="section-intro"><div><p class="eyebrow">CONTROLLED MUTATION</p><h2>Evolution</h2><p>Each lineage has a frozen current champion. Children alter one controlled gene and are selected on validation data. Locked data can veto a child but is never used to invent it.</p></div></div>
         <div id="lineageList" class="cards"></div>
+        <article class="panel mutation-panel">
+          <div class="panel-head"><div><p class="eyebrow">PARENT VS CHILD</p><h3>Recent mutation decisions</h3></div></div>
+          <p class="muted">Every card shows the exact gene changed, the before-and-after rule and whether unseen validation improved enough to replace the parent.</p>
+          <div id="mutationList" class="cards"></div>
+        </article>
       </section>
 
       <section class="view" id="view-mt5">
