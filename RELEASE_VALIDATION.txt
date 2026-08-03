@@ -1,0 +1,20 @@
+EVE Evolution Discovery Lab v1.0 validation
+
+Backend tests: 9 passed
+Frontend structure tests: passed
+Netlify proxy test: passed
+Python bytecode compilation: passed
+JavaScript syntax: passed
+FastAPI route audit: passed
+Generated MT5 source static validation: passed
+Generated package ZIP test: passed
+Read-only source adapter boundary test: passed
+End-to-end compose -> evaluate -> mutate -> package test: passed
+
+Not performed in this Linux build environment:
+- MetaEditor compilation of generated .mq5 source
+- Live Supabase/Railway/Netlify deployment
+- Broker tick-level Strategy Tester run
+
+Generated EAs default to trading OFF and require MetaEditor compilation plus MT5 demo forward testing.
+Files: 36

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#06130f">
+  <title>EVE Evolution Discovery Lab</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">E</div>
+        <div><strong>EVE</strong><span>Evolution Discovery Lab</span></div>
+      </div>
+      <nav id="nav">
+        <button class="nav-item active" data-view="overview"><span>01</span><b>Overview</b><small>What EVE is building</small></button>
+        <button class="nav-item" data-view="candidates"><span>02</span><b>New Strategies</b><small>Independent ideas</small></button>
+        <button class="nav-item" data-view="evolution"><span>03</span><b>Evolution</b><small>Parents and mutations</small></button>
+        <button class="nav-item" data-view="mt5"><span>04</span><b>MT5 Packages</b><small>Downloadable survivors</small></button>
+        <button class="nav-item" data-view="data"><span>05</span><b>Data & Setup</b><small>Six-year source bridge</small></button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="dot" id="healthDot"></span>
+        <div><strong id="healthText">Connecting</strong><small id="workerText">Railway worker</small></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">AUTONOMOUS STRATEGY DISCOVERY</p>
+          <h1 id="pageTitle">Overview</h1>
+        </div>
+        <div class="clock"><span>UTC</span><strong id="clock">--:--:--</strong></div>
+      </header>
+
+      <section class="view active" id="view-overview">
+        <div class="hero">
+          <div>
+            <p class="eyebrow">CURRENT MISSION</p>
+            <h2>Build genuinely different XAUUSD strategies from EVE's historical market memory.</h2>
+            <p>The original EVE project remains untouched. This separate lab reads completed market-state data, composes strategies, mutates survivors, validates them chronologically and produces demo-only MT5 source packages.</p>
+          </div>
+          <div class="worker-card">
+            <span class="status-pill" id="workerStatus">STARTING</span>
+            <strong id="lastAction">Waiting for first cycle</strong>
+            <small id="lastError"></small>
+          </div>
+        </div>
+
+        <div class="metrics" id="metrics"></div>
+
+        <div class="grid two">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">PIPELINE</p><h3>How a bot is created</h3></div></div>
+            <div class="pipeline">
+              <div><b>1</b><span>Compose</span><small>Controlled, valid rules</small></div>
+              <i>→</i><div><b>2</b><span>Test</span><small>Chronological years</small></div>
+              <i>→</i><div><b>3</b><span>Mutate</span><small>One gene at a time</small></div>
+              <i>→</i><div><b>4</b><span>Freeze</span><small>Locked survivor</small></div>
+              <i>→</i><div><b>5</b><span>MT5</span><small>Download .mq5</small></div>
+            </div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">LEARNING MEMORY</p><h3>Mutation intelligence</h3></div></div>
+            <p class="muted">Successful and failed mutations are recorded by strategy family and gene. Future mutation choices are biased toward changes that repeatedly improve unseen validation performance. No mutation bypasses testing.</p>
+            <div id="topLineage" class="feature-card empty">No lineage has survived yet.</div>
+          </article>
+        </div>
+
+        <article class="panel">
+          <div class="panel-head"><div><p class="eyebrow">RECENT ACTIVITY</p><h3>What EVE has done</h3></div><button class="ghost" data-refresh>Refresh</button></div>
+          <div id="events" class="events"></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-candidates">
+        <div class="section-intro"><div><p class="eyebrow">INDEPENDENT CREATION</p><h2>New Strategies</h2><p>These are not merely copies of one parent. EVE assembles valid combinations from six strategy families, schedules, regimes, direction logic and risk rules.</p></div></div>
+        <div class="filter-row"><button class="chip active" data-candidate-filter="all">All</button><button class="chip" data-candidate-filter="elite">Elite</button><button class="chip" data-candidate-filter="validated">Validated</button><button class="chip" data-candidate-filter="promising">Promising</button><button class="chip" data-candidate-filter="rejected">Rejected</button></div>
+        <div id="candidateList" class="cards"></div>
+      </section>
+
+      <section class="view" id="view-evolution">
+        <div class="section-intro"><div><p class="eyebrow">CONTROLLED MUTATION</p><h2>Evolution</h2><p>Each lineage has a frozen current champion. Children alter one controlled gene and are selected on validation data. Locked data can veto a child but is never used to invent it.</p></div></div>
+        <div id="lineageList" class="cards"></div>
+      </section>
+
+      <section class="view" id="view-mt5">
+        <div class="section-intro"><div><p class="eyebrow">SURVIVORS ONLY</p><h2>MT5 Packages</h2><p>Only strategies that pass chronological testing, walk-forward stability, recent-regime checks and parameter-neighbour robustness appear here.</p></div></div>
+        <div class="warning">Trading is OFF by default. Compile in MetaEditor and use a demo account first.</div>
+        <div id="packageList" class="cards"></div>
+      </section>
+
+      <section class="view" id="view-data">
+        <div class="section-intro"><div><p class="eyebrow">READ-ONLY SOURCE BRIDGE</p><h2>Data & Setup</h2><p>The Discovery Lab only issues GET requests to the original EVE Supabase. All experiments, failures and packages are stored in this project's separate Supabase.</p></div></div>
+        <div class="grid two">
+          <article class="panel"><p class="eyebrow">LOCAL DISCOVERY COPY</p><h3 id="dataRows">0 snapshots</h3><p id="dataRange" class="muted">Waiting for source sync.</p></article>
+          <article class="panel"><p class="eyebrow">SAFETY BOUNDARY</p><h3>Original EVE remains untouched</h3><p class="muted">No production strategies, frozen EAs, Demo Fleet records or existing mutation lineages are modified by this project.</p></article>
+        </div>
+        <article class="panel setup"><h3>Required deployment order</h3><ol><li>Create a new Supabase project and run <code>SUPABASE_SETUP.sql</code>.</li><li>Deploy the <code>railway</code> folder to a new Railway service.</li><li>Add both source and discovery Supabase variables to Railway.</li><li>Deploy the <code>frontend</code> folder to a new Netlify site.</li><li>Add <code>DISCOVERY_RAILWAY_URL</code> to Netlify.</li></ol></article>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
