@@ -452,10 +452,92 @@ class DiscoveryRepository:
             return existing
         return await self.client.insert("frozen_strategies", row, return_rows=True)
 
+    async def frozen_strategy(self, frozen_id: str) -> dict[str, Any] | None:
+        rows = await self.client.get(
+            "frozen_strategies",
+            params={"select": "*", "id": f"eq.{frozen_id}", "limit": "1"},
+        )
+        return dict(rows[0]) if rows else None
+
     async def frozen_without_package(self, limit: int = 5) -> list[dict[str, Any]]:
         return await self.client.get(
             "frozen_strategies",
-            params={"select": "*", "package_status": "eq.pending", "order": "created_at.asc", "limit": str(limit)},
+            params={
+                "select": "*",
+                "package_status": "eq.pending",
+                "profile_status": "eq.complete",
+                "order": "created_at.asc",
+                "limit": str(limit),
+            },
+        )
+
+    async def package_needing_profile(self) -> dict[str, Any] | None:
+        rows = await self.client.get(
+            "mt5_packages",
+            params={
+                "select": "*",
+                "profile_status": "in.(pending,retry,profiling)",
+                "order": "created_at.asc",
+                "limit": "1",
+            },
+        )
+        return dict(rows[0]) if rows else None
+
+    async def mark_package_profiling(self, package_id: str, attempts: int = 0) -> None:
+        await self.client.patch(
+            "mt5_packages",
+            {
+                "profile_status": "profiling",
+                "profile_reason": "EVE is re-testing the frozen rules against current research standards.",
+                "profile_attempts": max(1, int(attempts) + 1),
+                "download_eligible": False,
+            },
+            filters={"id": f"eq.{package_id}"},
+        )
+
+    async def mark_profile_retry(self, package_id: str, reason: str, attempts: int) -> None:
+        await self.client.patch(
+            "mt5_packages",
+            {
+                "profile_status": "retry",
+                "profile_reason": reason[:2000],
+                "profile_attempts": max(1, int(attempts)),
+                "download_eligible": False,
+            },
+            filters={"id": f"eq.{package_id}"},
+        )
+
+    async def mark_profile_failed(self, package_id: str, frozen_id: str | None, reason: str) -> None:
+        now = utc_now_iso()
+        await self.client.patch(
+            "mt5_packages",
+            {
+                "profile_status": "failed",
+                "profile_reason": reason[:2000],
+                "profiled_at": now,
+                "download_eligible": False,
+                "status": "blocked",
+            },
+            filters={"id": f"eq.{package_id}"},
+        )
+        if frozen_id:
+            await self.client.patch(
+                "frozen_strategies",
+                {
+                    "profile_status": "failed",
+                    "profile_reason": reason[:2000],
+                    "profiled_at": now,
+                    "package_status": "failed",
+                    "updated_at": now,
+                },
+                filters={"id": f"eq.{frozen_id}"},
+            )
+
+    async def update_frozen_profile(self, frozen_id: str, values: dict[str, Any]) -> None:
+        await self.client.patch(
+            "frozen_strategies",
+            {**values, "updated_at": utc_now_iso()},
+            filters={"id": f"eq.{frozen_id}"},
         )
 
     async def store_package(self, row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -464,7 +546,12 @@ class DiscoveryRepository:
     async def mark_frozen_packaged(self, frozen_id: str, package_id: str) -> None:
         await self.client.patch(
             "frozen_strategies",
-            {"package_status": "ready", "mt5_package_id": package_id, "updated_at": utc_now_iso()},
+            {
+                "package_status": "ready",
+                "mt5_package_id": package_id,
+                "profile_status": "complete",
+                "updated_at": utc_now_iso(),
+            },
             filters={"id": f"eq.{frozen_id}"},
         )
 
@@ -488,7 +575,7 @@ class DiscoveryRepository:
         return await self.client.get(
             "mt5_packages",
             params={
-                "select": "id,package_key,strategy_name,family,version,file_name,sha256,manifest,trading_passport,compile_status,size_bytes,created_at",
+                "select": "id,package_key,frozen_strategy_id,strategy_name,family,version,file_name,sha256,manifest,trading_passport,compile_status,size_bytes,status,profile_status,profile_version,profile_reason,profiled_at,profile_attempts,download_eligible,profile_source,created_at",
                 "order": "created_at.desc",
                 "limit": str(limit),
             },

@@ -13,6 +13,7 @@ from app.settings import Settings, get_settings
 from app.services.orchestrator import DiscoveryOrchestrator
 from app.services.repository import DiscoveryRepository, SourceRepository
 from app.services.mt5_generator import decode_package
+from app.services.passport import passport_is_complete
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ async def lifespan(_: FastAPI):
                 pass
 
 
-app = FastAPI(title=settings.app_name, version="2.0.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -68,6 +69,23 @@ def require_package_access(
         return
     require_admin(authorization=authorization, x_admin_token=x_admin_token)
 
+
+
+
+def package_download_ready(row: dict[str, Any]) -> tuple[bool, str]:
+    profile_status = str(row.get("profile_status") or "pending")
+    eligible = bool(row.get("download_eligible"))
+    passport = dict(row.get("trading_passport") or {})
+    if profile_status != "complete":
+        reason = str(row.get("profile_reason") or "EVE has not completed this package's Trading Passport yet.")
+        return False, reason
+    if not eligible:
+        return False, "The package is not approved for download after profiling."
+    if not passport_is_complete(passport):
+        return False, "The package Trading Passport is incomplete, so download is locked."
+    if str(row.get("status") or "ready") != "ready":
+        return False, str(row.get("profile_reason") or "The package is not ready for download.")
+    return True, "ready"
 
 def require_research_access(
     authorization: str | None = Header(default=None),
@@ -137,6 +155,9 @@ async def download_package(package_id: str, _: None = Depends(require_package_ac
     row = await discovery_repo.package(package_id)
     if not row:
         raise HTTPException(status_code=404, detail="Package not found")
+    ready, reason = package_download_ready(row)
+    if not ready:
+        raise HTTPException(status_code=409, detail=reason)
     payload = decode_package(row)
     return Response(
         content=payload,
@@ -153,6 +174,9 @@ async def download_mq5(package_id: str, _: None = Depends(require_package_access
     row = await discovery_repo.package(package_id)
     if not row:
         raise HTTPException(status_code=404, detail="Package not found")
+    ready, reason = package_download_ready(row)
+    if not ready:
+        raise HTTPException(status_code=409, detail=reason)
     return Response(
         content=str(row.get("mq5_source") or ""),
         media_type="text/plain; charset=utf-8",

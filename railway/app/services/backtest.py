@@ -275,6 +275,7 @@ class TradeRecord:
     time: datetime
     pnl_r: float
     weekday: int
+    hour_utc: int
     session: str
     regime: str
 
@@ -292,10 +293,12 @@ class SegmentMetrics:
     positive_year_rate: float
     yearly_expectancy: dict[str, float]
     weekday_expectancy: dict[str, float]
+    hour_expectancy: dict[str, float]
     session_expectancy: dict[str, float]
     regime_expectancy: dict[str, float]
     yearly_trades: dict[str, int]
     weekday_trades: dict[str, int]
+    hour_trades: dict[str, int]
     session_trades: dict[str, int]
     regime_trades: dict[str, int]
     trading_days: int
@@ -314,10 +317,12 @@ class SegmentMetrics:
             "positive_year_rate": round(self.positive_year_rate, 6),
             "yearly_expectancy": {k: round(v, 6) for k, v in self.yearly_expectancy.items()},
             "weekday_expectancy": {k: round(v, 6) for k, v in self.weekday_expectancy.items()},
+            "hour_expectancy": {k: round(v, 6) for k, v in self.hour_expectancy.items()},
             "session_expectancy": {k: round(v, 6) for k, v in self.session_expectancy.items()},
             "regime_expectancy": {k: round(v, 6) for k, v in self.regime_expectancy.items()},
             "yearly_trades": self.yearly_trades,
             "weekday_trades": self.weekday_trades,
+            "hour_trades": self.hour_trades,
             "session_trades": self.session_trades,
             "regime_trades": self.regime_trades,
             "trading_days": self.trading_days,
@@ -351,6 +356,7 @@ def _trade_records(rows: Iterable[dict[str, Any]], rules: dict[str, Any], *, cos
                 time=time,
                 pnl_r=pnl,
                 weekday=int(number(row.get("weekday"))),
+                hour_utc=int(number(row.get("hour_utc"), time.hour)),
                 session=str(row.get("session") or "unknown"),
                 regime=str(row.get("regime") or "unknown"),
             )
@@ -369,6 +375,7 @@ def _metrics(records: list[TradeRecord]) -> SegmentMetrics:
     equity = peak = drawdown = 0.0
     yearly: dict[str, list[float]] = defaultdict(list)
     weekdays: dict[str, list[float]] = defaultdict(list)
+    hours: dict[str, list[float]] = defaultdict(list)
     sessions: dict[str, list[float]] = defaultdict(list)
     regimes: dict[str, list[float]] = defaultdict(list)
     days: set[str] = set()
@@ -378,6 +385,7 @@ def _metrics(records: list[TradeRecord]) -> SegmentMetrics:
         drawdown = max(drawdown, peak - equity)
         yearly[str(item.time.year)].append(item.pnl_r)
         weekdays[str(item.weekday)].append(item.pnl_r)
+        hours[str(item.hour_utc)].append(item.pnl_r)
         sessions[item.session].append(item.pnl_r)
         regimes[item.regime].append(item.pnl_r)
         days.add(item.time.date().isoformat())
@@ -395,10 +403,12 @@ def _metrics(records: list[TradeRecord]) -> SegmentMetrics:
         positive_year_rate=positive_year_rate,
         yearly_expectancy=yearly_exp,
         weekday_expectancy={key: sum(values) / len(values) for key, values in weekdays.items() if values},
+        hour_expectancy={key: sum(values) / len(values) for key, values in hours.items() if values},
         session_expectancy={key: sum(values) / len(values) for key, values in sessions.items() if values},
         regime_expectancy={key: sum(values) / len(values) for key, values in regimes.items() if values},
         yearly_trades={key: len(values) for key, values in yearly.items()},
         weekday_trades={key: len(values) for key, values in weekdays.items()},
+        hour_trades={key: len(values) for key, values in hours.items()},
         session_trades={key: len(values) for key, values in sessions.items()},
         regime_trades={key: len(values) for key, values in regimes.items()},
         trading_days=len(days),

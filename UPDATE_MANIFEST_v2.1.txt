@@ -1,0 +1,10 @@
+EVE EVOLUTION DISCOVERY LAB v2.1 — COMPLETE REPOSITORY REPLACEMENT
+
+Required deployment order:
+1. Run SUPABASE_UPDATE_v2.1.sql in the separate Discovery Lab Supabase project.
+2. Replace the full Discovery Lab GitHub repository with this release.
+3. Confirm Railway v2.1.0 is healthy.
+4. Allow Netlify to redeploy.
+5. Watch the existing legacy package move from pending profiling to complete or failed.
+
+EVE Algo Lab is not modified by this release.

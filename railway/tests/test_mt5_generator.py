@@ -53,3 +53,14 @@ def test_package_contains_passport_and_honest_compile_status():
     assert passport['market'] == 'XAU/USD'
     assert passport['primary_timeframe'] == 'M5'
     assert len(payload['sha256']) == 64
+
+
+def test_package_generation_blocks_incomplete_passport():
+    row=frozen()
+    row['trading_passport']={'market':'XAU/USD'}
+    try:
+        package_payload(row)
+    except ValueError as exc:
+        assert 'Trading Passport is incomplete' in str(exc)
+    else:
+        raise AssertionError('Package generation should be blocked for an incomplete Trading Passport')

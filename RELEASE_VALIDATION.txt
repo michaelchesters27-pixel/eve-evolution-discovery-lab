@@ -1,40 +1,41 @@
-EVE EVOLUTION DISCOVERY LAB v2.0 — RELEASE VALIDATION
+EVE EVOLUTION DISCOVERY LAB v2.1 — RELEASE VALIDATION
 
-Backend test suite:
-  Command: cd railway && python -m pytest -q
-  Result: 23 passed
+Validated from the complete GitHub-ready repository on 4 August 2026.
 
-Frontend structure:
-  Command: node frontend/tests/frontend_structure_test.mjs
-  Result: passed
+BACKEND
+- 28 pytest tests passed.
+- Python application and tests compiled successfully.
+- Legacy package profiling success path tested with a fake repository and M1 replay.
+- Trading Passport completeness and profile evidence tested.
+- Incomplete Trading Passports block package generation.
+- Pending legacy packages fail the download gate.
+- Complete, eligible packages pass the download gate.
+- Generated MQ5 source retains static source validation and trading defaults OFF.
 
-Netlify proxy structure:
-  Command: node frontend/tests/netlify_proxy_test.mjs
-  Result: passed
+FRONTEND
+- JavaScript syntax passed `node --check`.
+- Frontend structure test passed.
+- Netlify proxy test passed.
+- Legacy survivor, profile lock and complete-Passport UI states are present.
+- Raw source credential mode is no longer displayed in the operator sidebar.
 
-JavaScript syntax:
-  Command: node --check frontend/app.js
-  Result: passed
+DATABASE MIGRATION
+- SUPABASE_UPDATE_v2.1.sql contains balanced function delimiters and parentheses.
+- Fresh SUPABASE_SETUP.sql includes the v2.1 profiling migration.
+- No live Supabase project was modified during release validation.
 
-Python source compilation:
-  Command: python -m compileall -q railway/app
-  Result: passed
+PACKAGE CONTRACT
+- Package generation requires a complete Trading Passport.
+- Download requires profile_status=complete, download_eligible=true and package status ready.
+- Legacy package recovery re-runs final research and M1 replay instead of guessing missing fields.
+- A legacy survivor that fails current standards remains recorded and download-blocked.
 
-Validated behaviours include:
-- bearish candle body parity
-- conservative non-overlapping selection replay
-- M1-resolved single-position and cooldown replay
-- timeframe/source-interval consistency guards
-- selection/holdout isolation
-- child/parent validation-only comparison
-- dataset versioning
-- controlled composition and mutation
-- Trading Passport generation
-- GET-only production source boundary
-- generated MT5 package contents and checksums
-- frontend Data Health and protected downloads
+BOUNDARY
+- EVE Algo Lab files were not modified.
+- Discovery source access remains GET-only in application code.
+- Discovery writes remain confined to the separate Discovery Supabase project.
 
-Not validated inside this environment:
-- execution of the Supabase migration against the user's live database
-- MetaEditor compilation of every future generated EA
-- broker-specific fills or live profitability
+EXTERNAL VALIDATION STILL REQUIRED
+- Run SUPABASE_UPDATE_v2.1.sql in the separate Discovery Lab Supabase project.
+- Confirm Railway v2.1.0 starts against the migrated schema.
+- MetaEditor compilation remains mandatory for every generated MQ5 file.

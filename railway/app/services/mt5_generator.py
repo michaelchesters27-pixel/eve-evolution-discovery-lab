@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any
 
-GENERATOR_VERSION = "eve-discovery-mt5-generator-v3"
+GENERATOR_VERSION = "eve-discovery-mt5-generator-v4"
 
 
 def canonical(value: Any) -> str:
@@ -406,7 +406,7 @@ def generate_mq5_source(frozen: dict[str, Any]) -> tuple[str, str]:
     timeframe = str(frozen.get("timeframe") or market.get("timeframe") or "M5").upper()
     symbol = str(frozen.get("symbol") or market.get("symbol") or "XAU/USD")
     snapshot_interval = market.get("snapshot_interval") or "15min"
-    file_name = safe_name(f"{code}_{timeframe}_v2_0") + ".mq5"
+    file_name = safe_name(f"{code}_{timeframe}_v2_1") + ".mq5"
     replacements = {
         "__FILE_NAME__": file_name,
         "__STRATEGY_NAME__": mql_string(name),
@@ -495,10 +495,22 @@ LIMITATIONS
 
 
 def package_payload(frozen: dict[str, Any]) -> dict[str, Any]:
-    from app.services.passport import build_trading_passport, passport_text
+    from app.services.passport import (
+        PROFILE_VERSION,
+        build_trading_passport,
+        passport_completeness,
+        passport_is_complete,
+        passport_text,
+    )
 
     frozen = dict(frozen)
     passport = dict(frozen.get("trading_passport") or build_trading_passport(frozen))
+    completeness = passport_completeness(passport)
+    passport["completeness"] = completeness
+    passport["profile_status"] = "complete" if completeness.get("complete") else "failed"
+    if not passport_is_complete(passport):
+        missing = ", ".join(completeness.get("missing_fields") or [])
+        raise ValueError(f"Trading Passport is incomplete; package generation blocked. Missing: {missing}")
     frozen["trading_passport"] = passport
     file_name, source = generate_mq5_source(frozen)
     rule_hash = str(frozen.get("rule_hash") or sha256_text(canonical(frozen.get("rules") or {})))
@@ -507,7 +519,7 @@ def package_payload(frozen: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Generated MQL5 failed static validation: " + "; ".join(issues))
 
     manifest = {
-        "package_format": "eve-evolution-discovery-mt5-v3",
+        "package_format": "eve-evolution-discovery-mt5-v4",
         "generator_version": GENERATOR_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "strategy_code": frozen.get("strategy_code"),
@@ -521,6 +533,9 @@ def package_payload(frozen: dict[str, Any]) -> dict[str, Any]:
         "m1_replay_status": (frozen.get("m1_replay") or {}).get("status"),
         "mq5_file": file_name,
         "compile_status": "required",
+        "profile_status": "complete",
+        "profile_version": PROFILE_VERSION,
+        "profile_origin": passport.get("profile_origin"),
         "trading_default": "OFF",
         "telemetry": {
             "algo_lab_compatible": True,
@@ -562,8 +577,8 @@ def package_payload(frozen: dict[str, Any]) -> dict[str, Any]:
         "package_key": package_key,
         "strategy_name": frozen.get("name"),
         "family": frozen.get("family"),
-        "version": "2.0",
-        "file_name": f"{frozen.get('strategy_code')}-{manifest['timeframe']}-MT5-v2.0.zip",
+        "version": "2.1",
+        "file_name": f"{frozen.get('strategy_code')}-{manifest['timeframe']}-MT5-v2.1.zip",
         "mq5_file_name": file_name,
         "mq5_source": source,
         "package_base64": base64.b64encode(archive_bytes).decode(),
@@ -571,6 +586,13 @@ def package_payload(frozen: dict[str, Any]) -> dict[str, Any]:
         "manifest": manifest,
         "trading_passport": passport,
         "compile_status": "required",
+        "profile_status": "complete",
+        "profile_version": PROFILE_VERSION,
+        "profile_reason": "Trading Passport completed and verified before packaging.",
+        "profiled_at": passport.get("profiled_at"),
+        "profile_attempts": int(frozen.get("profile_attempts") or 1),
+        "download_eligible": True,
+        "profile_source": passport.get("profile_origin") or "automatic_finalist_profile",
         "size_bytes": len(archive_bytes),
         "status": "ready",
     }

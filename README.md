@@ -1,77 +1,77 @@
-# EVE Evolution Discovery Lab v2.0
+# EVE Evolution Discovery Lab v2.1
 
 EVE Evolution Discovery Lab is the isolated research system connected to EVE Algo Lab.
 
-- **EVE Algo Lab is production.** It remains unchanged.
-- **Discovery Lab is research.** It reads historical evidence, composes strategies, tests them, mutates survivors and generates MT5 source packages.
-- Discovery Lab never places trades and is not a dependency of Algo Lab.
+- **EVE Algo Lab is production and remains unchanged.**
+- **Discovery Lab is research only.** It reads historical evidence, creates candidates, tests them, mutates survivors and generates MT5 source packages.
+- Discovery Lab never places trades and EVE Algo Lab never depends on it.
 
-## What v2.0 changes
+## What v2.1 adds
 
-Version 2.0 is the **Research Integrity Foundation**. It corrects the parts of v1.1 that could make a backtest disagree with the generated EA or allow protected evidence to influence evolution.
+Version 2.1 completes **Phase 1 — Strategy Profiling Gate**.
 
-The research lifecycle is now:
-
-1. Compose a strategy hypothesis.
-2. Test on development data.
-3. Select and mutate using validation data only.
-4. Promote a mature lineage to one final examination.
-5. Open confirmation and final holdout once.
-6. Replay finalist entries against M1 candles with execution-cost stress.
-7. Retire the lineage after the holdout is opened, whether it passes or fails.
-8. Generate an MT5 package only for a final survivor.
-
-## Main safeguards
-
-- Absolute candle-body calculations match MT5 for bullish and bearish candles.
-- Historical selection prevents overlapping positions with a conservative maximum-hold lock; finalist M1 replay resolves actual exits bar by bar.
-- Confirmation and holdout evidence are excluded from mutation fitness.
-- Final holdout exposure is recorded and cannot be reused by the same lineage.
-- Every result is tied to a content-addressed dataset fingerprint.
-- Monte Carlo and wider parameter-neighbour stress are recorded.
-- Finalists must pass M1 execution replay before freezing.
-- Source access is implemented through a GET-only repository adapter.
-- A restricted source credential can replace the legacy service-role credential.
-- Generated EAs are trading-disabled by default and include optional Algo Lab-compatible heartbeat inputs.
-- Research results and package downloads require the Discovery admin token by default.
-
-## Trading Passports
-
-Every generated package contains a Trading Passport stating:
+A strategy can no longer appear as a usable MT5 package with blank guidance. Before download, EVE must know and record:
 
 - market and chart timeframe
-- operating session or hours
-- conditions in which the strategy should be used
-- conditions in which it should be avoided
-- spread limit and risk settings
-- validation, confirmation and holdout evidence
-- M1 replay status
-- compilation and demo-forward-testing requirements
+- configured operating window
+- strongest and weakest observed session
+- strongest and weakest market regime
+- strongest observed weekday and UTC hour when the sample is sufficient
+- use conditions and avoid conditions
+- risk limits, dataset version and evidence source
+- confidence score, final research status and M1 replay status
+
+The Trading Passport is checked for completeness in both the worker and the download API. An incomplete or failed profile cannot be downloaded.
+
+## Legacy package recovery
+
+Packages created before v2.1 are not trusted automatically and are not filled with guessed values.
+
+After the v2.1 migration, EVE processes one legacy package at a time:
+
+1. recover the linked frozen strategy rules
+2. re-run current final research
+3. run current M1 execution replay
+4. build and verify the Trading Passport
+5. rebuild and unlock the package only if every current gate passes
+
+A legacy survivor that fails current standards remains recorded but its download is blocked with a clear reason.
+
+## Research integrity inherited from v2.0
+
+- Selection and mutation use development and validation only.
+- Confirmation and final holdout are opened once for a mature finalist.
+- Finalists must pass M1 execution replay.
+- Simulated entries follow one-position-at-a-time semantics.
+- Every result is tied to an immutable dataset fingerprint.
+- Trading is OFF by default in generated EAs.
+- Research data and package downloads require the Discovery admin token by default.
 
 ## Current research scope
 
-The deployed historical snapshot source remains **XAU/USD, M5 source candles sampled as 15-minute research states** unless a matching source dataset is made available. Version 2.0 stores source interval separately, prevents different timeframes from overwriting one another, refuses to label M5 evidence as an M1 strategy, and performs M1 execution replay for finalists.
+The deployed source remains **XAU/USD M5 source candles sampled as 15-minute research market states**, unless a matching dataset is configured. M1 is currently used for finalist execution replay, not yet for independent M1 hypothesis discovery.
 
-It does **not yet** provide the natural-language **Ask EVE** workspace or genuine M1 hypothesis discovery. Those should be built on this corrected foundation rather than added to the compromised v1.1 validation process.
+Natural-language **Ask EVE** is not included in this release. Phase 1 establishes the package and profiling rules it will rely on.
 
 ## Repository layout
 
 - `frontend/` — Netlify operator interface
-- `railway/` — FastAPI API and autonomous research worker
-- `supabase/` — Discovery Lab database migrations
-- `SUPABASE_SETUP.sql` — complete fresh-database setup
-- `SUPABASE_UPDATE_v2.0.sql` — upgrade for an existing v1/v1.1 Discovery database
-- `DEPLOYMENT_GUIDE.md` — exact replacement and deployment order
-- `PROJECT_SPEC.md` — system boundaries and research rules
-- `RELEASE_NOTES_v2.0.md` — full release record
+- `railway/` — FastAPI API and autonomous worker
+- `supabase/` — database migrations
+- `SUPABASE_SETUP.sql` — complete fresh database setup
+- `SUPABASE_UPDATE_v2.1.sql` — required update for an existing v2.0 database
+- `DEPLOYMENT_GUIDE.md` — exact deployment order
+- `RELEASE_NOTES_v2.1.md` — complete change record
 
 ## Validation
 
-The included release was checked with:
+The release is checked with:
 
-- 23 Python backend tests
-- 2 frontend/Netlify structural tests
+- 28 Python backend tests
+- frontend structure test
+- Netlify proxy test
+- JavaScript syntax validation
 - Python bytecode compilation
-- generated-package structure and MQ5 source validation
+- generated package and Trading Passport validation
 
-MetaEditor compilation still must be performed on every generated `.mq5` file before demo forward testing.
+MetaEditor compilation and MT5 demo forward testing remain mandatory for every generated `.mq5` file.

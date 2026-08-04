@@ -5,6 +5,33 @@ const fmt = new Intl.NumberFormat('en-GB');
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 const num = (value, digits=2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '—';
 const dateText = value => value ? new Date(value).toLocaleString('en-GB', {timeZone:'UTC', dateStyle:'medium', timeStyle:'short'}) + ' UTC' : '—';
+const human = value => String(value ?? '').replaceAll('_',' ').replace(/\b\w/g, ch => ch.toUpperCase());
+const componentName = value => ({
+  source_bridge:'Historical data', composer:'Strategy composer', candidate_test:'Experiment review',
+  evolution:'Evolution queue', mutation_test:'Mutation decision', final_research:'Final research',
+  promotion:'Survivor promotion', mt5_generator:'MT5 package', strategy_profiler:'Strategy profiler',
+  orchestrator:'Research worker'
+}[value] || human(value));
+const gateNames = {
+  validation_sample:'Not enough validation trades', validation_edge:'Validation performance was too weak',
+  rolling_stability:'Performance was not stable across time', parameter_neighbourhood:'Small parameter changes broke the strategy',
+  monte_carlo_confidence:'Results were too dependent on the trade sequence', confirmation_sample:'Not enough confirmation trades',
+  holdout_sample:'Not enough final holdout trades', confirmation_edge:'Confirmation performance was too weak',
+  holdout_no_collapse:'Performance collapsed in the final holdout', elevated_cost_survival:'The strategy did not survive higher trading costs',
+  final_parameter_neighbourhood:'Final robustness checks failed', m1_replay_disabled:'M1 execution replay was disabled',
+  confirmation_edge_m1:'M1 confirmation performance failed', holdout_edge:'M1 holdout performance failed',
+  resolved_data:'Not enough M1 trades could be resolved', year_stability:'M1 performance was not stable across years'
+};
+function friendlyDecision(value) {
+  const text=String(value||'').trim();
+  if (!text) return 'EVE has not recorded a decision yet.';
+  if (text.startsWith('Failed:')) {
+    const keys=text.slice(7).split(',').map(x=>x.trim());
+    return 'Rejected because: '+keys.map(key=>gateNames[key]||human(key)).join('; ')+'.';
+  }
+  if (text==='All gates for this stage passed.') return 'Passed every check required at this research stage.';
+  return text.replaceAll('_',' ');
+}
 
 let tokenPromptPromise = null;
 async function adminToken(force=false) {
@@ -59,7 +86,7 @@ function compactEvents(events=[]) {
   const source = events.filter(e => e.component === 'source_bridge');
   if (source.length < 2) return events;
   const imported = source.reduce((sum, e) => sum + Number(e?.details?.imported || 0), 0);
-  const summary = {...source[0], message:`Source bridge advanced ${source.length} times · ${fmt.format(imported)} market states imported · latest ${source[0].message || ''}`};
+  const summary = {...source[0], message:`Historical data updated ${source.length} times · ${fmt.format(imported)} new market states added.`};
   let used=false;
   return events.flatMap(e => e.component !== 'source_bridge' ? [e] : used ? [] : (used=true,[summary]));
 }
@@ -67,10 +94,10 @@ function compactEvents(events=[]) {
 function renderOverview() {
   const d=state.dashboard, r=d.runtime || {};
   const runtimeHealthy = !r.last_error && Boolean(r.last_successful_cycle_at || r.cycle_count === 0);
-  setHealth(runtimeHealthy, `${r.research_timeframe || '—'} from ${r.source_candle_interval || '—'} candles · ${r.source_credential_mode || 'credential unknown'}`);
-  $('#workerStatus').textContent = r.last_error ? 'SAFE FAILURE' : r.autonomous_enabled ? 'AUTONOMOUS' : 'PAUSED';
+  setHealth(runtimeHealthy, runtimeHealthy ? `${r.research_source_summary || `${r.source_symbol||'Market'} ${r.research_timeframe||''}`} · ${fmt.format(d.snapshots||0)} states` : 'Research worker needs attention');
+  $('#workerStatus').textContent = r.last_error ? 'ATTENTION' : r.autonomous_enabled ? 'RESEARCHING' : 'PAUSED';
   $('#workerStatus').className = `status-pill ${r.last_error ? 'error' : ''}`;
-  $('#lastAction').textContent = r.last_action || 'Waiting for first cycle';
+  $('#lastAction').textContent = friendlyDecision(r.last_action || 'Waiting for the first research cycle.');
   $('#lastCycle').textContent = r.last_successful_cycle_at ? `Last successful cycle ${dateText(r.last_successful_cycle_at)}` : 'No successful cycle reported yet';
   $('#lastError').textContent = r.last_error || '';
   $('#metrics').innerHTML = [
@@ -79,7 +106,7 @@ function renderOverview() {
     ['Active lineages',fmt.format(d.lineages_active||0),'still breeding'],
     ['Finalised',fmt.format(d.lineages_finalised||0),'holdout opened once'],
     ['Promoted mutations',fmt.format(d.mutations_promoted||0),'selection winners'],
-    ['MT5 packages',fmt.format(d.mt5_packages||0),'final survivors']
+    ['MT5 packages',fmt.format(d.mt5_packages||0),Number(d.packages_profile_pending||0)>0?`${fmt.format(d.packages_profile_pending)} awaiting profile`:'documented survivors']
   ].map(x=>metric(...x)).join('');
   $('#integrityStrip').innerHTML = [
     ['Selection data only','Development and validation breed strategies',true],
@@ -91,7 +118,7 @@ function renderOverview() {
   $('#topLineage').className=`feature-card ${line?'':'empty'}`;
   $('#topLineage').innerHTML=line ? `<div class="card-top"><div><h3>${esc(line.name)}</h3><p>${esc(line.family)} · ${esc(line.symbol||'XAU/USD')} ${esc(line.timeframe||'M5')}</p></div>${badge(line.status)}</div>${stats([['Generation',line.generation??0],['Fitness',num(line.champion_fitness)],['Selection',line.champion_result_status||'—'],['Final',line.final_result_status||'not opened']])}<p>${esc(line.last_result||'')}</p>` : 'No lineage has survived selection yet.';
   const events=compactEvents(d.recent_events||[]);
-  $('#events').innerHTML=events.length ? events.map(e=>`<div class="event ${esc(e.level)}"><time>${esc(dateText(e.created_at).replace(' UTC',''))}</time><span>${esc(e.component)}</span><b>${esc(e.message)}</b></div>`).join('') : '<div class="empty-state">No research activity recorded yet.</div>';
+  $('#events').innerHTML=events.length ? events.map(e=>`<div class="event ${esc(e.level)}"><time>${esc(dateText(e.created_at).replace(' UTC',''))}</time><span>${esc(componentName(e.component))}</span><b>${esc(e.message)}</b></div>`).join('') : '<div class="empty-state">No research activity recorded yet.</div>';
 }
 
 function rulesSummary(item) {
@@ -106,23 +133,23 @@ function renderCandidates() {
   $('#candidateList').innerHTML=items.length ? items.map(item=>{
     const validation=item.metrics?.validation||{};
     const sealed=Boolean(item.metrics?.holdout?.sealed);
-    return `<article class="card"><div class="card-top"><div><h3>${esc(item.name)}</h3><p>${esc(item.hypothesis||'No hypothesis recorded.')}</p></div>${badge(item.result_status||item.status)}</div>${stats([['Market',`${item.symbol||'XAU/USD'} ${item.timeframe||'M5'}`],['Validation PF',num(validation.profit_factor)],['Expectancy',`${num(validation.expectancy_r,3)}R`],['Trades',fmt.format(validation.trades||0)]])}<div class="rules">${rulesSummary(item).map(x=>`<span>${esc(x)}</span>`).join('')}</div><div class="evidence-note ${sealed?'sealed':''}"><b>${sealed?'Holdout sealed':'Final evidence opened'}</b><span>${sealed?'This experiment cannot see confirmation or final holdout while being selected.':'This record contains final-stage evidence.'}</span></div><p class="decision">${esc(item.evidence?.decision?.plain_reason||item.error||'Awaiting research.')}</p><small class="dataset">${esc(item.dataset_version||'dataset not assigned')}</small></article>`;
+    return `<article class="card"><div class="card-top"><div><h3>${esc(item.name)}</h3><p>${esc(item.hypothesis||'No hypothesis recorded.')}</p></div>${badge(item.result_status||item.status)}</div>${stats([['Market',`${item.symbol||'XAU/USD'} ${item.timeframe||'M5'}`],['Validation PF',num(validation.profit_factor)],['Expectancy',`${num(validation.expectancy_r,3)}R`],['Trades',fmt.format(validation.trades||0)]])}<div class="rules">${rulesSummary(item).map(x=>`<span>${esc(x)}</span>`).join('')}</div><div class="evidence-note ${sealed?'sealed':''}"><b>${sealed?'Holdout sealed':'Final evidence opened'}</b><span>${sealed?'This experiment cannot see confirmation or final holdout while being selected.':'This record contains final-stage evidence.'}</span></div><p class="decision">${esc(friendlyDecision(item.evidence?.decision?.plain_reason||item.error||'Awaiting research.'))}</p><small class="dataset">${esc(item.dataset_version||'dataset not assigned')}</small></article>`;
   }).join('') : '<div class="empty-state">No experiments match this filter.</div>';
 }
 
 function pretty(value) { return typeof value === 'string' ? value : JSON.stringify(value); }
 function renderEvolution() {
-  $('#lineageList').innerHTML=state.lineages.length ? state.lineages.map(x=>`<article class="card lineage"><div class="card-top"><div><h3>${esc(x.name)}</h3><p>${esc(x.family)} · ${esc(x.symbol||'XAU/USD')} ${esc(x.timeframe||'M5')}</p></div>${badge(x.status)}</div>${stats([['Generation',x.generation??0],['Champion fitness',num(x.champion_fitness)],['Selection',x.champion_result_status||'—'],['Final',x.final_result_status||'not opened']])}<div class="timeline"><span class="done">Seed</span><span class="done">Selection</span><span class="${Number(x.generation)>0?'done':''}">Mutation</span><span class="${x.holdout_opened_at?'done':''}">Final holdout</span><span class="${x.final_result_status==='validated'||x.final_result_status==='elite'?'done':''}">Survivor</span></div><p>${esc(x.last_result||'No lineage decision recorded.')}</p><small class="dataset">${esc(x.dataset_version||'dataset not assigned')}</small></article>`).join('') : '<div class="empty-state">No active or retired lineage exists yet.</div>';
+  $('#lineageList').innerHTML=state.lineages.length ? state.lineages.map(x=>`<article class="card lineage"><div class="card-top"><div><h3>${esc(x.name)}</h3><p>${esc(x.family)} · ${esc(x.symbol||'XAU/USD')} ${esc(x.timeframe||'M5')}</p></div>${badge(x.status)}</div>${stats([['Generation',x.generation??0],['Champion fitness',num(x.champion_fitness)],['Selection',x.champion_result_status||'—'],['Final',x.final_result_status||'not opened']])}<div class="timeline"><span class="done">Seed</span><span class="done">Selection</span><span class="${Number(x.generation)>0?'done':''}">Mutation</span><span class="${x.holdout_opened_at?'done':''}">Final holdout</span><span class="${x.final_result_status==='validated'||x.final_result_status==='elite'?'done':''}">Survivor</span></div><p>${esc(friendlyDecision(x.last_result||'No lineage decision recorded.'))}</p><small class="dataset">${esc(x.dataset_version||'dataset not assigned')}</small></article>`).join('') : '<div class="empty-state">No active or retired lineage exists yet.</div>';
   $('#mutationList').innerHTML=state.mutations.length ? state.mutations.map(x=>{
     const change=x.changes?.[x.mutation_gene]||{};
-    return `<article class="card mutation-card"><div class="card-top"><div><h3>${esc(x.name)}</h3><p>${esc(x.selection_reason||'Awaiting selection decision.')}</p></div>${badge(x.promoted?'promoted':x.result_status||x.status)}</div><div class="change-grid"><div><span>Parent</span><strong>${esc(pretty(change.from))}</strong></div><div class="change-arrow">→</div><div><span>Child</span><strong>${esc(pretty(change.to))}</strong></div></div>${stats([['Gene',x.mutation_gene||'—'],['Fitness Δ',num(x.fitness_delta)],['Expectancy Δ',`${num(x.validation_expectancy_delta,3)}R`],['Holdout used',x.holdout_used_for_selection?'YES':'NO']])}</article>`;
+    return `<article class="card mutation-card"><div class="card-top"><div><h3>${esc(x.name)}</h3><p>${esc(friendlyDecision(x.selection_reason||'Awaiting selection decision.'))}</p></div>${badge(x.promoted?'promoted':x.result_status||x.status)}</div><div class="change-grid"><div><span>Parent</span><strong>${esc(pretty(change.from))}</strong></div><div class="change-arrow">→</div><div><span>Child</span><strong>${esc(pretty(change.to))}</strong></div></div>${stats([['Changed rule',human(x.mutation_gene||'—')],['Fitness Δ',num(x.fitness_delta)],['Expectancy Δ',`${num(x.validation_expectancy_delta,3)}R`],['Holdout used',x.holdout_used_for_selection?'YES':'NO']])}</article>`;
   }).join('') : '<div class="empty-state">No mutation decisions recorded yet.</div>';
 }
 
 function passportRows(passport={}) {
-  const use=(passport.use_when||[]).map(x=>`<li>${esc(x)}</li>`).join('') || '<li>Not specified</li>';
-  const avoid=(passport.avoid_when||[]).map(x=>`<li>${esc(x)}</li>`).join('') || '<li>Not specified</li>';
-  return `<div class="passport"><div class="passport-head"><span>TRADING PASSPORT</span><strong>${esc(passport.market||'—')} · ${esc(passport.primary_timeframe||'—')}</strong></div><div class="passport-grid"><div><span>Attach to</span><b>${esc(passport.attach_chart||`${passport.market||'—'} ${passport.primary_timeframe||'—'}`)}</b></div><div><span>Operating window</span><b>${esc(passport.operating_window||'Not specified')}</b></div><div><span>Best session</span><b>${esc(passport.best_session||'Not established')}</b></div><div><span>Confidence</span><b>${esc(passport.confidence_score??'—')}/100</b></div></div><div class="use-grid"><div><h4>Use when</h4><ul>${use}</ul></div><div><h4>Avoid when</h4><ul>${avoid}</ul></div></div></div>`;
+  const use=(passport.use_when||[]).map(x=>`<li>${esc(x)}</li>`).join('');
+  const avoid=(passport.avoid_when||[]).map(x=>`<li>${esc(x)}</li>`).join('');
+  return `<div class="passport"><div class="passport-head"><span>TRADING PASSPORT COMPLETE</span><strong>${esc(passport.market)} · ${esc(passport.primary_timeframe)}</strong></div><div class="passport-grid"><div><span>Attach to</span><b>${esc(passport.attach_chart||passport.attach_to_chart)}</b></div><div><span>Operating window</span><b>${esc(passport.operating_window)}</b></div><div><span>Best session</span><b>${esc(passport.best_session)}</b></div><div><span>Best regime</span><b>${esc(passport.best_regime)}</b></div><div><span>Best weekday</span><b>${esc(passport.best_weekday)}</b></div><div><span>Best UTC hour</span><b>${esc(passport.best_hour_utc)}</b></div><div><span>Confidence</span><b>${esc(passport.confidence_score)}/100</b></div><div><span>Profile evidence</span><b>${esc(passport.profile_segment)}</b></div></div><div class="use-grid"><div><h4>Use when</h4><ul>${use}</ul></div><div><h4>Avoid when</h4><ul>${avoid}</ul></div></div></div>`;
 }
 
 async function downloadFile(path, fallbackName) {
@@ -135,7 +162,7 @@ async function downloadFile(path, fallbackName) {
     if (!token) return;
     response=await fetch(`/api${path}`,{headers:{'X-Admin-Token':token}});
   }
-  if (!response.ok) { alert(`Download failed: ${response.status} ${await response.text()}`); return; }
+  if (!response.ok) { const raw=await response.text(); let message=raw; try{message=JSON.parse(raw).detail||raw}catch{} alert(`Download locked: ${message}`); return; }
   const blob=await response.blob();
   const disposition=response.headers.get('content-disposition')||'';
   const match=disposition.match(/filename="?([^";]+)"?/i);
@@ -145,7 +172,19 @@ async function downloadFile(path, fallbackName) {
 function renderPackages() {
   $('#packageList').innerHTML=state.packages.length ? state.packages.map(x=>{
     const p=x.trading_passport||{}, manifest=x.manifest||{};
-    return `<article class="card package-card"><div class="card-top"><div><h3>${esc(x.strategy_name)}</h3><p>${esc(x.family)} · package v${esc(x.version||'2.0')}</p></div>${badge(manifest.compile_status||'compile required')}</div>${passportRows(p)}${stats([['M1 replay',manifest.m1_replay_status||'—'],['Dataset',manifest.dataset_version||'—'],['Size',`${num((x.size_bytes||0)/1024,1)} KB`],['Trading default',manifest.trading_default||'OFF']])}<div class="download-row"><button class="download" data-download="/packages/${esc(x.id)}/download" data-name="${esc(x.file_name||'EVE-MT5.zip')}">Download full package</button><button class="download secondary" data-download="/packages/${esc(x.id)}/mq5" data-name="${esc(manifest.mq5_file||'EVE_Discovery.mq5')}">MQ5 source</button></div></article>`;
+    const status=String(x.profile_status||'pending');
+    const ready=status==='complete' && Boolean(x.download_eligible) && p?.completeness?.complete===true;
+    const legacy=String(x.profile_source||'').includes('legacy') || status!=='complete';
+    let profileBlock='';
+    if (ready) {
+      profileBlock=passportRows(p);
+    } else if (status==='failed') {
+      profileBlock=`<div class="profile-notice failed"><b>Package blocked by current standards</b><p>${esc(x.profile_reason||'This survivor did not pass the current profiling checks.')}</p><small>The old package remains recorded, but EVE will not present it as ready for use.</small></div>`;
+    } else {
+      profileBlock=`<div class="profile-notice pending"><b>${legacy?'Legacy survivor detected':'Trading Passport being completed'}</b><p>${esc(x.profile_reason||'EVE is reading the frozen rules and re-running the strategy through current final research, M1 replay and operating-condition profiling.')}</p><small>Download remains locked until the passport is complete.</small></div>`;
+    }
+    const action=ready ? `<div class="download-row"><button class="download" data-download="/packages/${esc(x.id)}/download" data-name="${esc(x.file_name||'EVE-MT5.zip')}">Download full package</button><button class="download secondary" data-download="/packages/${esc(x.id)}/mq5" data-name="${esc(manifest.mq5_file||'EVE_Discovery.mq5')}">MQ5 source</button></div>` : `<div class="download-row"><button class="download locked" disabled>${status==='failed'?'Download blocked':'Profiling in progress'}</button></div>`;
+    return `<article class="card package-card ${ready?'ready':'locked-card'}"><div class="card-top"><div><h3>${esc(x.strategy_name)}</h3><p>${esc(x.family)} · package v${esc(x.version||'legacy')}</p></div>${badge(ready?(manifest.compile_status||'compile required'):status)}</div>${profileBlock}${stats([['M1 replay',manifest.m1_replay_status||'Awaiting profile'],['Dataset',manifest.dataset_version||'Awaiting profile'],['Size',`${num((x.size_bytes||0)/1024,1)} KB`],['Package access',ready?'READY':'LOCKED']])}${action}</article>`;
   }).join('') : '<div class="empty-state">No strategy has passed final holdout and M1 replay yet.</div>';
   $$('[data-download]').forEach(btn=>btn.addEventListener('click',()=>downloadFile(btn.dataset.download,btn.dataset.name)));
 }
@@ -165,8 +204,8 @@ function renderDataHealth() {
   ].map(x=>metric(...x)).join('');
   const datasets=h.datasets||[];
   $('#datasetList').innerHTML=datasets.length ? datasets.map(d=>`<div class="dataset"><div><b>${esc(d.symbol)} · ${esc(d.snapshot_interval)}</b><span>Source ${esc(d.source_interval)}</span></div><strong>${fmt.format(d.rows||0)}</strong><small>${dateText(d.from_time)} → ${dateText(d.to_time)}</small></div>`).join('') : '<div class="empty-state">No source data imported yet.</div>';
-  const readOnly=r.source_credential_mode==='read_only_key';
-  $('#boundaryStatus').innerHTML=`${check('Application write surface',r.production_write_surface==='none','SourceRepository exposes GET operations only.')}${check('Database credential',readOnly,readOnly?'Dedicated read-only source key is active.':'Legacy service-role key is still configured. Add SOURCE_SUPABASE_READ_ONLY_KEY to enforce the boundary at database level.')}${check('Separate research database',true,'Candidates, mutations, failures and packages stay in Discovery Supabase.')}`;
+  const readOnly=Boolean(r.source_boundary_enforced);
+  $('#boundaryStatus').innerHTML=`${check('Production protection',r.production_write_surface==='none','Discovery Lab has no code path that writes to EVE Algo Lab.')}${check('Database access',readOnly,readOnly?'Production access is database-enforced as read-only.':'The application only reads production, but a dedicated read-only Supabase key is still recommended.')}${check('Separate research database',true,'Candidates, mutations, failures and packages stay in Discovery Supabase.')}`;
   $('#qualityChecks').innerHTML=[
     check('Forward outcomes complete',Number(h.incomplete_outcomes||0)===0,`${fmt.format(h.incomplete_outcomes||0)} incomplete rows`),
     check('ATR features usable',Number(h.invalid_atr_rows||0)===0,`${fmt.format(h.invalid_atr_rows||0)} invalid ATR rows`),
@@ -186,7 +225,7 @@ async function refresh() {
     state.dashboard=dashboard;state.candidates=candidates.items||[];state.lineages=lineages.items||[];state.mutations=mutations.items||[];state.packages=packages.items||[];state.dataHealth=dataHealth;
     renderOverview();renderCandidates();renderEvolution();renderPackages();renderDataHealth();
   } catch (error) {
-    setHealth(false,'API unavailable');$('#lastError').textContent=error.message;
+    setHealth(false,'Research service unavailable');$('#lastError').textContent=`EVE could not read the research service: ${error.message}`;
   }
 }
 

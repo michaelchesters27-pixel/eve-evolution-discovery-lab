@@ -1,0 +1,10 @@
+EVE EVOLUTION DISCOVERY LAB v2.1
+
+BEFORE DEPLOYING THE NEW GITHUB FILES:
+
+1. Open the separate Discovery Lab Supabase project.
+2. Open SQL Editor.
+3. Run the complete file: SUPABASE_UPDATE_v2.1.sql
+4. Then replace the complete Discovery Lab GitHub repository.
+
+DO NOT RUN THIS SQL IN EVE ALGO LAB.

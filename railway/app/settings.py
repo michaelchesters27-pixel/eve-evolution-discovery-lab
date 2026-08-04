@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     minimum_generations_before_final: int = Field(default=3, ge=1, le=50)
     package_downloads_require_admin: bool = True
     research_api_requires_admin: bool = True
+    legacy_profile_max_attempts: int = Field(default=3, ge=1, le=20)
 
     @field_validator("source_supabase_url", "discovery_supabase_url")
     @classmethod

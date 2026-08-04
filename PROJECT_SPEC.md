@@ -1,4 +1,4 @@
-# EVE Evolution Discovery Lab v2.0 — Project Specification
+# EVE Evolution Discovery Lab v2.1 — Project Specification
 
 ## Permanent boundary
 
@@ -10,7 +10,7 @@ Production platform for MT5 EA fleets, telemetry, heartbeat, trades, waiting rea
 
 Independent research platform. It may read approved historical tables from Project 1. It writes only to its own Supabase database. It never sends trading instructions and Project 1 never depends on it.
 
-## v2 research contract
+## Research contract
 
 ### Selection evidence
 
@@ -41,7 +41,28 @@ A strategy can be frozen only when all configured final gates pass, including:
 - deterministic Monte Carlo stress
 - M1 execution replay with cost profiles
 
-Passing historical research does not authorise live trading. It authorises generation of a trading-disabled MT5 source package for compilation and demo forward testing.
+Passing historical research does not authorise live trading. It authorises profiling for a trading-disabled MT5 source package.
+
+## Strategy profiling contract
+
+A package is downloadable only when its Trading Passport is complete. The profile must explicitly contain:
+
+- market, chart timeframe and attachment instruction
+- configured operating window
+- strongest and weakest observed session where sample size permits
+- strongest and weakest observed regime where sample size permits
+- weekday and UTC-hour evidence where sample size permits
+- explicit use and avoid guidance
+- risk limits and expected activity
+- immutable dataset version
+- final evidence, robustness and M1 replay status
+- profile version, source and completeness report
+
+When no session, regime, weekday or hour reaches the minimum sample, EVE must state that no reliable advantage was established. It must not display a blank field or invent a recommendation.
+
+## Legacy survivor contract
+
+A package created before the profiling contract is treated as a legacy survivor. EVE must recover the linked frozen rules and re-run current final research and M1 replay. It may rebuild and unlock the package only after the profile passes. A failed legacy survivor remains in the scientific record but cannot be downloaded.
 
 ## Persistent research record
 
@@ -51,10 +72,11 @@ Discovery Supabase stores:
 - candidate hypotheses and failures
 - mutation lineages and descendants
 - mutation memory
-- dataset version and integrity version
+- dataset and integrity versions
 - one-time final evidence
 - M1 replay evidence
 - frozen survivors
+- profile status and legacy recovery results
 - Trading Passports
 - generated MT5 packages
 - system activity
@@ -66,7 +88,7 @@ Each package contains:
 - `.mq5` source
 - immutable frozen rules
 - validation report
-- Trading Passport in JSON and text form
+- complete Trading Passport in JSON and text form
 - manifest
 - SHA-256 checksums
 - operator README
@@ -75,4 +97,4 @@ The EA has trading disabled by default. Optional Algo Lab heartbeat settings are
 
 ## Current limitation
 
-Version 2.0 is not the Ask EVE natural-language research interface. Its strategy grammar remains controlled and human-defined. It prepares safe data, evidence, timeframe and package contracts required for the future research-question engine.
+Version 2.1 is not the Ask EVE natural-language research interface. Its strategy grammar remains controlled and human-defined. This release completes Phase 1 by ensuring that EVE can examine, describe and gate its own survivors before they can be downloaded.

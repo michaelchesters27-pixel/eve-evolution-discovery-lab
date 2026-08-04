@@ -13,4 +13,7 @@ assert.ok(js.includes('TRADING PASSPORT'));
 assert.ok(js.includes('X-Admin-Token'));
 assert.ok(js.includes('/download'));
 assert.ok(!html.includes('Required deployment order'));
+assert.ok(js.includes('Legacy survivor detected'));
+assert.ok(js.includes("p?.completeness?.complete===true"));
+assert.ok(js.includes('Download remains locked until the passport is complete'));
 console.log('frontend structure passed');

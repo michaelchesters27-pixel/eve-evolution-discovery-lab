@@ -20,7 +20,7 @@ from app.services.backtest import (
 from app.services.composer import compose_batch, mutation_batch
 from app.services.m1_replay import validate_with_m1
 from app.services.mt5_generator import package_payload
-from app.services.passport import build_trading_passport
+from app.services.passport import PROFILE_VERSION, build_trading_passport, passport_completeness, passport_is_complete
 from app.services.repository import DiscoveryRepository, SourceRepository
 
 logger = logging.getLogger(__name__)
@@ -249,7 +249,25 @@ class DiscoveryOrchestrator:
             "package_status": "pending",
             "status": "frozen",
         }
-        frozen["trading_passport"] = build_trading_passport(frozen)
+        frozen["trading_passport"] = build_trading_passport(frozen, profile_origin="automatic_finalist_profile")
+        completeness = passport_completeness(frozen["trading_passport"])
+        if not completeness.get("complete"):
+            await self.repo.event(
+                "warning",
+                "strategy_profiler",
+                f"{frozen['name']} passed research but its operator profile was incomplete, so no package was allowed.",
+                {"missing_fields": completeness.get("missing_fields") or [], "strategy_code": code},
+            )
+            self.last_action = f"Profile incomplete for {frozen['name']} — package blocked"
+            return False
+        frozen.update({
+            "profile_status": "complete",
+            "profile_version": PROFILE_VERSION,
+            "profile_reason": "Finalist profile completed before package generation.",
+            "profiled_at": frozen["trading_passport"].get("profiled_at"),
+            "profile_attempts": 1,
+            "legacy_survivor": False,
+        })
         await self.repo.freeze_strategy(frozen)
         await self.repo.event(
             "success",
@@ -401,6 +419,160 @@ class DiscoveryOrchestrator:
             await self.repo.fail_mutation(str(mutation["id"]), str(exc))
             raise
 
+    async def profile_legacy_package(self, rows: list[dict[str, Any]]) -> bool:
+        """Bring one pre-v2.1 package through the current profiling gates.
+
+        Legacy packages remain visible, but download is locked until EVE can recover
+        the linked frozen rules, re-run current final research, complete M1 replay
+        and produce a complete Trading Passport. A failed re-profile is recorded
+        rather than silently filling the passport with guessed values.
+        """
+        package = await self.repo.package_needing_profile()
+        if not package:
+            return False
+
+        package_id = str(package.get("id") or "")
+        frozen_id = str(package.get("frozen_strategy_id") or "")
+        await self.repo.mark_package_profiling(package_id, int(number(package.get("profile_attempts"))))
+        self.last_action = f"Profiling legacy survivor {package.get('strategy_name') or package_id}"
+
+        if not frozen_id:
+            reason = "This legacy package has no linked frozen strategy record, so EVE cannot verify or describe its rules safely."
+            await self.repo.mark_profile_failed(package_id, None, reason)
+            await self.repo.event("warning", "strategy_profiler", reason, {"package_id": package_id})
+            return True
+
+        frozen = await self.repo.frozen_strategy(frozen_id)
+        if not frozen or not frozen.get("rules"):
+            reason = "The linked legacy survivor does not contain recoverable frozen rules, so its download remains blocked."
+            await self.repo.mark_profile_failed(package_id, frozen_id, reason)
+            await self.repo.event("warning", "strategy_profiler", reason, {"package_id": package_id, "frozen_id": frozen_id})
+            return True
+
+        try:
+            result = evaluate_strategy(
+                frozen,
+                rows,
+                min_validation_trades=self.settings.minimum_validation_trades,
+                min_locked_trades=self.settings.minimum_locked_trades,
+                stage="final",
+            )
+            if self.settings.m1_replay_enabled:
+                result["m1_replay"] = await validate_with_m1(self.source, frozen, rows)
+            else:
+                result["m1_replay"] = {
+                    "status": "failed",
+                    "passed": False,
+                    "failed_gates": ["m1_replay_disabled"],
+                    "message": "M1 replay is mandatory for package profiling and is disabled.",
+                }
+            result.setdefault("evidence", {})["m1_replay"] = result["m1_replay"]
+
+            if not self.ready_to_freeze(result):
+                failed = [str(value).replace("_", " ") for value in (result.get("evidence", {}).get("decision", {}).get("failed_gates") or [])]
+                failed += [str(value).replace("_", " ") for value in (result.get("m1_replay", {}).get("failed_gates") or [])]
+                reason = (
+                    "Legacy survivor did not pass the current final research and M1 execution standards. "
+                    + ("Failed checks: " + ", ".join(dict.fromkeys(failed)) if failed else "It no longer meets the package promotion rules.")
+                )
+                await self.repo.mark_profile_failed(package_id, frozen_id, reason)
+                await self.repo.event(
+                    "warning",
+                    "strategy_profiler",
+                    f"Legacy package blocked after current-standard review: {package.get('strategy_name') or package_id}.",
+                    {"package_id": package_id, "failed_checks": list(dict.fromkeys(failed)), "dataset_version": result.get("dataset_version")},
+                )
+                self.last_action = f"Legacy survivor failed current standards: {package.get('strategy_name') or package_id}"
+                return True
+
+            rules = dict(frozen.get("rules") or {})
+            market = dict(rules.get("market") or {})
+            enriched = {
+                **frozen,
+                "symbol": frozen.get("symbol") or market.get("symbol") or self.settings.source_symbol,
+                "timeframe": frozen.get("timeframe") or market.get("timeframe") or self.settings.research_timeframe,
+                "research_stage": "final",
+                "result_status": result.get("result_status"),
+                "research_integrity_version": result.get("research_integrity_version") or RESEARCH_INTEGRITY_VERSION,
+                "dataset_version": result.get("dataset_version"),
+                "metrics": result.get("metrics") or {},
+                "walk_forward": result.get("walk_forward") or {},
+                "robustness": result.get("robustness") or {},
+                "monte_carlo": result.get("monte_carlo") or {},
+                "execution_costs": result.get("execution_costs") or {},
+                "m1_replay": result.get("m1_replay") or {},
+                "evidence": result.get("evidence") or {},
+                "stability_score": result.get("stability_score") or 0,
+                "fitness_score": result.get("fitness_score") or 0,
+                "profile_attempts": int(number(package.get("profile_attempts"))) + 1,
+                "legacy_survivor": True,
+            }
+            enriched["trading_passport"] = build_trading_passport(enriched, profile_origin="legacy_survivor_revalidated")
+            if not passport_is_complete(enriched["trading_passport"]):
+                missing = passport_completeness(enriched["trading_passport"]).get("missing_fields") or []
+                reason = "Legacy survivor passed research, but its Trading Passport remained incomplete: " + ", ".join(missing)
+                await self.repo.mark_profile_failed(package_id, frozen_id, reason)
+                await self.repo.event("warning", "strategy_profiler", reason, {"package_id": package_id, "missing_fields": missing})
+                return True
+
+            payload = package_payload(enriched)
+            stored = await self.repo.store_package({**payload, "frozen_strategy_id": frozen_id})
+            stored_id = str(stored[0].get("id") or package_id) if stored else package_id
+            await self.repo.update_frozen_profile(
+                frozen_id,
+                {
+                    "symbol": enriched["symbol"],
+                    "timeframe": enriched["timeframe"],
+                    "research_stage": "final",
+                    "result_status": enriched["result_status"],
+                    "research_integrity_version": enriched["research_integrity_version"],
+                    "dataset_version": enriched["dataset_version"],
+                    "metrics": enriched["metrics"],
+                    "walk_forward": enriched["walk_forward"],
+                    "robustness": enriched["robustness"],
+                    "monte_carlo": enriched["monte_carlo"],
+                    "execution_costs": enriched["execution_costs"],
+                    "m1_replay": enriched["m1_replay"],
+                    "evidence": enriched["evidence"],
+                    "stability_score": enriched["stability_score"],
+                    "fitness_score": enriched["fitness_score"],
+                    "trading_passport": enriched["trading_passport"],
+                    "profile_status": "complete",
+                    "profile_version": PROFILE_VERSION,
+                    "profile_reason": "Legacy survivor recovered and passed current final research, M1 replay and passport checks.",
+                    "profiled_at": enriched["trading_passport"].get("profiled_at"),
+                    "profile_attempts": enriched["profile_attempts"],
+                    "legacy_survivor": True,
+                    "package_status": "ready",
+                    "mt5_package_id": stored_id,
+                },
+            )
+            await self.repo.event(
+                "success",
+                "strategy_profiler",
+                f"Legacy survivor recovered: {enriched.get('name')}. Its Trading Passport is complete and the rebuilt package is available.",
+                {"package_id": stored_id, "frozen_id": frozen_id, "dataset_version": enriched.get("dataset_version"), "profile_version": PROFILE_VERSION},
+            )
+            self.last_action = f"Completed Trading Passport for {enriched.get('name')}"
+            return True
+        except Exception as exc:
+            attempts = int(number(package.get("profile_attempts"))) + 1
+            reason = f"Legacy profiling hit a temporary processing error: {str(exc)[:1500]}"
+            if attempts >= self.settings.legacy_profile_max_attempts:
+                final_reason = (
+                    f"Legacy profiling could not complete after {attempts} attempts. "
+                    "The package remains blocked until its frozen record or data access is repaired. "
+                    f"Last error: {str(exc)[:1000]}"
+                )
+                await self.repo.mark_profile_failed(package_id, frozen_id, final_reason)
+                await self.repo.event("error", "strategy_profiler", final_reason, {"package_id": package_id, "frozen_id": frozen_id, "attempts": attempts})
+                self.last_action = f"Legacy profile blocked after repeated errors: {package.get('strategy_name') or package_id}"
+            else:
+                await self.repo.mark_profile_retry(package_id, reason, attempts)
+                await self.repo.event("warning", "strategy_profiler", reason, {"package_id": package_id, "frozen_id": frozen_id, "attempts": attempts})
+                self.last_action = f"Legacy profile will retry: {package.get('strategy_name') or package_id}"
+            return True
+
     async def generate_pending_package(self) -> bool:
         if not self.settings.mt5_generation_enabled:
             return False
@@ -408,6 +580,15 @@ class DiscoveryOrchestrator:
         if not pending:
             return False
         frozen = pending[0]
+        passport = dict(frozen.get("trading_passport") or {})
+        if str(frozen.get("profile_status") or "") != "complete" or not passport_is_complete(passport):
+            await self.repo.event(
+                "warning",
+                "mt5_generator",
+                f"Package generation blocked for {frozen.get('name')}: Trading Passport is not complete.",
+                {"frozen_id": frozen.get("id"), "missing_fields": passport_completeness(passport).get("missing_fields") or []},
+            )
+            return False
         payload = package_payload(frozen)
         rows = await self.repo.store_package({**payload, "frozen_strategy_id": frozen.get("id")})
         package_id = str(rows[0]["id"]) if rows else ""
@@ -441,6 +622,11 @@ class DiscoveryOrchestrator:
             if len(rows) < 5000:
                 actions.append("waiting_for_data")
                 self.last_action = f"Waiting for source bridge ({len(rows):,} research states local)"
+                self.last_successful_cycle_at = utc_now().isoformat()
+                return {"ok": True, "actions": actions, "rows": len(rows)}
+
+            if await self.profile_legacy_package(rows):
+                actions.append("profiled_legacy_package")
                 self.last_successful_cycle_at = utc_now().isoformat()
                 return {"ok": True, "actions": actions, "rows": len(rows)}
 
@@ -511,6 +697,17 @@ class DiscoveryOrchestrator:
             "source_candle_interval": self.settings.source_candle_interval,
             "m1_replay_enabled": self.settings.m1_replay_enabled,
             "source_credential_mode": self.source.credential_mode,
+            "source_boundary_enforced": self.source.credential_mode == "read_only_key",
+            "source_access_label": (
+                "Dedicated read-only source access"
+                if self.source.credential_mode == "read_only_key"
+                else "Connected through the existing migration credential"
+            ),
+            "research_source_summary": (
+                f"{self.settings.source_symbol} {self.settings.research_timeframe} research · "
+                f"{self.settings.source_snapshot_interval} market states"
+            ),
+            "profile_version": PROFILE_VERSION,
             "production_write_surface": "none",
             "package_downloads_require_admin": self.settings.package_downloads_require_admin,
             "research_api_requires_admin": self.settings.research_api_requires_admin,
