@@ -1,171 +1,203 @@
-const state = { dashboard: {}, candidates: [], lineages: [], mutations: [], packages: [], candidateFilter: 'all' };
+const state = { dashboard: {}, dataHealth: {}, candidates: [], lineages: [], mutations: [], packages: [], candidateFilter: 'all' };
 const $ = (selector, root=document) => root.querySelector(selector);
 const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
 const fmt = new Intl.NumberFormat('en-GB');
+const esc = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 const num = (value, digits=2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '—';
-const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+const dateText = value => value ? new Date(value).toLocaleString('en-GB', {timeZone:'UTC', dateStyle:'medium', timeStyle:'short'}) + ' UTC' : '—';
 
-async function api(path) {
-  const response = await fetch(`/api${path}`, { cache: 'no-store' });
+let tokenPromptPromise = null;
+async function adminToken(force=false) {
+  if (!force) {
+    const saved=sessionStorage.getItem('eveDiscoveryAdminToken')||'';
+    if (saved) return saved;
+    if (tokenPromptPromise) return tokenPromptPromise;
+  }
+  tokenPromptPromise=Promise.resolve(prompt(force ? 'The token was rejected. Enter the Discovery Lab ADMIN_TOKEN again:' : 'Enter the Discovery Lab ADMIN_TOKEN to unlock the private research operating system:')||'')
+    .then(token=>{ if(token) sessionStorage.setItem('eveDiscoveryAdminToken',token); return token; })
+    .finally(()=>{ tokenPromptPromise=null; });
+  return tokenPromptPromise;
+}
+
+async function api(path, options={}) {
+  let token=await adminToken();
+  if (!token) throw new Error('Discovery Lab remains locked until ADMIN_TOKEN is entered.');
+  const headers=new Headers(options.headers||{});headers.set('X-Admin-Token',token);
+  let response=await fetch(`/api${path}`, { cache: 'no-store', ...options, headers });
+  if (response.status===401) {
+    sessionStorage.removeItem('eveDiscoveryAdminToken');
+    token=await adminToken(true);
+    if (!token) throw new Error('Discovery Lab remains locked.');
+    headers.set('X-Admin-Token',token);
+    response=await fetch(`/api${path}`, { cache: 'no-store', ...options, headers });
+  }
   if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
   return response.json();
 }
 
-function setHealth(ok, message='Railway worker') {
+function setHealth(ok, text='Railway worker') {
   $('#healthDot').classList.toggle('ok', ok);
-  $('#healthText').textContent = ok ? 'Online' : 'Offline';
-  $('#workerText').textContent = message;
+  $('#healthDot').classList.toggle('bad', !ok);
+  $('#healthText').textContent = ok ? 'Research online' : 'Research offline';
+  $('#workerText').textContent = text;
 }
 
 function metric(label, value, note='') {
   return `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></div>`;
 }
 
-function sourceImportCount(event) {
-  const direct = Number(event?.details?.imported);
-  if (Number.isFinite(direct)) return direct;
-  const match = String(event?.message || '').match(/(?:Imported|\+)([\d,]+).*snapshot/i);
-  return match ? Number(match[1].replaceAll(',', '')) : 0;
+function badge(value) {
+  const text = String(value || 'unknown');
+  return `<span class="badge ${esc(text.toLowerCase())}">${esc(text.replaceAll('_',' '))}</span>`;
 }
 
-function compactEvents(events) {
-  const sourceEvents = events.filter(event => event.component === 'source_bridge');
-  if (sourceEvents.length <= 1) return events;
-  const latest = sourceEvents[0];
-  const total = sourceEvents.reduce((sum, event) => sum + sourceImportCount(event), 0);
-  const summary = {
-    ...latest,
-    message: `Source bridge advanced ${sourceEvents.length} times in this activity window · ${fmt.format(total)} snapshots imported · latest ${latest.message || ''}`
-  };
-  let inserted = false;
-  return events.flatMap(event => {
-    if (event.component !== 'source_bridge') return [event];
-    if (inserted) return [];
-    inserted = true;
-    return [summary];
-  });
+function stats(items) {
+  return `<div class="stat-row">${items.map(([label,value]) => `<div class="stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('')}</div>`;
 }
 
-function conditionLabel(condition={}) {
-  const type = condition.type || '';
-  const labels = {
-    direction_matches_trend12: 'candle = trend12',
-    direction_opposes_trend12: 'candle ≠ trend12',
-    alignment_abs_min: `alignment ≥ ${condition.min}`,
-    alignment_matches_direction: 'alignment = candle',
-    alignment_opposes_direction: 'alignment ≠ candle',
-    return_3_abs_min: `|3-bar return| ≥ ${condition.threshold}%`,
-    return_3_matches_direction: '3-bar return = candle',
-    impulse_1_vs_3: `1-bar impulse ≥ ${condition.ratio}× 3-bar`,
-    close_location_extreme: `close in outer ${Math.round(Number(condition.edge||0)*100)}%`,
-    wick_body_ratio_min: `wick ≥ ${condition.ratio}× body`,
-    trend12_trend48_agree: 'trend12 = trend48',
-  };
-  return labels[type] || String(type).replaceAll('_',' ');
-}
-
-function valueText(value) {
-  if (Array.isArray(value)) return value.map(item => typeof item === 'object' ? conditionLabel(item) : String(item)).join(', ');
-  if (value && typeof value === 'object') return Object.entries(value).map(([key,val]) => `${key}: ${valueText(val)}`).join(' · ');
-  return String(value ?? '—');
+function compactEvents(events=[]) {
+  const source = events.filter(e => e.component === 'source_bridge');
+  if (source.length < 2) return events;
+  const imported = source.reduce((sum, e) => sum + Number(e?.details?.imported || 0), 0);
+  const summary = {...source[0], message:`Source bridge advanced ${source.length} times · ${fmt.format(imported)} market states imported · latest ${source[0].message || ''}`};
+  let used=false;
+  return events.flatMap(e => e.component !== 'source_bridge' ? [e] : used ? [] : (used=true,[summary]));
 }
 
 function renderOverview() {
-  const d = state.dashboard;
-  const runtime = d.runtime || {};
-  $('#workerStatus').textContent = runtime.last_error ? 'SAFE FAILURE' : (runtime.autonomous_enabled ? 'AUTONOMOUS' : 'PAUSED');
-  $('#lastAction').textContent = runtime.last_action || 'Waiting for first cycle';
-  $('#lastError').textContent = runtime.last_error || '';
+  const d=state.dashboard, r=d.runtime || {};
+  const runtimeHealthy = !r.last_error && Boolean(r.last_successful_cycle_at || r.cycle_count === 0);
+  setHealth(runtimeHealthy, `${r.research_timeframe || '—'} from ${r.source_candle_interval || '—'} candles · ${r.source_credential_mode || 'credential unknown'}`);
+  $('#workerStatus').textContent = r.last_error ? 'SAFE FAILURE' : r.autonomous_enabled ? 'AUTONOMOUS' : 'PAUSED';
+  $('#workerStatus').className = `status-pill ${r.last_error ? 'error' : ''}`;
+  $('#lastAction').textContent = r.last_action || 'Waiting for first cycle';
+  $('#lastCycle').textContent = r.last_successful_cycle_at ? `Last successful cycle ${dateText(r.last_successful_cycle_at)}` : 'No successful cycle reported yet';
+  $('#lastError').textContent = r.last_error || '';
   $('#metrics').innerHTML = [
-    metric('Source snapshots', fmt.format(d.source_snapshots || 0), 'read-only EVE copy'),
-    metric('Strategies tested', fmt.format(d.candidates_tested || 0), `${fmt.format(d.candidates_queued || 0)} queued`),
-    metric('Surviving ideas', fmt.format((d.candidates_promising||0)+(d.candidates_validated||0)+(d.candidates_elite||0)), 'promising or stronger'),
-    metric('Active lineages', fmt.format(d.lineages_active || 0), 'mutating champions'),
-    metric('Mutations promoted', fmt.format(d.mutations_promoted || 0), `${fmt.format(d.mutations_tested || 0)} tested`),
-    metric('MT5 packages', fmt.format(d.mt5_packages || 0), 'downloadable .mq5'),
-  ].join('');
-  const top = d.top_lineage;
-  $('#topLineage').className = `feature-card${top ? '' : ' empty'}`;
-  $('#topLineage').innerHTML = top ? `<strong>${esc(top.name)}</strong><p>Generation ${esc(top.generation)} · fitness ${num(top.champion_fitness)} · ${esc(top.champion_result_status || 'active')}</p><small>${esc(top.last_result || '')}</small>` : 'No lineage has survived yet.';
-  const events = compactEvents(Array.isArray(d.recent_events) ? d.recent_events : []);
-  $('#events').innerHTML = events.length ? events.map(event => `<div class="event ${esc(event.level)}"><time>${new Date(event.created_at).toLocaleString('en-GB')}</time><span>${esc(event.component)}</span><b>${esc(event.message)}</b></div>`).join('') : '<div class="empty-state">No activity recorded yet. The first source bridge cycle will appear here.</div>';
-  $('#dataRows').textContent = `${fmt.format(d.source_snapshots || 0)} snapshots`;
-  $('#dataRange').textContent = d.source_from ? `${new Date(d.source_from).toLocaleDateString('en-GB')} → ${new Date(d.source_to).toLocaleDateString('en-GB')}` : 'Waiting for source sync.';
+    ['Market states',fmt.format(d.snapshots||0),'local research copy'],
+    ['Experiments',fmt.format(d.candidates_tested||0),'selection tests complete'],
+    ['Active lineages',fmt.format(d.lineages_active||0),'still breeding'],
+    ['Finalised',fmt.format(d.lineages_finalised||0),'holdout opened once'],
+    ['Promoted mutations',fmt.format(d.mutations_promoted||0),'selection winners'],
+    ['MT5 packages',fmt.format(d.mt5_packages||0),'final survivors']
+  ].map(x=>metric(...x)).join('');
+  $('#integrityStrip').innerHTML = [
+    ['Selection data only','Development and validation breed strategies',true],
+    ['Final holdout sealed','Opened once for a mature finalist',true],
+    ['M1 execution replay',r.m1_replay_enabled ? 'Mandatory before freezing' : 'Disabled — no strategy can freeze',Boolean(r.m1_replay_enabled)],
+    ['Production writes',r.production_write_surface === 'none' ? 'None' : r.production_write_surface,r.production_write_surface === 'none']
+  ].map(([title,body,ok])=>`<div class="integrity ${ok?'ok':'bad'}"><span>${ok?'✓':'!'}</span><div><b>${esc(title)}</b><small>${esc(body)}</small></div></div>`).join('');
+  const line=d.top_lineage;
+  $('#topLineage').className=`feature-card ${line?'':'empty'}`;
+  $('#topLineage').innerHTML=line ? `<div class="card-top"><div><h3>${esc(line.name)}</h3><p>${esc(line.family)} · ${esc(line.symbol||'XAU/USD')} ${esc(line.timeframe||'M5')}</p></div>${badge(line.status)}</div>${stats([['Generation',line.generation??0],['Fitness',num(line.champion_fitness)],['Selection',line.champion_result_status||'—'],['Final',line.final_result_status||'not opened']])}<p>${esc(line.last_result||'')}</p>` : 'No lineage has survived selection yet.';
+  const events=compactEvents(d.recent_events||[]);
+  $('#events').innerHTML=events.length ? events.map(e=>`<div class="event ${esc(e.level)}"><time>${esc(dateText(e.created_at).replace(' UTC',''))}</time><span>${esc(e.component)}</span><b>${esc(e.message)}</b></div>`).join('') : '<div class="empty-state">No research activity recorded yet.</div>';
 }
 
-function ruleTags(rules={}) {
-  const s=rules.schedule||{}, e=rules.environment||{}, r=rules.risk||{}, entry=rules.entry||{};
-  const tags = [
-    rules.family === 'composed_signal' ? 'independent recipe' : rules.family?.replaceAll('_',' '),
-    s.everyday_target ? 'everyday target' : `${(s.weekdays||[]).length} weekdays`,
-    (s.sessions||[]).join(', ') || ((s.hours_utc||[]).length===24 ? 'all day' : `${(s.hours_utc||[]).join(',')} UTC`),
-    ...((entry.conditions||[]).map(conditionLabel)),
-    `direction ${String(entry.direction_rule||'').replaceAll('_',' ')}`,
-    `trend12 ${e.trend_12||'any'}`, `stop ${r.stop_atr} ATR`, `target ${r.target_atr} ATR`, `hold ${r.max_hold_minutes}m`
-  ].filter(Boolean);
-  return tags.map(tag=>`<span>${esc(tag)}</span>`).join('');
-}
-
-function candidateCard(item) {
-  return `<article class="card">
-    <div class="card-top"><div><p class="eyebrow">${esc((item.family||'strategy').replaceAll('_',' '))}</p><h3>${esc(item.name)}</h3></div><span class="badge ${esc(item.result_status||item.status)}">${esc((item.result_status||item.status||'queued').toUpperCase())}</span></div>
-    <p>${esc(item.hypothesis || item.evidence?.summary || '')}</p>
-    <div class="stat-row"><div class="stat"><span>Locked PF</span><strong>${num(item.profit_factor)}</strong></div><div class="stat"><span>Expectancy</span><strong>${num(item.expectancy_r,3)}R</strong></div><div class="stat"><span>Trades</span><strong>${fmt.format(item.trades_total||0)}</strong></div><div class="stat"><span>Stability</span><strong>${num(item.stability_score,0)}%</strong></div></div>
-    <div class="rules">${ruleTags(item.rules)}</div>
-  </article>`;
+function rulesSummary(item) {
+  const rules=item.rules||{}, schedule=rules.schedule||{}, risk=rules.risk||{}, market=rules.market||{};
+  const hours=(schedule.hours_utc||[]).length ? `${Math.min(...schedule.hours_utc)}:00–${Math.max(...schedule.hours_utc)+1}:00 UTC` : (schedule.sessions||[]).join(', ') || 'all sessions';
+  return [market.symbol||item.symbol||'XAU/USD', market.timeframe||item.timeframe||'M5', rules.family||item.family, hours, `SL ${risk.stop_atr??'—'} ATR`, `TP ${risk.target_atr??'—'} ATR`];
 }
 
 function renderCandidates() {
-  const items = state.candidates.filter(item => state.candidateFilter==='all' || item.result_status===state.candidateFilter);
-  $('#candidateList').innerHTML = items.length ? items.map(candidateCard).join('') : '<div class="empty-state">No strategies in this filter yet.</div>';
+  const filter=state.candidateFilter;
+  const items=state.candidates.filter(x => filter==='all' || x.result_status===filter || x.status===filter);
+  $('#candidateList').innerHTML=items.length ? items.map(item=>{
+    const validation=item.metrics?.validation||{};
+    const sealed=Boolean(item.metrics?.holdout?.sealed);
+    return `<article class="card"><div class="card-top"><div><h3>${esc(item.name)}</h3><p>${esc(item.hypothesis||'No hypothesis recorded.')}</p></div>${badge(item.result_status||item.status)}</div>${stats([['Market',`${item.symbol||'XAU/USD'} ${item.timeframe||'M5'}`],['Validation PF',num(validation.profit_factor)],['Expectancy',`${num(validation.expectancy_r,3)}R`],['Trades',fmt.format(validation.trades||0)]])}<div class="rules">${rulesSummary(item).map(x=>`<span>${esc(x)}</span>`).join('')}</div><div class="evidence-note ${sealed?'sealed':''}"><b>${sealed?'Holdout sealed':'Final evidence opened'}</b><span>${sealed?'This experiment cannot see confirmation or final holdout while being selected.':'This record contains final-stage evidence.'}</span></div><p class="decision">${esc(item.evidence?.decision?.plain_reason||item.error||'Awaiting research.')}</p><small class="dataset">${esc(item.dataset_version||'dataset not assigned')}</small></article>`;
+  }).join('') : '<div class="empty-state">No experiments match this filter.</div>';
 }
 
-function renderLineages() {
-  $('#lineageList').innerHTML = state.lineages.length ? state.lineages.map(item => `<article class="card"><div class="card-top"><div><p class="eyebrow">${esc((item.family||'family').replaceAll('_',' '))}</p><h3>${esc(item.name)}</h3></div><span class="badge ${esc(item.champion_result_status||'promising')}">GEN ${esc(item.generation)}</span></div><p>${esc(item.last_result || 'Active lineage')}</p><div class="stat-row"><div class="stat"><span>Champion fitness</span><strong>${num(item.champion_fitness)}</strong></div><div class="stat"><span>Status</span><strong>${esc(item.champion_result_status||'active')}</strong></div><div class="stat"><span>Generation</span><strong>${esc(item.generation)}</strong></div><div class="stat"><span>State</span><strong>${esc(item.status)}</strong></div></div><div class="rules">${ruleTags(item.champion_rules)}</div></article>`).join('') : '<div class="empty-state">Lineages appear after independent candidates survive their first chronological test.</div>';
+function pretty(value) { return typeof value === 'string' ? value : JSON.stringify(value); }
+function renderEvolution() {
+  $('#lineageList').innerHTML=state.lineages.length ? state.lineages.map(x=>`<article class="card lineage"><div class="card-top"><div><h3>${esc(x.name)}</h3><p>${esc(x.family)} · ${esc(x.symbol||'XAU/USD')} ${esc(x.timeframe||'M5')}</p></div>${badge(x.status)}</div>${stats([['Generation',x.generation??0],['Champion fitness',num(x.champion_fitness)],['Selection',x.champion_result_status||'—'],['Final',x.final_result_status||'not opened']])}<div class="timeline"><span class="done">Seed</span><span class="done">Selection</span><span class="${Number(x.generation)>0?'done':''}">Mutation</span><span class="${x.holdout_opened_at?'done':''}">Final holdout</span><span class="${x.final_result_status==='validated'||x.final_result_status==='elite'?'done':''}">Survivor</span></div><p>${esc(x.last_result||'No lineage decision recorded.')}</p><small class="dataset">${esc(x.dataset_version||'dataset not assigned')}</small></article>`).join('') : '<div class="empty-state">No active or retired lineage exists yet.</div>';
+  $('#mutationList').innerHTML=state.mutations.length ? state.mutations.map(x=>{
+    const change=x.changes?.[x.mutation_gene]||{};
+    return `<article class="card mutation-card"><div class="card-top"><div><h3>${esc(x.name)}</h3><p>${esc(x.selection_reason||'Awaiting selection decision.')}</p></div>${badge(x.promoted?'promoted':x.result_status||x.status)}</div><div class="change-grid"><div><span>Parent</span><strong>${esc(pretty(change.from))}</strong></div><div class="change-arrow">→</div><div><span>Child</span><strong>${esc(pretty(change.to))}</strong></div></div>${stats([['Gene',x.mutation_gene||'—'],['Fitness Δ',num(x.fitness_delta)],['Expectancy Δ',`${num(x.validation_expectancy_delta,3)}R`],['Holdout used',x.holdout_used_for_selection?'YES':'NO']])}</article>`;
+  }).join('') : '<div class="empty-state">No mutation decisions recorded yet.</div>';
 }
 
-function renderMutations() {
-  const completed = state.mutations.filter(item => item.status === 'complete').slice(0, 30);
-  $('#mutationList').innerHTML = completed.length ? completed.map(item => {
-    const gene = item.mutation_gene || 'rule';
-    const change = item.changes?.[gene] || {};
-    const result = item.promoted ? 'promoted' : (item.result_status || 'rejected');
-    return `<article class="card mutation-card">
-      <div class="card-top"><div><p class="eyebrow">GEN ${esc(item.generation)} · ${esc(gene.replaceAll('_',' '))}</p><h3>${esc(item.name)}</h3></div><span class="badge ${item.promoted ? 'elite' : 'rejected'}">${item.promoted ? 'PROMOTED' : 'REJECTED'}</span></div>
-      <div class="change-grid"><div><span>Before</span><strong>${esc(valueText(change.from))}</strong></div><div class="change-arrow">→</div><div><span>After</span><strong>${esc(valueText(change.to))}</strong></div></div>
-      <p>${esc(item.selection_reason || 'Mutation completed.')}</p>
-      <div class="stat-row"><div class="stat"><span>Fitness Δ</span><strong>${num(item.fitness_delta)}</strong></div><div class="stat"><span>Validation expectancy Δ</span><strong>${num(item.validation_expectancy_delta,3)}R</strong></div><div class="stat"><span>Validation PF Δ</span><strong>${num(item.validation_pf_delta,2)}</strong></div><div class="stat"><span>Result</span><strong>${esc(result)}</strong></div></div>
-    </article>`;
-  }).join('') : '<div class="empty-state">Mutation comparisons will appear here after the first lineage survives and creates children.</div>';
+function passportRows(passport={}) {
+  const use=(passport.use_when||[]).map(x=>`<li>${esc(x)}</li>`).join('') || '<li>Not specified</li>';
+  const avoid=(passport.avoid_when||[]).map(x=>`<li>${esc(x)}</li>`).join('') || '<li>Not specified</li>';
+  return `<div class="passport"><div class="passport-head"><span>TRADING PASSPORT</span><strong>${esc(passport.market||'—')} · ${esc(passport.primary_timeframe||'—')}</strong></div><div class="passport-grid"><div><span>Attach to</span><b>${esc(passport.attach_chart||`${passport.market||'—'} ${passport.primary_timeframe||'—'}`)}</b></div><div><span>Operating window</span><b>${esc(passport.operating_window||'Not specified')}</b></div><div><span>Best session</span><b>${esc(passport.best_session||'Not established')}</b></div><div><span>Confidence</span><b>${esc(passport.confidence_score??'—')}/100</b></div></div><div class="use-grid"><div><h4>Use when</h4><ul>${use}</ul></div><div><h4>Avoid when</h4><ul>${avoid}</ul></div></div></div>`;
+}
+
+async function downloadFile(path, fallbackName) {
+  let token=await adminToken();
+  if (!token) return;
+  let response=await fetch(`/api${path}`,{headers:{'X-Admin-Token':token}});
+  if (response.status===401) {
+    sessionStorage.removeItem('eveDiscoveryAdminToken');
+    token=await adminToken(true);
+    if (!token) return;
+    response=await fetch(`/api${path}`,{headers:{'X-Admin-Token':token}});
+  }
+  if (!response.ok) { alert(`Download failed: ${response.status} ${await response.text()}`); return; }
+  const blob=await response.blob();
+  const disposition=response.headers.get('content-disposition')||'';
+  const match=disposition.match(/filename="?([^";]+)"?/i);
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=match?.[1]||fallbackName;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);
 }
 
 function renderPackages() {
-  $('#packageList').innerHTML = state.packages.length ? state.packages.map(item => `<article class="card"><div class="card-top"><div><p class="eyebrow">${esc((item.family||'strategy').replaceAll('_',' '))}</p><h3>${esc(item.strategy_name)}</h3></div><span class="badge elite">READY FOR MT5</span></div><p>Frozen version ${esc(item.version)} · SHA-256 ${esc((item.sha256||'').slice(0,16))}… · ${fmt.format(item.size_bytes || 0)+' bytes'}</p><div class="download-row"><a class="download" href="/api/packages/${encodeURIComponent(item.id)}/download">Download package</a><a class="download secondary" href="/api/packages/${encodeURIComponent(item.id)}/mq5">Download .mq5</a></div></article>`).join('') : '<div class="empty-state">No strategy has passed every promotion gate yet. That is normal—the lab is designed to reject most ideas.</div>';
+  $('#packageList').innerHTML=state.packages.length ? state.packages.map(x=>{
+    const p=x.trading_passport||{}, manifest=x.manifest||{};
+    return `<article class="card package-card"><div class="card-top"><div><h3>${esc(x.strategy_name)}</h3><p>${esc(x.family)} · package v${esc(x.version||'2.0')}</p></div>${badge(manifest.compile_status||'compile required')}</div>${passportRows(p)}${stats([['M1 replay',manifest.m1_replay_status||'—'],['Dataset',manifest.dataset_version||'—'],['Size',`${num((x.size_bytes||0)/1024,1)} KB`],['Trading default',manifest.trading_default||'OFF']])}<div class="download-row"><button class="download" data-download="/packages/${esc(x.id)}/download" data-name="${esc(x.file_name||'EVE-MT5.zip')}">Download full package</button><button class="download secondary" data-download="/packages/${esc(x.id)}/mq5" data-name="${esc(manifest.mq5_file||'EVE_Discovery.mq5')}">MQ5 source</button></div></article>`;
+  }).join('') : '<div class="empty-state">No strategy has passed final holdout and M1 replay yet.</div>';
+  $$('[data-download]').forEach(btn=>btn.addEventListener('click',()=>downloadFile(btn.dataset.download,btn.dataset.name)));
+}
+
+function check(label, value, detail) { return `<div class="check ${value?'ok':'bad'}"><span>${value?'✓':'!'}</span><div><b>${esc(label)}</b><small>${esc(detail)}</small></div></div>`; }
+function renderDataHealth() {
+  const h=state.dataHealth, r=h.runtime||{};
+  $('#snapshotDefinition').textContent=h.snapshot_definition||'One completed research market state, not a raw tick.';
+  $('#dataHealthSummary').innerHTML=`<div><span class="status-orb ${h.status==='healthy'?'ok':h.status==='attention'?'warn':'bad'}"></span><div><p class="eyebrow">DATA STATUS</p><h3>${esc(String(h.status||'unknown').toUpperCase())}</h3><p>${fmt.format(h.snapshots||0)} market states from ${dateText(h.snapshot_from)} to ${dateText(h.snapshot_to)}</p></div></div><small>Latest immutable version: ${esc(h.latest_dataset_version||'created when the next test completes')}</small>`;
+  $('#dataMetrics').innerHTML=[
+    ['Market states',fmt.format(h.snapshots||0),'completed research anchors'],
+    ['Outcomes complete',`${num(h.outcome_completion_percent,2)}%`,`${fmt.format(h.completed_outcomes||0)} rows`],
+    ['Markets',fmt.format(h.symbol_count||0),(h.symbols||[]).join(', ')||'none'],
+    ['Snapshot intervals',fmt.format(h.snapshot_interval_count||0),(h.snapshot_intervals||[]).join(', ')||'none'],
+    ['Source intervals',fmt.format(h.source_interval_count||0),(h.source_intervals||[]).join(', ')||'none'],
+    ['Feature versions',fmt.format(h.feature_version_count||0),(h.feature_versions||[]).join(', ')||'none']
+  ].map(x=>metric(...x)).join('');
+  const datasets=h.datasets||[];
+  $('#datasetList').innerHTML=datasets.length ? datasets.map(d=>`<div class="dataset"><div><b>${esc(d.symbol)} · ${esc(d.snapshot_interval)}</b><span>Source ${esc(d.source_interval)}</span></div><strong>${fmt.format(d.rows||0)}</strong><small>${dateText(d.from_time)} → ${dateText(d.to_time)}</small></div>`).join('') : '<div class="empty-state">No source data imported yet.</div>';
+  const readOnly=r.source_credential_mode==='read_only_key';
+  $('#boundaryStatus').innerHTML=`${check('Application write surface',r.production_write_surface==='none','SourceRepository exposes GET operations only.')}${check('Database credential',readOnly,readOnly?'Dedicated read-only source key is active.':'Legacy service-role key is still configured. Add SOURCE_SUPABASE_READ_ONLY_KEY to enforce the boundary at database level.')}${check('Separate research database',true,'Candidates, mutations, failures and packages stay in Discovery Supabase.')}`;
+  $('#qualityChecks').innerHTML=[
+    check('Forward outcomes complete',Number(h.incomplete_outcomes||0)===0,`${fmt.format(h.incomplete_outcomes||0)} incomplete rows`),
+    check('ATR features usable',Number(h.invalid_atr_rows||0)===0,`${fmt.format(h.invalid_atr_rows||0)} invalid ATR rows`),
+    check('Feature versions recorded',Number(h.missing_feature_version_rows||0)===0,`${fmt.format(h.missing_feature_version_rows||0)} missing feature versions`),
+    check('Research timeframe matches evidence',Boolean(r.research_timeframe&&r.source_candle_interval),`${r.research_timeframe||'—'} strategies use ${r.source_candle_interval||'—'} source candles; Railway refuses mismatched settings.`),
+    check('M1 execution replay enabled',Boolean(r.m1_replay_enabled),r.m1_replay_enabled?'Required before a bot can freeze.':'No package can be promoted while disabled.'),
+    check('Private research API',Boolean(r.research_api_requires_admin),r.research_api_requires_admin?'ADMIN_TOKEN required for research data.':'Research results are publicly readable.'),
+    check('Protected downloads',Boolean(r.package_downloads_require_admin),r.package_downloads_require_admin?'ADMIN_TOKEN required.':'Package downloads are public.')
+  ].join('');
 }
 
 async function refresh() {
   try {
-    const [dashboard, candidates, lineages, mutations, packages] = await Promise.all([
-      api('/dashboard'), api('/candidates?limit=150'), api('/lineages?limit=100'), api('/mutations?limit=100'), api('/packages?limit=100')
+    const [dashboard,candidates,lineages,mutations,packages,dataHealth]=await Promise.all([
+      api('/dashboard'),api('/candidates?limit=100'),api('/lineages?limit=100'),api('/mutations?limit=100'),api('/packages?limit=100'),api('/data-health')
     ]);
-    state.dashboard=dashboard; state.candidates=candidates.items||[]; state.lineages=lineages.items||[]; state.mutations=mutations.items||[]; state.packages=packages.items||[];
-    renderOverview(); renderCandidates(); renderLineages(); renderMutations(); renderPackages(); setHealth(true, dashboard.runtime?.last_action || 'Autonomous worker');
+    state.dashboard=dashboard;state.candidates=candidates.items||[];state.lineages=lineages.items||[];state.mutations=mutations.items||[];state.packages=packages.items||[];state.dataHealth=dataHealth;
+    renderOverview();renderCandidates();renderEvolution();renderPackages();renderDataHealth();
   } catch (error) {
-    console.error(error); setHealth(false, error.message); $('#lastError').textContent=error.message;
+    setHealth(false,'API unavailable');$('#lastError').textContent=error.message;
   }
 }
 
-function switchView(view) {
-  $$('.nav-item').forEach(button=>button.classList.toggle('active',button.dataset.view===view));
-  $$('.view').forEach(section=>section.classList.toggle('active',section.id===`view-${view}`));
-  $('#pageTitle').textContent = $(`.nav-item[data-view="${view}"] b`).textContent;
-  location.hash=view;
-}
-
-$$('.nav-item').forEach(button=>button.addEventListener('click',()=>switchView(button.dataset.view)));
-$$('[data-refresh]').forEach(button=>button.addEventListener('click',refresh));
-$$('[data-candidate-filter]').forEach(button=>button.addEventListener('click',()=>{ state.candidateFilter=button.dataset.candidateFilter; $$('[data-candidate-filter]').forEach(x=>x.classList.toggle('active',x===button)); renderCandidates(); }));
-setInterval(()=>$('#clock').textContent=new Date().toLocaleTimeString('en-GB',{timeZone:'UTC'}),1000);
-setInterval(refresh,30000);
-switchView(location.hash.replace('#','') || 'overview');
-refresh();
+$$('.nav-item').forEach(btn=>btn.addEventListener('click',()=>{
+  $$('.nav-item').forEach(x=>x.classList.toggle('active',x===btn));
+  $$('.view').forEach(x=>x.classList.toggle('active',x.id===`view-${btn.dataset.view}`));
+  $('#pageTitle').textContent=btn.querySelector('b').textContent;
+}));
+$$('[data-candidate-filter]').forEach(btn=>btn.addEventListener('click',()=>{
+  $$('[data-candidate-filter]').forEach(x=>x.classList.toggle('active',x===btn));state.candidateFilter=btn.dataset.candidateFilter;renderCandidates();
+}));
+$$('[data-refresh]').forEach(btn=>btn.addEventListener('click',refresh));
+setInterval(()=>{$('#clock').textContent=new Date().toLocaleTimeString('en-GB',{timeZone:'UTC',hour12:false});},1000);
+refresh();setInterval(refresh,45000);

@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any
 
-GENERATOR_VERSION = "eve-discovery-mt5-generator-v2"
+GENERATOR_VERSION = "eve-discovery-mt5-generator-v3"
 
 
 def canonical(value: Any) -> str:
@@ -146,12 +146,13 @@ MQL_TEMPLATE = r'''//+----------------------------------------------------------
 //| Strategy: __STRATEGY_NAME__
 //| Strategy code: __STRATEGY_CODE__
 //| Rules SHA-256: __RULE_HASH__
+//| Intended chart: __MARKET_LABEL__ __TIMEFRAME_LABEL__
 //| STATUS: METAEDITOR COMPILE + DEMO FORWARD TEST ONLY
 //+------------------------------------------------------------------+
 #property copyright "EVE Evolution Discovery Lab"
-#property version   "1.00"
+#property version   "2.00"
 #property strict
-#property description "Autonomously composed, evolved and chronologically validated EVE strategy"
+#property description "Research-integrity v2 survivor with Trading Passport"
 
 #include <Trade/Trade.mqh>
 
@@ -168,19 +169,29 @@ input bool   InpAllowLong                  = true;
 input bool   InpAllowShort                 = true;
 input bool   InpShowStatusPanel            = true;
 input bool   InpVerboseLogging             = true;
+input bool   InpFleetTelemetry             = false; // Never controls trading
+input string InpFleetEndpoint              = "https://evealgolab.netlify.app/api/fleet/heartbeat";
+input string InpFleetPackageId             = ""; // Supplied by Algo Lab after import
+input string InpFleetToken                 = ""; // Supplied by Algo Lab after import
+input int    InpFleetHeartbeatSeconds      = 30;
 
 const string EVE_STRATEGY_CODE = "__STRATEGY_CODE__";
 const string EVE_STRATEGY_NAME = "__STRATEGY_NAME__";
 const string EVE_RULE_HASH     = "__RULE_HASH__";
+const string EVE_MARKET_LABEL  = "__MARKET_LABEL__";
+const string EVE_TIMEFRAME_TEXT= "__TIMEFRAME_LABEL__";
 const long   EVE_MAGIC         = __MAGIC__;
 const double EVE_STOP_ATR      = __STOP_ATR__;
 const double EVE_TARGET_ATR    = __TARGET_ATR__;
 const int    EVE_MAX_HOLD_MIN  = __MAX_HOLD__;
 const int    EVE_COOLDOWN_MIN  = __COOLDOWN__;
+const int    EVE_ANCHOR_MIN    = __ANCHOR_MIN__;
+const ENUM_TIMEFRAMES EVE_TIMEFRAME = __TIMEFRAME_ENUM__;
 
 CTrade trade;
-datetime last_m5_bar=0;
+datetime last_research_bar=0;
 datetime last_entry_time=0;
+datetime fleet_last_send=0;
 string current_status="Starting";
 
 struct FeatureSet
@@ -231,7 +242,7 @@ int CalculateAlignmentScore(){ return CompletedCandleDirection(PERIOD_M15)+Compl
 bool CalculateFeatureSet(FeatureSet &f)
 {
    MqlRates bars[];
-   if(!GetRates(PERIOD_M5,1,70,bars)) return false;
+   if(!GetRates(EVE_TIMEFRAME,1,70,bars)) return false;
    double tr=0.0;
    for(int i=0;i<14;i++){
       double prev=bars[i+1].close;
@@ -287,7 +298,7 @@ int StrategyDirection(const FeatureSet &f)
 }
 
 bool HasOurPosition(){ for(int i=PositionsTotal()-1;i>=0;i--){ ulong ticket=PositionGetTicket(i); if(ticket==0||!PositionSelectByTicket(ticket)) continue; if(PositionGetString(POSITION_SYMBOL)==_Symbol&&PositionGetInteger(POSITION_MAGIC)==EVE_MAGIC) return true;} return false; }
-void SetStatus(const string value){ current_status=value; if(InpShowStatusPanel) Comment("EVE DISCOVERY BOT\n",EVE_STRATEGY_NAME,"\n",value,"\nTrading: ",InpEnableTrading?"ENABLED":"OFF (safety)","\nHash: ",StringSubstr(EVE_RULE_HASH,0,12)); }
+void SetStatus(const string value){ current_status=value; if(InpShowStatusPanel) Comment("EVE DISCOVERY BOT\n",EVE_STRATEGY_NAME,"\n",EVE_MARKET_LABEL," ",EVE_TIMEFRAME_TEXT,"\n",value,"\nTrading: ",InpEnableTrading?"ENABLED":"OFF (safety)","\nHash: ",StringSubstr(EVE_RULE_HASH,0,12)); }
 void ManageMaximumHold(){ for(int i=PositionsTotal()-1;i>=0;i--){ ulong ticket=PositionGetTicket(i);if(ticket==0||!PositionSelectByTicket(ticket)) continue; if(PositionGetString(POSITION_SYMBOL)!=_Symbol||PositionGetInteger(POSITION_MAGIC)!=EVE_MAGIC) continue; datetime opened=(datetime)PositionGetInteger(POSITION_TIME); if(TimeCurrent()-opened>=EVE_MAX_HOLD_MIN*60){ trade.PositionClose(ticket,InpSlippagePoints);SetStatus("Time exit completed"); } } }
 
 double ClosedProfitToday(){ MqlDateTime now;TimeToStruct(TimeCurrent(),now);now.hour=0;now.min=0;now.sec=0;datetime start=StructToTime(now);if(!HistorySelect(start,TimeCurrent())) return 0.0;double result=0.0;for(int i=0;i<HistoryDealsTotal();i++){ulong t=HistoryDealGetTicket(i);if(t==0) continue;if(HistoryDealGetString(t,DEAL_SYMBOL)!=_Symbol) continue;if((long)HistoryDealGetInteger(t,DEAL_MAGIC)!=EVE_MAGIC) continue;long entry=(long)HistoryDealGetInteger(t,DEAL_ENTRY);if(entry!=DEAL_ENTRY_OUT&&entry!=DEAL_ENTRY_OUT_BY) continue;result+=HistoryDealGetDouble(t,DEAL_PROFIT)+HistoryDealGetDouble(t,DEAL_SWAP)+HistoryDealGetDouble(t,DEAL_COMMISSION);}return result;}
@@ -298,6 +309,45 @@ bool CooldownPassed(){ string key="EVE_DISCOVERY_LAST_"+IntegerToString((int)EVE
 void SaveEntryTime(){ last_entry_time=TimeCurrent();string key="EVE_DISCOVERY_LAST_"+IntegerToString((int)EVE_MAGIC)+"_"+_Symbol;GlobalVariableSet(key,(double)last_entry_time); }
 bool SpreadPassed(){ MqlTick tick;if(!SymbolInfoTick(_Symbol,tick)) return false;return InpMaxSpreadPoints<=0||(tick.ask-tick.bid)/_Point<=InpMaxSpreadPoints; }
 
+string JsonEscape(string value){ StringReplace(value,"\\","\\\\");StringReplace(value,"\"","\\\"");StringReplace(value,"\r"," ");StringReplace(value,"\n"," ");return value; }
+string JsonBool(const bool value){ return value?"true":"false"; }
+string FleetAccountType(){ long mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);if(mode==ACCOUNT_TRADE_MODE_DEMO) return "demo";if(mode==ACCOUNT_TRADE_MODE_CONTEST) return "contest";if(mode==ACCOUNT_TRADE_MODE_REAL) return "real";return "unknown"; }
+int FleetOpenPositions(){ int count=0;for(int i=PositionsTotal()-1;i>=0;i--){ulong ticket=PositionGetTicket(i);if(ticket==0||!PositionSelectByTicket(ticket)) continue;if(PositionGetString(POSITION_SYMBOL)==_Symbol&&PositionGetInteger(POSITION_MAGIC)==EVE_MAGIC) count++;}return count; }
+double FleetOpenProfit(){ double result=0.0;for(int i=PositionsTotal()-1;i>=0;i--){ulong ticket=PositionGetTicket(i);if(ticket==0||!PositionSelectByTicket(ticket)) continue;if(PositionGetString(POSITION_SYMBOL)!=_Symbol||PositionGetInteger(POSITION_MAGIC)!=EVE_MAGIC) continue;result+=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);}return result; }
+void SendFleetHeartbeat(const bool force=false)
+{
+   if(!InpFleetTelemetry || MQLInfoInteger(MQL_TESTER)) return;
+   if(StringLen(InpFleetEndpoint)<10 || StringLen(InpFleetPackageId)<4 || StringLen(InpFleetToken)<8) return;
+   int interval=InpFleetHeartbeatSeconds<10?10:InpFleetHeartbeatSeconds;
+   if(!force&&fleet_last_send>0&&TimeCurrent()-fleet_last_send<interval) return;
+   string payload="{";
+   payload+="\"package_id\":\""+JsonEscape(InpFleetPackageId)+"\",";
+   payload+="\"strategy_code\":\""+JsonEscape(EVE_STRATEGY_CODE)+"\",";
+   payload+="\"rule_hash\":\""+JsonEscape(EVE_RULE_HASH)+"\",";
+   payload+="\"account_login\":"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+",";
+   payload+="\"account_type\":\""+FleetAccountType()+"\",";
+   payload+="\"broker_server\":\""+JsonEscape(AccountInfoString(ACCOUNT_SERVER))+"\",";
+   payload+="\"broker_company\":\""+JsonEscape(AccountInfoString(ACCOUNT_COMPANY))+"\",";
+   payload+="\"symbol\":\""+JsonEscape(_Symbol)+"\",";
+   payload+="\"timeframe\":\""+JsonEscape(EnumToString((ENUM_TIMEFRAMES)_Period))+"\",";
+   payload+="\"chart_id\":\""+IntegerToString(ChartID())+"\",";
+   payload+="\"trading_enabled\":"+JsonBool(InpEnableTrading)+",";
+   payload+="\"algo_trading_enabled\":"+JsonBool((bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)&&(bool)MQLInfoInteger(MQL_TRADE_ALLOWED))+",";
+   payload+="\"state\":\""+JsonEscape(current_status)+"\",";
+   payload+="\"state_detail\":\""+JsonEscape(current_status)+"\",";
+   payload+="\"open_positions\":"+IntegerToString(FleetOpenPositions())+",";
+   payload+="\"open_profit\":"+DoubleToString(FleetOpenProfit(),2)+",";
+   payload+="\"closed_profit_today\":"+DoubleToString(ClosedProfitToday(),2)+",";
+   payload+="\"terminal_time\":"+IntegerToString((long)TimeCurrent())+",";
+   payload+="\"last_trade_time\":0,";
+   payload+="\"client_version\":\"discovery-2.0\"";
+   payload+="}";
+   char data[];int data_size=StringToCharArray(payload,data,0,WHOLE_ARRAY,CP_UTF8);if(data_size>0) ArrayResize(data,data_size-1);
+   char response[];string response_headers;string headers="Content-Type: application/json\r\nX-EVE-FLEET-TOKEN: "+InpFleetToken+"\r\n";
+   ResetLastError();int code=WebRequest("POST",InpFleetEndpoint,headers,1000,data,response,response_headers);fleet_last_send=TimeCurrent();
+   if(force&&(code<200||code>=300)&&InpVerboseLogging) Print(EVE_STRATEGY_CODE,": fleet heartbeat unavailable HTTP=",code," MQL=",GetLastError(),". Trading continues normally.");
+}
+
 void EvaluateNewSignal()
 {
    if(!InpEnableTrading){ SetStatus("Waiting: internal trading switch is OFF"); return; }
@@ -305,9 +355,9 @@ void EvaluateNewSignal()
    if(!CooldownPassed()){ SetStatus("Waiting: cooldown"); return; }
    if(!SpreadPassed()){ SetStatus("Waiting: spread too wide"); return; }
    if(!DailyLossGuardPassed()){ SetStatus("Stopped: daily loss guard"); return; }
-   datetime source=iTime(_Symbol,PERIOD_M5,1);if(source<=0) return;
+   datetime source=iTime(_Symbol,EVE_TIMEFRAME,1);if(source<=0){SetStatus("Waiting for chart data");return;}
    MqlDateTime dt;TimeToStruct(ServerToUtc(source),dt);
-   if(dt.min%15!=0){ SetStatus("Waiting for 15-minute research anchor"); return; }
+   if(EVE_ANCHOR_MIN>1&&dt.min%EVE_ANCHOR_MIN!=0){ SetStatus("Waiting for research anchor"); return; }
    FeatureSet f;if(!CalculateFeatureSet(f)){ SetStatus("Waiting for enough market data"); return; }
    if(!SourceConditionMatched(f)){ SetStatus("Waiting: frozen market conditions not matched"); return; }
    int direction=StrategyDirection(f);
@@ -324,28 +374,48 @@ void EvaluateNewSignal()
    trade.SetExpertMagicNumber(EVE_MAGIC);trade.SetDeviationInPoints(InpSlippagePoints);trade.SetTypeFillingBySymbol(_Symbol);
    string comment=EVE_STRATEGY_CODE+" "+StringSubstr(EVE_RULE_HASH,0,8);
    bool opened=direction>0?trade.Buy(volume,_Symbol,0.0,sl,tp,comment):trade.Sell(volume,_Symbol,0.0,sl,tp,comment);
-   if(opened){ SaveEntryTime();SetStatus(direction>0?"BUY opened":"SELL opened");Print(EVE_STRATEGY_CODE,": trade opened. hash=",EVE_RULE_HASH); }
-   else { SetStatus("Order rejected: "+trade.ResultRetcodeDescription());Print(EVE_STRATEGY_CODE,": order failed ",trade.ResultRetcode()," ",trade.ResultRetcodeDescription()); }
+   if(opened){ SaveEntryTime();SetStatus(direction>0?"BUY opened":"SELL opened");SendFleetHeartbeat(true);Print(EVE_STRATEGY_CODE,": trade opened. hash=",EVE_RULE_HASH); }
+   else { SetStatus("Order rejected: "+trade.ResultRetcodeDescription());SendFleetHeartbeat(true);Print(EVE_STRATEGY_CODE,": order failed ",trade.ResultRetcode()," ",trade.ResultRetcodeDescription()); }
 }
 
-int OnInit(){ trade.SetExpertMagicNumber(EVE_MAGIC);last_m5_bar=iTime(_Symbol,PERIOD_M5,0);SetStatus("Loaded and waiting");Print(EVE_STRATEGY_CODE,": loaded. Frozen hash=",EVE_RULE_HASH,". Trading defaults OFF.");return INIT_SUCCEEDED; }
-void OnDeinit(const int reason){ Comment(""); }
-void OnTick(){ ManageMaximumHold();datetime current=iTime(_Symbol,PERIOD_M5,0);if(current<=0||current==last_m5_bar) return;last_m5_bar=current;EvaluateNewSignal(); }
+int OnInit(){ trade.SetExpertMagicNumber(EVE_MAGIC);last_research_bar=iTime(_Symbol,EVE_TIMEFRAME,0);int seconds=InpFleetHeartbeatSeconds<10?10:InpFleetHeartbeatSeconds;EventSetTimer(seconds);SetStatus("Loaded and waiting");SendFleetHeartbeat(true);Print(EVE_STRATEGY_CODE,": loaded. Frozen hash=",EVE_RULE_HASH,". Trading defaults OFF.");return INIT_SUCCEEDED; }
+void OnDeinit(const int reason){ SetStatus("detached");SendFleetHeartbeat(true);EventKillTimer();Comment(""); }
+void OnTimer(){ SendFleetHeartbeat(false); }
+void OnTick(){ ManageMaximumHold();datetime current=iTime(_Symbol,EVE_TIMEFRAME,0);if(current<=0||current==last_research_bar) return;last_research_bar=current;EvaluateNewSignal(); }
 '''
+
+
+def timeframe_enum(value: Any) -> str:
+    normalized = str(value or "M5").upper().replace("PERIOD_", "")
+    allowed = {"M1", "M2", "M3", "M4", "M5", "M6", "M10", "M12", "M15", "M20", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12", "D1", "W1", "MN1"}
+    return f"PERIOD_{normalized}" if normalized in allowed else "PERIOD_M5"
+
+
+def anchor_minutes(value: Any) -> int:
+    match = re.search(r"(\d+)", str(value or "15"))
+    return max(1, int(match.group(1))) if match else 15
 
 
 def generate_mq5_source(frozen: dict[str, Any]) -> tuple[str, str]:
     rules = dict(frozen.get("rules") or {})
     risk = dict(rules.get("risk") or {})
+    market = dict(rules.get("market") or {})
     rule_hash = str(frozen.get("rule_hash") or sha256_text(canonical(rules)))
     code = str(frozen.get("strategy_code") or f"EVE-DISC-{rule_hash[:12].upper()}")
     name = str(frozen.get("name") or code)
-    file_name = safe_name(f"{code}_v1_0") + ".mq5"
+    timeframe = str(frozen.get("timeframe") or market.get("timeframe") or "M5").upper()
+    symbol = str(frozen.get("symbol") or market.get("symbol") or "XAU/USD")
+    snapshot_interval = market.get("snapshot_interval") or "15min"
+    file_name = safe_name(f"{code}_{timeframe}_v2_0") + ".mq5"
     replacements = {
         "__FILE_NAME__": file_name,
         "__STRATEGY_NAME__": mql_string(name),
         "__STRATEGY_CODE__": mql_string(code),
         "__RULE_HASH__": rule_hash,
+        "__MARKET_LABEL__": mql_string(symbol),
+        "__TIMEFRAME_LABEL__": mql_string(timeframe),
+        "__TIMEFRAME_ENUM__": timeframe_enum(timeframe),
+        "__ANCHOR_MIN__": str(anchor_minutes(snapshot_interval)),
         "__MAGIC__": str(_magic(rule_hash)),
         "__RISK_PERCENT__": f"{float(risk.get('risk_percent') or 0.25):.4f}",
         "__DAILY_LOSS__": f"{float(risk.get('max_daily_loss_percent') or 1.0):.4f}",
@@ -365,86 +435,116 @@ def generate_mq5_source(frozen: dict[str, Any]) -> tuple[str, str]:
 
 def static_validate(source: str, rule_hash: str) -> list[str]:
     required = [
-        "#property strict", "int OnInit()", "void OnTick()", "InpEnableTrading              = false",
-        "SourceConditionMatched", "StrategyDirection", "DailyLossGuardPassed", "ManageMaximumHold",
-        "trade.Buy", "trade.Sell", rule_hash,
+        "#property strict", "int OnInit()", "void OnTick()", "void OnTimer()",
+        "InpEnableTrading              = false", "SourceConditionMatched", "StrategyDirection",
+        "DailyLossGuardPassed", "ManageMaximumHold", "EVE_TIMEFRAME", "MathAbs(bars[0].close-bars[0].open)",
+        "InpFleetTelemetry", "WebRequest", "trade.Buy", "trade.Sell", rule_hash,
     ]
     issues = [f"Missing token: {token}" for token in required if token not in source]
     if source.count("{") != source.count("}"):
         issues.append("Unbalanced braces")
-    if "__" in source:
+    if re.search(r"__[A-Z0-9_]+__", source):
         issues.append("Unresolved template token")
     return issues
 
 
 def build_readme(frozen: dict[str, Any], file_name: str) -> str:
+    from app.services.passport import passport_text
+
+    passport = dict(frozen.get("trading_passport") or {})
     rules = dict(frozen.get("rules") or {})
-    metrics = dict(frozen.get("metrics") or {})
-    locked = dict(metrics.get("locked") or {})
-    recent = dict(metrics.get("recent") or {})
-    return f"""EVE EVOLUTION DISCOVERY LAB — MT5 PACKAGE
+    return f"""EVE EVOLUTION DISCOVERY LAB — MT5 RESEARCH SURVIVOR
 
-Strategy: {frozen.get('name')}
-Strategy code: {frozen.get('strategy_code')}
-Family: {frozen.get('family')}
-Rules SHA-256: {frozen.get('rule_hash')}
-Generator: {GENERATOR_VERSION}
+THIS IS NOT LIVE-TRADING APPROVAL.
+MetaEditor compilation and MT5 demo forward testing are mandatory.
+The generated EA starts with InpEnableTrading=false.
 
-DEMO ONLY
-This EA is generated from research-grade historical outcome replay. Compile it in MetaEditor and run it on an MT5 demo account before considering any further use. Trading is OFF by default.
-
-VALIDATION SUMMARY
-Locked profit factor: {locked.get('profit_factor')}
-Locked expectancy: {locked.get('expectancy_r')}R
-Locked trades: {locked.get('trades')}
-Recent profit factor: {recent.get('profit_factor')}
-Walk-forward stability: {frozen.get('stability_score')}%
+{passport_text(passport)}
 
 INSTALL
-1. Copy {file_name} into MT5 -> File -> Open Data Folder -> MQL5 -> Experts.
-2. Open MetaEditor and compile the file.
-3. Attach it to XAUUSD M5 on a DEMO account.
-4. Review Inputs. Set InpEnableTrading=true only for demo forward testing.
-5. Keep Algo Trading enabled and review Experts/Journal messages.
+1. Read TRADING_PASSPORT.txt before using the EA.
+2. Copy {file_name} into MT5 -> File -> Open Data Folder -> MQL5 -> Experts.
+3. Open MetaEditor and compile the file. Discovery Lab does not claim automatic compilation.
+4. Attach it to the exact market and timeframe stated in the Trading Passport.
+5. Use a DEMO account and review all Inputs.
+6. Set InpEnableTrading=true only after the chart and operating window are correct.
+7. Keep Algo Trading enabled and review Experts/Journal messages.
+
+OPTIONAL EVE ALGO LAB TELEMETRY
+- The source contains a best-effort heartbeat wrapper compatible with Algo Lab.
+- Telemetry is OFF by default and never controls entries, exits or risk.
+- After importing the package into Algo Lab, enter the supplied package ID and fleet token in MT5 Inputs.
+- Add https://evealgolab.netlify.app to MT5 Tools -> Options -> Expert Advisors -> Allow WebRequest.
+- A telemetry or internet failure never blocks, changes or closes a trade.
+
+RESEARCH INTEGRITY
+- Development and selection validation were used to breed the strategy.
+- Confirmation and final holdout were opened once after the rules were fixed.
+- M1 execution replay and elevated trading-cost stress were required before freezing.
+- Dataset version: {frozen.get('dataset_version') or 'not recorded'}
+- Research integrity: {frozen.get('research_integrity_version') or 'not recorded'}
 
 FROZEN RULES
 {json.dumps(rules, indent=2, sort_keys=True)}
 
 LIMITATIONS
-- The discovery backtest uses EVE's completed market-state outcomes, not broker tick execution.
-- Same-horizon stop/target ambiguity is resolved conservatively as a stop.
-- The .mq5 still requires MetaEditor compilation and demo forward testing.
+- Historical results do not guarantee future profitability.
+- Broker prices, spreads, slippage, latency and candle boundaries can differ.
+- Demo forward testing is mandatory before any later decision about live use.
 """
 
 
 def package_payload(frozen: dict[str, Any]) -> dict[str, Any]:
+    from app.services.passport import build_trading_passport, passport_text
+
+    frozen = dict(frozen)
+    passport = dict(frozen.get("trading_passport") or build_trading_passport(frozen))
+    frozen["trading_passport"] = passport
     file_name, source = generate_mq5_source(frozen)
-    rule_hash = str(frozen.get("rule_hash"))
+    rule_hash = str(frozen.get("rule_hash") or sha256_text(canonical(frozen.get("rules") or {})))
     issues = static_validate(source, rule_hash)
     if issues:
         raise ValueError("Generated MQL5 failed static validation: " + "; ".join(issues))
 
     manifest = {
-        "package_format": "eve-evolution-discovery-mt5-v2",
+        "package_format": "eve-evolution-discovery-mt5-v3",
         "generator_version": GENERATOR_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "strategy_code": frozen.get("strategy_code"),
         "strategy_name": frozen.get("name"),
         "family": frozen.get("family"),
+        "symbol": frozen.get("symbol") or passport.get("market"),
+        "timeframe": frozen.get("timeframe") or passport.get("primary_timeframe"),
         "rule_hash": rule_hash,
+        "dataset_version": frozen.get("dataset_version"),
+        "research_integrity_version": frozen.get("research_integrity_version"),
+        "m1_replay_status": (frozen.get("m1_replay") or {}).get("status"),
         "mq5_file": file_name,
+        "compile_status": "required",
         "trading_default": "OFF",
-        "intended_use": "MetaEditor compile and MT5 demo forward test",
+        "telemetry": {
+            "algo_lab_compatible": True,
+            "default": "OFF",
+            "configuration_required": ["InpFleetPackageId", "InpFleetToken", "MT5 WebRequest allow-list"],
+            "never_controls_trading": True,
+        },
+        "intended_use": "MetaEditor compile and MT5 demo forward test within Trading Passport conditions",
+    }
+    validation_report = {
+        "metrics": frozen.get("metrics") or {},
+        "anchored_validation": frozen.get("walk_forward") or {},
+        "robustness": frozen.get("robustness") or {},
+        "monte_carlo": frozen.get("monte_carlo") or {},
+        "execution_costs": frozen.get("execution_costs") or {},
+        "m1_replay": frozen.get("m1_replay") or {},
+        "evidence": frozen.get("evidence") or {},
     }
     files: dict[str, bytes] = {
         file_name: source.encode(),
         "FROZEN_RULES.json": json.dumps(frozen.get("rules") or {}, indent=2, sort_keys=True).encode(),
-        "VALIDATION_REPORT.json": json.dumps({
-            "metrics": frozen.get("metrics") or {},
-            "walk_forward": frozen.get("walk_forward") or {},
-            "robustness": frozen.get("robustness") or {},
-            "evidence": frozen.get("evidence") or {},
-        }, indent=2, sort_keys=True).encode(),
+        "VALIDATION_REPORT.json": json.dumps(validation_report, indent=2, sort_keys=True).encode(),
+        "TRADING_PASSPORT.json": json.dumps(passport, indent=2, sort_keys=True).encode(),
+        "TRADING_PASSPORT.txt": passport_text(passport).encode(),
         "MANIFEST.json": json.dumps(manifest, indent=2, sort_keys=True).encode(),
         "README.txt": build_readme(frozen, file_name).encode(),
     }
@@ -462,13 +562,15 @@ def package_payload(frozen: dict[str, Any]) -> dict[str, Any]:
         "package_key": package_key,
         "strategy_name": frozen.get("name"),
         "family": frozen.get("family"),
-        "version": "1.0",
-        "file_name": f"{frozen.get('strategy_code')}-MT5-v1.0.zip",
+        "version": "2.0",
+        "file_name": f"{frozen.get('strategy_code')}-{manifest['timeframe']}-MT5-v2.0.zip",
         "mq5_file_name": file_name,
         "mq5_source": source,
         "package_base64": base64.b64encode(archive_bytes).decode(),
         "sha256": package_sha,
         "manifest": manifest,
+        "trading_passport": passport,
+        "compile_status": "required",
         "size_bytes": len(archive_bytes),
         "status": "ready",
     }

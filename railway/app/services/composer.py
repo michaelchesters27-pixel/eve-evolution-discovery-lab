@@ -6,7 +6,7 @@ import random
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-ENGINE_VERSION = "eve-discovery-composer-v2"
+ENGINE_VERSION = "eve-discovery-composer-v3"
 
 LEGACY_FAMILIES = (
     "momentum_continuation",
@@ -211,6 +211,7 @@ def describe_condition(condition: dict[str, Any]) -> str:
 
 def describe_strategy(rules: dict[str, Any]) -> str:
     schedule = dict(rules.get("schedule") or {})
+    market = dict(rules.get("market") or {})
     entry = dict(rules.get("entry") or {})
     conditions = [describe_condition(item) for item in entry.get("conditions") or []]
     timing = "every weekday" if schedule.get("everyday_target") else f"{len(schedule.get('weekdays') or [])} selected weekdays"
@@ -220,9 +221,9 @@ def describe_strategy(rules: dict[str, Any]) -> str:
         timing += f" at UTC hours {', '.join(str(v) for v in schedule.get('hours_utc') or [])}"
     if rules.get("family") == "composed_signal":
         recipe = "; ".join(conditions)
-        return f"Independently composed signal recipe for {timing}: {recipe}. Direction uses {str(entry.get('direction_rule')).replace('_', ' ')}."
+        return f"{market.get('symbol', 'XAU/USD')} {market.get('timeframe', 'M5')} independent signal recipe for {timing}: {recipe}. Direction uses {str(entry.get('direction_rule')).replace('_', ' ')}."
     return (
-        f"Benchmark archetype for {timing}: {str(rules.get('family')).replace('_', ' ')} with "
+        f"{market.get('symbol', 'XAU/USD')} {market.get('timeframe', 'M5')} benchmark archetype for {timing}: {str(rules.get('family')).replace('_', ' ')} with "
         f"{str(entry.get('direction_rule')).replace('_', ' ')} direction."
     )
 
@@ -232,6 +233,10 @@ def create_strategy(
     generation: int,
     family_weights: dict[str, float] | None = None,
     everyday_bias: float = 0.70,
+    symbol: str = "XAU/USD",
+    timeframe: str = "M5",
+    snapshot_interval: str = "15min",
+    source_interval: str = "5min",
 ) -> dict[str, Any]:
     weights = dict(family_weights or {})
     # Most new candidates are independent recipes; legacy archetypes remain as useful benchmarks.
@@ -245,6 +250,14 @@ def create_strategy(
     entry = _composed_entry(rng) if family == "composed_signal" else family_defaults(family)
     rules = {
         "engine_version": ENGINE_VERSION,
+        "market": {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "execution_timeframe": timeframe,
+            "snapshot_interval": snapshot_interval,
+            "source_interval": source_interval,
+            "research_source": "completed_market_state_snapshots",
+        },
         "family": family,
         "schedule": _schedule(rng, everyday_bias),
         "environment": _environment(rng, family),
@@ -272,6 +285,9 @@ def create_strategy(
     return {
         "candidate_key": f"candidate-{digest[:28]}",
         "generation": generation,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "research_stage": "selection",
         "family": family,
         "name": name,
         "hypothesis": describe_strategy(rules),
@@ -296,13 +312,17 @@ def compose_batch(
     seed: int,
     memory: list[dict[str, Any]] | None = None,
     everyday_bias: float = 0.70,
+    symbol: str = "XAU/USD",
+    timeframe: str = "M5",
+    snapshot_interval: str = "15min",
+    source_interval: str = "5min",
 ) -> list[dict[str, Any]]:
     rng = random.Random(seed)
     weights = memory_weights(memory or [])
     unique: dict[str, dict[str, Any]] = {}
     attempts = 0
     while len(unique) < count and attempts < count * 30:
-        candidate = create_strategy(rng, generation, weights, everyday_bias)
+        candidate = create_strategy(rng, generation, weights, everyday_bias, symbol, timeframe, snapshot_interval, source_interval)
         unique[candidate["candidate_key"]] = candidate
         attempts += 1
     return list(unique.values())
@@ -477,7 +497,7 @@ def mutate_rules(
         rules["family"] = new
         rules["entry"] = _composed_entry(rng) if new == "composed_signal" else family_defaults(new)
 
-    rules["engine_version"] = "eve-discovery-evolution-v2"
+    rules["engine_version"] = "eve-discovery-evolution-v3"
     return Mutation(gene=gene, old=old, new=new, rules=rules)
 
 
@@ -507,6 +527,9 @@ def mutation_batch(
             "mutation_key": key,
             "lineage_id": lineage.get("id"),
             "generation": generation,
+            "symbol": (mutation.rules.get("market") or {}).get("symbol", "XAU/USD"),
+            "timeframe": (mutation.rules.get("market") or {}).get("timeframe", "M5"),
+            "research_stage": "selection",
             "family": mutation.rules.get("family") or family,
             "name": f"{lineage.get('name') or family} · generation {generation} · {mutation.gene}",
             "mutation_gene": mutation.gene,

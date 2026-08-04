@@ -4,16 +4,23 @@ import asyncio
 import hashlib
 import json
 import logging
-import random
 import socket
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.settings import Settings
-from app.services.backtest import compare_child_to_parent, evaluate_strategy, number
+from app.services.backtest import (
+    RESEARCH_INTEGRITY_VERSION,
+    compare_child_to_parent,
+    evaluate_strategy,
+    number,
+    selection_ready_for_final,
+)
 from app.services.composer import compose_batch, mutation_batch
+from app.services.m1_replay import validate_with_m1
 from app.services.mt5_generator import package_payload
+from app.services.passport import build_trading_passport
 from app.services.repository import DiscoveryRepository, SourceRepository
 
 logger = logging.getLogger(__name__)
@@ -39,13 +46,20 @@ def mutation_change_text(mutation: dict[str, Any]) -> str:
 
 
 def result_gate_reason(result: dict[str, Any]) -> str:
-    evidence = dict(result.get("evidence") or {})
-    decision = dict(evidence.get("decision") or {})
+    decision = dict((result.get("evidence") or {}).get("decision") or {})
     failed = [str(item).replace("_", " ") for item in decision.get("failed_gates") or []]
-    return ", ".join(failed[:3]) if failed else "all promotion gates passed"
+    return ", ".join(failed[:4]) if failed else "all gates passed"
 
 
 class DiscoveryOrchestrator:
+    """Autonomous worker for the isolated Discovery Lab.
+
+    The selection stage may use development and validation only. Confirmation and
+    final holdout are opened once, after a promoted lineage has reached the minimum
+    generation. That lineage is then retired whether the finalist passes or fails,
+    preventing repeated exposure to the holdout.
+    """
+
     def __init__(self, settings: Settings, source: SourceRepository, repo: DiscoveryRepository) -> None:
         self.settings = settings
         self.source = source
@@ -57,6 +71,8 @@ class DiscoveryOrchestrator:
         self._cache_at: datetime | None = None
         self.last_action = "Starting"
         self.last_error: str | None = None
+        self.last_cycle_at: str | None = None
+        self.last_successful_cycle_at: str | None = None
         self.cycle_count = 0
 
     async def stop(self) -> None:
@@ -67,14 +83,24 @@ class DiscoveryOrchestrator:
         self._wake.set()
 
     async def rows(self, force: bool = False) -> list[dict[str, Any]]:
-        fresh_until = (self._cache_at or datetime.min.replace(tzinfo=timezone.utc)) + timedelta(minutes=self.settings.row_cache_minutes)
+        fresh_until = (self._cache_at or datetime.min.replace(tzinfo=timezone.utc)) + timedelta(
+            minutes=self.settings.row_cache_minutes
+        )
         if force or not self._rows_cache or utc_now() >= fresh_until:
-            self._rows_cache = await self.repo.all_snapshots()
+            self._rows_cache = await self.repo.all_snapshots(
+                self.settings.source_symbol,
+                self.settings.source_snapshot_interval,
+                self.settings.source_candle_interval,
+            )
             self._cache_at = utc_now()
         return self._rows_cache
 
     async def sync_source(self) -> int:
-        local = await self.repo.latest_local_snapshot_time()
+        local = await self.repo.latest_local_snapshot_time(
+            self.settings.source_symbol,
+            self.settings.source_snapshot_interval,
+            self.settings.source_candle_interval,
+        )
         source_latest = await self.source.latest_snapshot_time()
         if source_latest is None or (local is not None and local >= source_latest):
             return 0
@@ -82,21 +108,22 @@ class DiscoveryOrchestrator:
         if not fetched:
             return 0
         for start in range(0, len(fetched), 500):
-            await self.repo.upsert_snapshots(fetched[start:start + 500])
+            await self.repo.upsert_snapshots(fetched[start : start + 500])
         self._cache_at = None
         await self.repo.event(
             "success",
             "source_bridge",
-            f"Source memory advanced through {str(fetched[-1].get('candle_time') or '')[:10]} (+{len(fetched):,} snapshots).",
+            f"Research memory advanced through {str(fetched[-1].get('candle_time') or '')[:19]} (+{len(fetched):,} market states).",
             {
                 "imported": len(fetched),
                 "from": local,
                 "to": fetched[-1].get("candle_time"),
                 "source_latest": source_latest,
                 "caught_up": len(fetched) < self.settings.bridge_batch_limit,
+                "source_credential_mode": self.source.credential_mode,
             },
         )
-        self.last_action = f"Synced {len(fetched):,} source snapshots"
+        self.last_action = f"Synced {len(fetched):,} source market states"
         return len(fetched)
 
     async def ensure_candidate_queue(self) -> int:
@@ -112,13 +139,25 @@ class DiscoveryOrchestrator:
             seed,
             memory,
             everyday_bias=0.75,
+            symbol=self.settings.source_symbol,
+            timeframe=self.settings.research_timeframe,
+            snapshot_interval=self.settings.source_snapshot_interval,
+            source_interval=self.settings.source_candle_interval,
         )
         await self.repo.seed_candidates(batch)
         await self.repo.event(
-            "info", "composer", f"Composed {len(batch)} structurally valid strategy candidates.",
-            {"generation": generation, "everyday_target": sum(1 for item in batch if item["rules"]["schedule"]["everyday_target"])},
+            "info",
+            "composer",
+            f"Composed {len(batch)} {self.settings.source_symbol} {self.settings.research_timeframe} research candidates.",
+            {
+                "generation": generation,
+                "timeframe": self.settings.research_timeframe,
+                "snapshot_interval": self.settings.source_snapshot_interval,
+                "source_candle_interval": self.settings.source_candle_interval,
+                "confirmation_holdout": "sealed",
+            },
         )
-        self.last_action = f"Composed {len(batch)} new candidates"
+        self.last_action = f"Composed {len(batch)} new selection candidates"
         return len(batch)
 
     async def ensure_mutation_queue(self) -> int:
@@ -135,52 +174,64 @@ class DiscoveryOrchestrator:
             if len(created) >= needed:
                 break
             generation = int(number(lineage.get("generation"))) + 1
-            created.extend(mutation_batch(
-                lineage,
-                count=min(4, needed - len(created)),
-                generation=generation,
-                seed=(int(utc_now().timestamp()) // 60) + index + generation * 997,
-                memory=memory,
-            ))
+            created.extend(
+                mutation_batch(
+                    lineage,
+                    count=min(4, needed - len(created)),
+                    generation=generation,
+                    seed=(int(utc_now().timestamp()) // 60) + index + generation * 997,
+                    memory=memory,
+                )
+            )
         await self.repo.seed_mutations(created)
         if created:
             await self.repo.event(
-                "info", "evolution", f"Queued {len(created)} controlled child mutations.",
+                "info",
+                "evolution",
+                f"Queued {len(created)} one-gene child mutations; confirmation and holdout remain sealed.",
                 {"lineages_considered": len(lineages)},
             )
-            self.last_action = f"Queued {len(created)} mutations"
+            self.last_action = f"Queued {len(created)} controlled mutations"
         return len(created)
 
     def ready_to_freeze(self, result: dict[str, Any]) -> bool:
         metrics = dict(result.get("metrics") or {})
-        validation = dict(metrics.get("validation") or {})
-        locked = dict(metrics.get("locked") or {})
-        recent = dict(metrics.get("recent") or {})
+        confirmation = dict(metrics.get("confirmation") or {})
+        holdout = dict(metrics.get("holdout") or {})
         robustness = dict(result.get("robustness") or {})
+        final_robustness = dict(robustness.get("final") or robustness)
+        m1 = dict(result.get("m1_replay") or {})
         return (
-            result.get("result_status") in {"validated", "elite"}
-            and number(validation.get("trades")) >= self.settings.minimum_validation_trades
-            and number(locked.get("trades")) >= self.settings.minimum_locked_trades
-            and number(validation.get("profit_factor")) >= 1.10
-            and number(locked.get("profit_factor")) >= 1.18
-            and number(locked.get("expectancy_r")) >= 0.04
-            and number(recent.get("profit_factor")) >= 1.00
-            and number(recent.get("expectancy_r")) >= -0.01
-            and number(robustness.get("pass_rate")) >= 0.50
-            and number(result.get("stability_score")) >= 60.0
+            result.get("research_stage") == "final"
+            and result.get("result_status") in {"validated", "elite"}
+            and bool(m1.get("passed"))
+            and number(confirmation.get("trades")) >= self.settings.minimum_locked_trades
+            and number(holdout.get("trades")) >= max(20, self.settings.minimum_locked_trades // 3)
+            and number(confirmation.get("profit_factor")) >= 1.15
+            and number(confirmation.get("expectancy_r")) >= 0.04
+            and number(holdout.get("profit_factor")) >= 1.00
+            and number(holdout.get("expectancy_r")) >= -0.01
+            and number(final_robustness.get("pass_rate")) >= 0.50
         )
 
-    async def maybe_freeze(self, source_kind: str, source: dict[str, Any], result: dict[str, Any]) -> None:
+    async def maybe_freeze(self, source_kind: str, source: dict[str, Any], result: dict[str, Any]) -> bool:
         if not self.ready_to_freeze(result):
-            return
+            return False
         rules = dict(source.get("rules") or {})
+        market = dict(rules.get("market") or {})
         rule_hash = hashlib.sha256(canonical(rules).encode()).hexdigest()
         code = f"EVE-DISC-{rule_hash[:12].upper()}"
-        frozen = {
+        frozen: dict[str, Any] = {
             "frozen_key": f"frozen-{rule_hash[:28]}",
             "strategy_code": code,
             "name": source.get("name") or code,
             "family": source.get("family") or rules.get("family"),
+            "symbol": source.get("symbol") or market.get("symbol") or self.settings.source_symbol,
+            "timeframe": source.get("timeframe") or market.get("timeframe") or self.settings.research_timeframe,
+            "research_stage": "final",
+            "result_status": result.get("result_status"),
+            "research_integrity_version": result.get("research_integrity_version") or RESEARCH_INTEGRITY_VERSION,
+            "dataset_version": result.get("dataset_version"),
             "source_kind": source_kind,
             "source_id": source.get("id"),
             "rule_hash": rule_hash,
@@ -188,47 +239,61 @@ class DiscoveryOrchestrator:
             "metrics": result.get("metrics") or {},
             "walk_forward": result.get("walk_forward") or {},
             "robustness": result.get("robustness") or {},
+            "monte_carlo": result.get("monte_carlo") or {},
+            "execution_costs": result.get("execution_costs") or {},
+            "m1_replay": result.get("m1_replay") or {},
             "evidence": result.get("evidence") or {},
             "stability_score": result.get("stability_score") or 0,
             "fitness_score": result.get("fitness_score") or 0,
+            "compile_status": "required",
             "package_status": "pending",
             "status": "frozen",
         }
+        frozen["trading_passport"] = build_trading_passport(frozen)
         await self.repo.freeze_strategy(frozen)
         await self.repo.event(
-            "success", "promotion", f"Frozen {frozen['name']} for MT5 source generation.",
-            {"strategy_code": code, "source_kind": source_kind, "rule_hash": rule_hash},
+            "success",
+            "promotion",
+            f"Frozen {frozen['name']} after final holdout and M1 replay. MT5 source package is now permitted.",
+            {
+                "strategy_code": code,
+                "source_kind": source_kind,
+                "rule_hash": rule_hash,
+                "dataset_version": result.get("dataset_version"),
+                "timeframe": frozen["timeframe"],
+            },
         )
-        self.last_action = f"Frozen {code}"
+        self.last_action = f"Frozen final survivor {code}"
+        return True
 
     async def process_candidate(self, candidate: dict[str, Any], rows: list[dict[str, Any]]) -> None:
         try:
             result = evaluate_strategy(
-                candidate, rows,
+                candidate,
+                rows,
                 min_validation_trades=self.settings.minimum_validation_trades,
                 min_locked_trades=self.settings.minimum_locked_trades,
+                stage="selection",
             )
             await self.repo.finish_candidate(str(candidate["id"]), result)
             completed = {**candidate, **result}
-            if result["result_status"] in {"promising", "validated", "elite"}:
+            if result["result_status"] == "promising":
                 await self.repo.ensure_lineage_for_candidate(completed)
-            await self.maybe_freeze("seed", candidate, result)
-            locked = dict(result.get("metrics", {}).get("locked") or {})
-            reason = result_gate_reason(result)
+            validation = dict(result.get("metrics", {}).get("validation") or {})
             await self.repo.event(
-                "success" if result["result_status"] != "rejected" else "info",
+                "success" if result["result_status"] == "promising" else "info",
                 "candidate_test",
                 (
-                    f"{candidate.get('name')} → {result['result_status']}. "
-                    f"Locked PF {number(locked.get('profit_factor')):.2f}, "
-                    f"expectancy {number(locked.get('expectancy_r')):+.3f}R, "
-                    f"{int(number(locked.get('trades')))} trades. Decision: {reason}."
+                    f"{candidate.get('name')} → {result['result_status']} in selection. "
+                    f"Validation PF {number(validation.get('profit_factor')):.2f}, expectancy "
+                    f"{number(validation.get('expectancy_r')):+.3f}R, {int(number(validation.get('trades')))} trades. "
+                    "Confirmation and final holdout were not opened."
                 ),
                 {
                     "fitness": result.get("fitness_score"),
-                    "summary": result.get("evidence", {}).get("summary"),
                     "decision": result.get("evidence", {}).get("decision"),
                     "candidate_key": candidate.get("candidate_key"),
+                    "dataset_version": result.get("dataset_version"),
                 },
             )
             self.last_action = f"Candidate {result['result_status']}: {candidate.get('name')}"
@@ -239,9 +304,11 @@ class DiscoveryOrchestrator:
     async def process_mutation(self, mutation: dict[str, Any], rows: list[dict[str, Any]]) -> None:
         try:
             child_result = evaluate_strategy(
-                mutation, rows,
+                mutation,
+                rows,
                 min_validation_trades=self.settings.minimum_validation_trades,
                 min_locked_trades=self.settings.minimum_locked_trades,
+                stage="selection",
             )
             selection = compare_child_to_parent(
                 child_result,
@@ -256,17 +323,61 @@ class DiscoveryOrchestrator:
                 bool(selection.get("promoted")),
                 number(selection.get("fitness_delta")),
             )
-            if selection.get("promoted"):
-                await self.maybe_freeze("mutation", mutation, selection)
+
+            finalist = (
+                bool(selection.get("promoted"))
+                and int(number(mutation.get("generation"))) >= self.settings.minimum_generations_before_final
+                and selection_ready_for_final(selection)
+            )
+            frozen = False
+            final_result: dict[str, Any] | None = None
+            if finalist:
+                final_result = evaluate_strategy(
+                    mutation,
+                    rows,
+                    min_validation_trades=self.settings.minimum_validation_trades,
+                    min_locked_trades=self.settings.minimum_locked_trades,
+                    stage="final",
+                )
+                if self.settings.m1_replay_enabled:
+                    final_result["m1_replay"] = await validate_with_m1(self.source, mutation, rows)
+                else:
+                    final_result["m1_replay"] = {
+                        "status": "failed",
+                        "passed": False,
+                        "failed_gates": ["m1_replay_disabled"],
+                        "message": "M1 replay is mandatory for promotion and is disabled.",
+                    }
+                final_result.setdefault("evidence", {})["m1_replay"] = final_result["m1_replay"]
+                frozen = await self.maybe_freeze("mutation", mutation, final_result)
+                await self.repo.finalize_lineage(str(mutation["lineage_id"]), final_result, frozen=frozen)
+                await self.repo.event(
+                    "success" if frozen else "warning",
+                    "final_research",
+                    (
+                        f"Final research opened once for {mutation.get('name')}. "
+                        f"Result: {final_result.get('result_status')}; M1 replay: "
+                        f"{final_result.get('m1_replay', {}).get('status')}. "
+                        f"Lineage retired {'after freezing the survivor' if frozen else 'without a survivor'}."
+                    ),
+                    {
+                        "lineage_id": mutation.get("lineage_id"),
+                        "dataset_version": final_result.get("dataset_version"),
+                        "final_failed_gates": final_result.get("evidence", {}).get("decision", {}).get("failed_gates"),
+                        "m1_failed_gates": final_result.get("m1_replay", {}).get("failed_gates"),
+                        "frozen": frozen,
+                    },
+                )
+
             change = mutation_change_text(mutation)
             await self.repo.event(
                 "success" if selection.get("promoted") else "info",
                 "mutation_test",
                 (
                     f"{'PROMOTED' if selection.get('promoted') else 'REJECTED'} mutation — {change}. "
-                    f"Fitness {number(selection.get('fitness_delta')):+.2f}; "
-                    f"validation expectancy {number(selection.get('validation_expectancy_delta')):+.3f}R; "
-                    f"validation PF {number(selection.get('validation_pf_delta')):+.2f}."
+                    f"Selection fitness {number(selection.get('fitness_delta')):+.2f}; validation expectancy "
+                    f"{number(selection.get('validation_expectancy_delta')):+.3f}R. "
+                    + ("Final research was opened once." if finalist else "Confirmation and holdout stayed sealed.")
                 ),
                 {
                     "mutation": mutation.get("name"),
@@ -277,9 +388,15 @@ class DiscoveryOrchestrator:
                     "fitness_delta": selection.get("fitness_delta"),
                     "validation_expectancy_delta": selection.get("validation_expectancy_delta"),
                     "validation_pf_delta": selection.get("validation_pf_delta"),
+                    "holdout_used_for_selection": False,
+                    "finalist": finalist,
+                    "frozen": frozen,
                 },
             )
-            self.last_action = f"Mutation {'promoted' if selection.get('promoted') else 'rejected'}: {mutation.get('name')}"
+            if final_result:
+                self.last_action = f"Finalist {'frozen' if frozen else 'retired'}: {mutation.get('name')}"
+            else:
+                self.last_action = f"Mutation {'promoted' if selection.get('promoted') else 'rejected'}: {mutation.get('name')}"
         except Exception as exc:
             await self.repo.fail_mutation(str(mutation["id"]), str(exc))
             raise
@@ -297,14 +414,22 @@ class DiscoveryOrchestrator:
         if package_id:
             await self.repo.mark_frozen_packaged(str(frozen["id"]), package_id)
         await self.repo.event(
-            "success", "mt5_generator", f"Created downloadable MT5 package {payload['file_name']}.",
-            {"sha256": payload["sha256"], "size_bytes": payload["size_bytes"]},
+            "success",
+            "mt5_generator",
+            f"Created {payload['file_name']} with Trading Passport and Algo Lab telemetry inputs.",
+            {
+                "sha256": payload["sha256"],
+                "size_bytes": payload["size_bytes"],
+                "compile_status": payload.get("compile_status"),
+                "timeframe": payload.get("manifest", {}).get("timeframe"),
+            },
         )
         self.last_action = f"Generated MT5 package {payload['file_name']}"
         return True
 
     async def run_once(self) -> dict[str, Any]:
         self.cycle_count += 1
+        self.last_cycle_at = utc_now().isoformat()
         self.last_error = None
         actions: list[str] = []
         try:
@@ -315,23 +440,27 @@ class DiscoveryOrchestrator:
             rows = await self.rows(force=bool(synced))
             if len(rows) < 5000:
                 actions.append("waiting_for_data")
-                self.last_action = f"Waiting for source bridge ({len(rows):,} snapshots local)"
+                self.last_action = f"Waiting for source bridge ({len(rows):,} research states local)"
+                self.last_successful_cycle_at = utc_now().isoformat()
                 return {"ok": True, "actions": actions, "rows": len(rows)}
 
             if await self.generate_pending_package():
                 actions.append("generated_package")
+                self.last_successful_cycle_at = utc_now().isoformat()
                 return {"ok": True, "actions": actions, "rows": len(rows)}
 
             candidate = await self.repo.claim_candidate(self.worker_id)
             if candidate:
                 await self.process_candidate(candidate, rows)
                 actions.append("tested_candidate")
+                self.last_successful_cycle_at = utc_now().isoformat()
                 return {"ok": True, "actions": actions, "rows": len(rows)}
 
             mutation = await self.repo.claim_mutation(self.worker_id)
             if mutation:
                 await self.process_mutation(mutation, rows)
                 actions.append("tested_mutation")
+                self.last_successful_cycle_at = utc_now().isoformat()
                 return {"ok": True, "actions": actions, "rows": len(rows)}
 
             seeded = await self.ensure_candidate_queue()
@@ -341,8 +470,9 @@ class DiscoveryOrchestrator:
             if mutations:
                 actions.append(f"mutations:{mutations}")
             if not actions:
-                self.last_action = "All queues healthy; waiting for next cycle"
+                self.last_action = "All research queues healthy; waiting for next cycle"
                 actions.append("idle")
+            self.last_successful_cycle_at = utc_now().isoformat()
             return {"ok": True, "actions": actions, "rows": len(rows)}
         except Exception as exc:
             self.last_error = str(exc)
@@ -371,5 +501,17 @@ class DiscoveryOrchestrator:
             "cycle_count": self.cycle_count,
             "last_action": self.last_action,
             "last_error": self.last_error,
+            "last_cycle_at": self.last_cycle_at,
+            "last_successful_cycle_at": self.last_successful_cycle_at,
             "autonomous_enabled": self.settings.autonomous_enabled,
+            "research_integrity_version": RESEARCH_INTEGRITY_VERSION,
+            "source_symbol": self.settings.source_symbol,
+            "research_timeframe": self.settings.research_timeframe,
+            "snapshot_interval": self.settings.source_snapshot_interval,
+            "source_candle_interval": self.settings.source_candle_interval,
+            "m1_replay_enabled": self.settings.m1_replay_enabled,
+            "source_credential_mode": self.source.credential_mode,
+            "production_write_surface": "none",
+            "package_downloads_require_admin": self.settings.package_downloads_require_admin,
+            "research_api_requires_admin": self.settings.research_api_requires_admin,
         }

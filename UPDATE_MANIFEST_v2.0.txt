@@ -1,0 +1,12 @@
+EVE EVOLUTION DISCOVERY LAB v2.0 — COMPLETE REPOSITORY REPLACEMENT
+
+1. Run SUPABASE_UPDATE_v2.0.sql in the separate Discovery Lab Supabase project.
+2. Never run that SQL in EVE Algo Lab production.
+3. Replace the complete Discovery Lab GitHub repository with this release.
+4. Add SOURCE_CANDLE_INTERVAL=5min beside RESEARCH_TIMEFRAME=M5.
+5. Prefer SOURCE_SUPABASE_READ_ONLY_KEY and remove the legacy source service-role key after verification.
+6. Deploy Railway, confirm /health, then redeploy Netlify.
+7. Generated MQ5 source still requires MetaEditor compilation and demo forward testing.
+
+Project 1 EVE Algo Lab files were not modified.
+Ask EVE is deliberately not part of v2.0; this is the research-integrity foundation it will use.

@@ -1,93 +1,131 @@
-# EVE Evolution Discovery Lab — Deployment Guide
+# EVE Evolution Discovery Lab v2.0 — Deployment Guide
 
-This is a **new second project**. Do not replace or edit the existing `eve-algo-lab` repository.
+This ZIP replaces the **Discovery Lab GitHub repository only**. Do not upload these files to EVE Algo Lab.
 
-## 1. Create the new Supabase project
+## Existing Discovery Lab upgrade
 
-1. Create a separate Supabase project.
-2. Open SQL Editor.
-3. Paste the entire contents of `SUPABASE_SETUP.sql`.
+### 1. Update the separate Discovery Supabase database first
+
+1. Open the Supabase project used by EVE Evolution Discovery Lab.
+2. Open **SQL Editor**.
+3. Paste the entire contents of `SUPABASE_UPDATE_v2.0.sql`.
 4. Run it once.
-5. Copy the new project's URL and service-role key.
+5. Confirm the query completes without an error.
 
-## 2. Create a new GitHub repository
+Never run this script in the EVE Algo Lab Supabase project.
 
-Suggested repository name:
+### 2. Replace the Discovery GitHub repository
 
-`eve-evolution-discovery-lab`
+Replace the repository contents with everything inside this folder. Do not copy selected files and do not apply patches.
 
-Upload the contents of the inner `eve-evolution-discovery-lab` folder. This project contains fewer than 100 files and can be uploaded through the GitHub web uploader.
+Commit and push the complete replacement. Railway and Netlify can then redeploy from GitHub.
 
-## 3. Deploy a new Railway service
+### 3. Check Railway variables
 
-Use the repository's `/railway` folder as the Railway root directory.
-
-Add these Railway variables:
+Required variables:
 
 ```text
-SOURCE_SUPABASE_URL=<existing EVE Supabase URL>
-SOURCE_SUPABASE_SERVICE_ROLE_KEY=<existing EVE service-role key>
-DISCOVERY_SUPABASE_URL=<new Discovery Supabase URL>
-DISCOVERY_SUPABASE_SERVICE_ROLE_KEY=<new Discovery service-role key>
-ADMIN_TOKEN=<long random secret>
-CORS_ORIGINS=https://<new-netlify-site>.netlify.app
+SOURCE_SUPABASE_URL=<EVE Algo Lab Supabase URL>
+DISCOVERY_SUPABASE_URL=<Discovery Lab Supabase URL>
+DISCOVERY_SUPABASE_SERVICE_ROLE_KEY=<Discovery Lab service-role key>
+ADMIN_TOKEN=<existing long Discovery admin token>
+CORS_ORIGINS=https://<your-discovery-netlify-site>
+```
+
+Configure one source credential:
+
+```text
+SOURCE_SUPABASE_READ_ONLY_KEY=<preferred restricted source key>
+```
+
+or, during migration only:
+
+```text
+SOURCE_SUPABASE_SERVICE_ROLE_KEY=<legacy EVE Algo Lab service-role key>
+```
+
+When `SOURCE_SUPABASE_READ_ONLY_KEY` is present, Discovery Lab uses it and the old service-role variable can be removed. The runtime and Data Health page show which credential mode is active. The application source adapter itself exposes GET operations only; a truly database-restricted key must be created in the source Supabase project by its administrator.
+
+Recommended operating variables:
+
+```text
 SOURCE_SYMBOL=XAU/USD
 SOURCE_SNAPSHOT_INTERVAL=15min
+SOURCE_CANDLE_INTERVAL=5min
+RESEARCH_TIMEFRAME=M5
 AUTONOMOUS_ENABLED=true
+M1_REPLAY_ENABLED=true
+MINIMUM_GENERATIONS_BEFORE_FINAL=3
+PACKAGE_DOWNLOADS_REQUIRE_ADMIN=true
+RESEARCH_API_REQUIRES_ADMIN=true
 ```
 
-No Twelve Data key is required. The current EVE project continues collecting historical and live market-state data.
+Existing queue, timing and batch variables may remain unchanged.
 
-After deployment, open Railway's public URL and verify:
+### 4. Railway deployment check
 
-`/health`
-
-returns `"ok": true`.
-
-## 4. Deploy a new Netlify site
-
-Connect the new GitHub repository.
-
-The included `netlify.toml` uses:
-
-- Base directory: `frontend`
-- Publish directory: `.`
-- Functions directory: `netlify/functions`
-
-Add this Netlify variable:
+The Railway root directory remains:
 
 ```text
-DISCOVERY_RAILWAY_URL=https://<your-new-railway-service>.up.railway.app
+/railway
 ```
 
-Redeploy Netlify.
+Open:
 
-## 5. What happens after deployment
+```text
+https://<railway-domain>/health
+```
 
-The worker will:
+Confirm:
 
-1. Import the six-year completed snapshot history from existing EVE.
-2. Keep syncing new live snapshots as existing EVE creates them.
-3. Compose candidates.
-4. Test and reject candidates.
-5. Start lineages for survivors.
-6. Mutate those lineages continuously.
-7. Freeze qualifying champions.
-8. Produce downloadable MT5 packages.
+- `ok` is `true`
+- version is `2.0.0`
+- the runtime reports `eve-research-integrity-v2.0`
+- `production_write_surface` is `none`
+- the source credential mode is the one you expect
 
-The first complete source sync may take several worker cycles. Progress is visible under **Data & Setup**.
+### 5. Netlify
 
-## 6. Downloading an MT5 bot
+The existing Netlify site can remain connected to the same GitHub repository. The included `netlify.toml` still uses the `frontend` folder.
 
-When a strategy survives all promotion gates:
+Required Netlify variable:
 
-1. Open **MT5 Packages**.
-2. Click **Download package** or **Download .mq5**.
-3. Copy the `.mq5` into MT5 `MQL5/Experts`.
-4. Compile it in MetaEditor.
-5. Attach it to XAUUSD M5 on a demo account.
-6. Set `InpEnableTrading=true` only for demo testing.
+```text
+DISCOVERY_RAILWAY_URL=https://<railway-domain>
+```
 
-## Existing EVE safety boundary
+Redeploy after Railway is healthy.
 
-Do not run `SUPABASE_SETUP.sql` in the existing EVE Supabase project. The new Discovery Lab must have its own database, Railway service, Netlify site and GitHub repository.
+### 6. First checks in the application
+
+The browser asks for the existing Railway `ADMIN_TOKEN` before showing private research results. The token is stored only for the browser session.
+
+Open **Data Health** and confirm:
+
+- snapshots are present
+- earliest and latest dates are sensible
+- completed outcomes are close to 100%
+- source interval and snapshot interval are correct
+- `SOURCE_CANDLE_INTERVAL=5min` agrees with `RESEARCH_TIMEFRAME=M5`
+- the source boundary does not report an error
+
+On **Overview**, confirm the worker has completed a cycle after deployment.
+
+### 7. Package downloads
+
+Package and `.mq5` downloads ask for the same `ADMIN_TOKEN` stored in Railway. The token is held only in the browser session.
+
+Every generated package still requires:
+
+1. MetaEditor compilation.
+2. MT5 demo-account forward testing.
+3. Attachment to the market and timeframe specified by its Trading Passport.
+4. Trading to be explicitly enabled in EA Inputs.
+
+## Fresh Discovery Lab installation
+
+For a completely new separate Discovery Supabase project, run `SUPABASE_SETUP.sql` instead of the update script. Then follow the Railway and Netlify steps above.
+
+## Rollback
+
+The v2 SQL migration adds columns, indexes, a multi-timeframe-safe snapshot key and replacement dashboard functions; it does not delete historical candidates, mutations, lineages, packages or snapshots. Keep the previous GitHub release available if a code rollback is required.

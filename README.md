@@ -1,42 +1,77 @@
-# EVE Evolution Discovery Lab v1.0
+# EVE Evolution Discovery Lab v2.0
 
-A separate autonomous strategy-discovery platform for XAUUSD. It reads completed market-state snapshots from the existing EVE Algo Lab, stores its own local copy in a new Supabase project, composes genuinely different strategy families, evolves survivors through controlled mutation, performs chronological and walk-forward validation, freezes qualifying rules and creates downloadable MT5 `.mq5` packages.
+EVE Evolution Discovery Lab is the isolated research system connected to EVE Algo Lab.
 
-## It does not modify the existing EVE project
+- **EVE Algo Lab is production.** It remains unchanged.
+- **Discovery Lab is research.** It reads historical evidence, composes strategies, tests them, mutates survivors and generates MT5 source packages.
+- Discovery Lab never places trades and is not a dependency of Algo Lab.
 
-The source adapter in `railway/app/services/repository.py` exposes GET operations only. All candidates, mutations, failures, lineages, frozen strategies and MT5 packages are written to the Discovery Lab's separate Supabase project.
+## What v2.0 changes
 
-The source service-role credential is technically privileged, so it must remain only in Railway. It is never sent to Netlify or the browser. The application code contains no source write method.
+Version 2.0 is the **Research Integrity Foundation**. It corrects the parts of v1.1 that could make a backtest disagree with the generated EA or allow protected evidence to influence evolution.
 
-## Autonomous pipeline
+The research lifecycle is now:
 
-1. **Source bridge** — copies completed `market_learning_snapshots` from the original EVE database.
-2. **Controlled composer** — builds valid strategies from six independent families.
-3. **Chronological test** — separates development, validation, locked and recent data.
-4. **Walk-forward evidence** — measures year-by-year survival.
-5. **Controlled mutation** — changes one gene at a time.
-6. **Mutation memory** — records which genes help each family and biases future experiments.
-7. **Robustness gate** — tests neighbouring stop and target values.
-8. **Freeze** — hashes immutable rules that pass every gate.
-9. **MT5 generator** — produces a ZIP with `.mq5`, frozen rules, validation report, manifest and checksums.
+1. Compose a strategy hypothesis.
+2. Test on development data.
+3. Select and mutate using validation data only.
+4. Promote a mature lineage to one final examination.
+5. Open confirmation and final holdout once.
+6. Replay finalist entries against M1 candles with execution-cost stress.
+7. Retire the lineage after the holdout is opened, whether it passes or fails.
+8. Generate an MT5 package only for a final survivor.
 
-## Strategy families
+## Main safeguards
 
-- Momentum continuation
-- Multi-timeframe alignment continuation
-- Pullback continuation
-- Volatility breakout
-- Mean reversion
-- Candle reversal
+- Absolute candle-body calculations match MT5 for bullish and bearish candles.
+- Historical selection prevents overlapping positions with a conservative maximum-hold lock; finalist M1 replay resolves actual exits bar by bar.
+- Confirmation and holdout evidence are excluded from mutation fitness.
+- Final holdout exposure is recorded and cannot be reused by the same lineage.
+- Every result is tied to a content-addressed dataset fingerprint.
+- Monte Carlo and wider parameter-neighbour stress are recorded.
+- Finalists must pass M1 execution replay before freezing.
+- Source access is implemented through a GET-only repository adapter.
+- A restricted source credential can replace the legacy service-role credential.
+- Generated EAs are trading-disabled by default and include optional Algo Lab-compatible heartbeat inputs.
+- Research results and package downloads require the Discovery admin token by default.
 
-Schedules, sessions, weekdays, months, trends, compression, alignment, direction rules, stops, targets, hold times and cooldowns are composed and evolved independently.
+## Trading Passports
 
-## Safety
+Every generated package contains a Trading Passport stating:
 
-- Generated EAs have `InpEnableTrading=false` by default.
-- Packages are labelled for MetaEditor compilation and demo forward testing only.
-- Most candidates are expected to be rejected.
-- The historical outcome engine is conservative when both stop and target could have been reached.
-- The final `.mq5` must still be compiled in MetaEditor and forward-tested on MT5 demo.
+- market and chart timeframe
+- operating session or hours
+- conditions in which the strategy should be used
+- conditions in which it should be avoided
+- spread limit and risk settings
+- validation, confirmation and holdout evidence
+- M1 replay status
+- compilation and demo-forward-testing requirements
 
-See `DEPLOYMENT_GUIDE.md` for the exact setup order.
+## Current research scope
+
+The deployed historical snapshot source remains **XAU/USD, M5 source candles sampled as 15-minute research states** unless a matching source dataset is made available. Version 2.0 stores source interval separately, prevents different timeframes from overwriting one another, refuses to label M5 evidence as an M1 strategy, and performs M1 execution replay for finalists.
+
+It does **not yet** provide the natural-language **Ask EVE** workspace or genuine M1 hypothesis discovery. Those should be built on this corrected foundation rather than added to the compromised v1.1 validation process.
+
+## Repository layout
+
+- `frontend/` — Netlify operator interface
+- `railway/` — FastAPI API and autonomous research worker
+- `supabase/` — Discovery Lab database migrations
+- `SUPABASE_SETUP.sql` — complete fresh-database setup
+- `SUPABASE_UPDATE_v2.0.sql` — upgrade for an existing v1/v1.1 Discovery database
+- `DEPLOYMENT_GUIDE.md` — exact replacement and deployment order
+- `PROJECT_SPEC.md` — system boundaries and research rules
+- `RELEASE_NOTES_v2.0.md` — full release record
+
+## Validation
+
+The included release was checked with:
+
+- 23 Python backend tests
+- 2 frontend/Netlify structural tests
+- Python bytecode compilation
+- generated-package structure and MQ5 source validation
+
+MetaEditor compilation still must be performed on every generated `.mq5` file before demo forward testing.

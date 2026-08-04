@@ -41,7 +41,7 @@ async def lifespan(_: FastAPI):
                 pass
 
 
-app = FastAPI(title=settings.app_name, version="1.1.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -60,6 +60,24 @@ def require_admin(
         raise HTTPException(status_code=401, detail="Invalid admin token")
 
 
+def require_package_access(
+    authorization: str | None = Header(default=None),
+    x_admin_token: str | None = Header(default=None),
+) -> None:
+    if not settings.package_downloads_require_admin:
+        return
+    require_admin(authorization=authorization, x_admin_token=x_admin_token)
+
+
+def require_research_access(
+    authorization: str | None = Header(default=None),
+    x_admin_token: str | None = Header(default=None),
+) -> None:
+    if not settings.research_api_requires_admin:
+        return
+    require_admin(authorization=authorization, x_admin_token=x_admin_token)
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {
@@ -70,39 +88,52 @@ async def health() -> dict[str, Any]:
     }
 
 
-@app.get("/api/dashboard")
+@app.get("/api/dashboard", dependencies=[Depends(require_research_access)])
 async def dashboard() -> dict[str, Any]:
     stored = await discovery_repo.dashboard()
     return {**stored, "runtime": orchestrator.runtime_status()}
 
 
-@app.get("/api/candidates")
+@app.get("/api/data-health", dependencies=[Depends(require_research_access)])
+async def data_health() -> dict[str, Any]:
+    stored = await discovery_repo.data_health()
+    return {
+        **stored,
+        "runtime": orchestrator.runtime_status(),
+        "snapshot_definition": (
+            "One completed research market state at the configured snapshot interval. "
+            "It contains a completed source candle, derived features and precomputed forward outcomes; it is not one raw tick."
+        ),
+    }
+
+
+@app.get("/api/candidates", dependencies=[Depends(require_research_access)])
 async def candidates(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     return {"items": await discovery_repo.list_candidates(limit)}
 
 
-@app.get("/api/lineages")
+@app.get("/api/lineages", dependencies=[Depends(require_research_access)])
 async def lineages(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     return {"items": await discovery_repo.list_lineages(limit)}
 
 
-@app.get("/api/mutations")
+@app.get("/api/mutations", dependencies=[Depends(require_research_access)])
 async def mutations(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     return {"items": await discovery_repo.list_mutations(limit)}
 
 
-@app.get("/api/frozen")
+@app.get("/api/frozen", dependencies=[Depends(require_research_access)])
 async def frozen(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     return {"items": await discovery_repo.list_frozen(limit)}
 
 
-@app.get("/api/packages")
+@app.get("/api/packages", dependencies=[Depends(require_research_access)])
 async def packages(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     return {"items": await discovery_repo.list_packages(limit)}
 
 
 @app.get("/api/packages/{package_id}/download")
-async def download_package(package_id: str) -> Response:
+async def download_package(package_id: str, _: None = Depends(require_package_access)) -> Response:
     row = await discovery_repo.package(package_id)
     if not row:
         raise HTTPException(status_code=404, detail="Package not found")
@@ -118,7 +149,7 @@ async def download_package(package_id: str) -> Response:
 
 
 @app.get("/api/packages/{package_id}/mq5")
-async def download_mq5(package_id: str) -> Response:
+async def download_mq5(package_id: str, _: None = Depends(require_package_access)) -> Response:
     row = await discovery_repo.package(package_id)
     if not row:
         raise HTTPException(status_code=404, detail="Package not found")

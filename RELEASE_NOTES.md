@@ -1,14 +1,5 @@
-# v1.0 — Complete autonomous discovery pipeline
+# Current Release
 
-- Separate read-only source bridge to existing EVE market memory.
-- Separate Supabase schema for all experiments.
-- Six independent strategy families.
-- Controlled random strategy composer.
-- Six-year chronological and walk-forward evaluation.
-- Parent-child mutation engine.
-- Family-specific mutation memory.
-- Locked-data veto and parameter-neighbour robustness.
-- Immutable frozen strategy hashes.
-- Downloadable MT5 ZIP and `.mq5` source.
-- Netlify operator dashboard.
-- Railway autonomous worker.
+See `RELEASE_NOTES_v2.0.md` for EVE Evolution Discovery Lab v2.0 — Research Integrity Foundation.
+
+Historical notes are retained in `RELEASE_NOTES_v1.1.md`.

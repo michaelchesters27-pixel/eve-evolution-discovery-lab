@@ -1,0 +1,7 @@
+BEFORE REPLACING GITHUB FILES
+
+1. Open the separate EVE Evolution Discovery Lab Supabase project.
+2. Open SQL Editor.
+3. Run the complete file: SUPABASE_UPDATE_v2.0.sql
+4. Do NOT run it in EVE Algo Lab Supabase.
+5. Then replace the Discovery Lab GitHub repository with this complete release.

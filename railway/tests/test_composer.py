@@ -9,6 +9,8 @@ def test_composer_creates_unique_valid_candidates():
     for row in rows:
         rules = row["rules"]
         assert rules["family"]
+        assert rules["market"]["source_interval"] == "5min"
+        assert rules["market"]["timeframe"] == "M5"
         assert rules["schedule"]["weekdays"]
         assert rules["schedule"]["months"]
         assert rules["risk"]["stop_atr"] > 0

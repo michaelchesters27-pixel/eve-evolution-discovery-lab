@@ -1,30 +1,78 @@
-# Project specification
+# EVE Evolution Discovery Lab v2.0 — Project Specification
 
-## Goal
+## Permanent boundary
 
-Autonomously find a diverse portfolio of robust XAUUSD bots, including strategies with broad weekday availability, without forcing any individual bot to trade every day.
+### Project 1: EVE Algo Lab
 
-## Selection doctrine
+Production platform for MT5 EA fleets, telemetry, heartbeat, trades, waiting reasons, results and live forward testing. Discovery Lab must not modify its code, database records or runtime behaviour.
 
-- Development data may be used to create and mutate rules.
-- Validation data selects children over parents.
-- Locked data is unseen until rules are fixed and can veto catastrophic behaviour.
-- Recent data checks relevance to the latest market regime.
-- Frozen rules never change. Better children become new versions.
+### Project 2: EVE Evolution Discovery Lab
 
-## Learning doctrine
+Independent research platform. It may read approved historical tables from Project 1. It writes only to its own Supabase database. It never sends trading instructions and Project 1 never depends on it.
 
-The system gets smarter through `mutation_memory`:
+## v2 research contract
 
-- Every mutation attempt is recorded by family and gene.
-- Promotion rate and average fitness delta create a mutation score.
-- Future lineages prefer genes with positive evidence in the same family.
-- A preferred gene still has to pass all tests.
+### Selection evidence
 
-## Promotion gates
+Development and validation data may be used to reject candidates, compare descendants and select a lineage champion.
 
-A frozen strategy requires sufficient validation and locked trades, positive validation and locked expectancy, acceptable recent behaviour, walk-forward stability and parameter-neighbour robustness.
+### Protected evidence
 
-## MT5 output
+Confirmation and final holdout data must not contribute to mutation fitness. They are opened only after a promoted lineage reaches the configured maturity threshold. Once opened, that lineage is retired regardless of outcome.
 
-The package includes executable strategy logic in MQL5 source form. The generated EA computes schedule, session, trend, compression, alignment, candle shape, ATR risk, maximum hold, cooldown, spread guard and daily-loss protection inside MT5.
+### Execution contract
+
+Selection replay must be conservative and must never allow overlapping positions. Finalist M1 replay must resolve actual bar-by-bar exits. The research engine and generated EA must agree on:
+
+- bullish and bearish candle-body magnitude
+- signal timing
+- one open position at a time
+- cooldown and maximum-hold configuration
+- stop-first handling when stop and target are both reachable
+- symbol, source-candle interval and chart timeframe
+
+### Final promotion
+
+A strategy can be frozen only when all configured final gates pass, including:
+
+- confirmation trade-count, profit-factor and expectancy gates
+- holdout trade-count and performance gates
+- robustness tests
+- deterministic Monte Carlo stress
+- M1 execution replay with cost profiles
+
+Passing historical research does not authorise live trading. It authorises generation of a trading-disabled MT5 source package for compilation and demo forward testing.
+
+## Persistent research record
+
+Discovery Supabase stores:
+
+- imported source snapshots
+- candidate hypotheses and failures
+- mutation lineages and descendants
+- mutation memory
+- dataset version and integrity version
+- one-time final evidence
+- M1 replay evidence
+- frozen survivors
+- Trading Passports
+- generated MT5 packages
+- system activity
+
+## Generated package contract
+
+Each package contains:
+
+- `.mq5` source
+- immutable frozen rules
+- validation report
+- Trading Passport in JSON and text form
+- manifest
+- SHA-256 checksums
+- operator README
+
+The EA has trading disabled by default. Optional Algo Lab heartbeat settings are present but inactive until configured after import into Project 1.
+
+## Current limitation
+
+Version 2.0 is not the Ask EVE natural-language research interface. Its strategy grammar remains controlled and human-defined. It prepares safe data, evidence, timeframe and package contracts required for the future research-question engine.

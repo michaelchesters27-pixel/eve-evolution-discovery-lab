@@ -54,7 +54,7 @@ create table if not exists public.source_snapshots (
   outcome_complete boolean not null default false,
   feature_version text not null,
   imported_at timestamptz not null default now(),
-  primary key (symbol, snapshot_interval, candle_time)
+  primary key (symbol, source_interval, snapshot_interval, candle_time)
 );
 create index if not exists source_snapshots_time_idx on public.source_snapshots(candle_time);
 create index if not exists source_snapshots_context_idx on public.source_snapshots(weekday, month, hour_utc, session, regime);

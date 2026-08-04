@@ -1,20 +1,40 @@
-EVE Evolution Discovery Lab v1.0 validation
+EVE EVOLUTION DISCOVERY LAB v2.0 — RELEASE VALIDATION
 
-Backend tests: 9 passed
-Frontend structure tests: passed
-Netlify proxy test: passed
-Python bytecode compilation: passed
-JavaScript syntax: passed
-FastAPI route audit: passed
-Generated MT5 source static validation: passed
-Generated package ZIP test: passed
-Read-only source adapter boundary test: passed
-End-to-end compose -> evaluate -> mutate -> package test: passed
+Backend test suite:
+  Command: cd railway && python -m pytest -q
+  Result: 23 passed
 
-Not performed in this Linux build environment:
-- MetaEditor compilation of generated .mq5 source
-- Live Supabase/Railway/Netlify deployment
-- Broker tick-level Strategy Tester run
+Frontend structure:
+  Command: node frontend/tests/frontend_structure_test.mjs
+  Result: passed
 
-Generated EAs default to trading OFF and require MetaEditor compilation plus MT5 demo forward testing.
-Files: 36
+Netlify proxy structure:
+  Command: node frontend/tests/netlify_proxy_test.mjs
+  Result: passed
+
+JavaScript syntax:
+  Command: node --check frontend/app.js
+  Result: passed
+
+Python source compilation:
+  Command: python -m compileall -q railway/app
+  Result: passed
+
+Validated behaviours include:
+- bearish candle body parity
+- conservative non-overlapping selection replay
+- M1-resolved single-position and cooldown replay
+- timeframe/source-interval consistency guards
+- selection/holdout isolation
+- child/parent validation-only comparison
+- dataset versioning
+- controlled composition and mutation
+- Trading Passport generation
+- GET-only production source boundary
+- generated MT5 package contents and checksums
+- frontend Data Health and protected downloads
+
+Not validated inside this environment:
+- execution of the Supabase migration against the user's live database
+- MetaEditor compilation of every future generated EA
+- broker-specific fills or live profitability
