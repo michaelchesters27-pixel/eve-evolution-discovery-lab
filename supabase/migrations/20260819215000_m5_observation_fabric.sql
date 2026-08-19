@@ -15,6 +15,9 @@ alter table public.m5_research_snapshots
     add column if not exists fabric_version text,
     add column if not exists built_at timestamptz not null default now();
 
+create unique index if not exists uq_m5_research_snapshots_identity
+    on public.m5_research_snapshots (symbol, snapshot_interval, source_interval, candle_time);
+
 create index if not exists idx_m5_research_snapshots_symbol_time
     on public.m5_research_snapshots (symbol, candle_time);
 
