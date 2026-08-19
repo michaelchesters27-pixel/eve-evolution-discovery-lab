@@ -126,6 +126,12 @@ The autonomous scientist must never:
 
 The existing frozen-strategy and Trading Passport safety gates remain in force.
 
+## Security and validation state
+
+Scientist v1 uses internal Supabase tables with RLS enabled. `anon` and `authenticated` have no table access; the backend `service_role` retains the required access. Worker RPC execution is restricted to `service_role`, and relevant database functions have a fixed `search_path`.
+
+GitHub CI runs the complete Railway pytest suite plus frontend/Netlify JavaScript syntax checks on pushes and pull requests. Scientist v1 passed both jobs before merge.
+
 ## Next director milestones
 
 1. Exact coarse-backtest timing parity with M1/live execution.
