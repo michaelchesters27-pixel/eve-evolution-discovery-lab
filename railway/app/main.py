@@ -54,7 +54,7 @@ async def lifespan(_: FastAPI):
                     pass
 
 
-app = FastAPI(title=settings.app_name, version="2.4.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.4.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -149,6 +149,12 @@ async def fabric_status(limit: int = Query(default=5, ge=1, le=50)) -> dict[str,
     return {"runtime": fabric.runtime_status(), "state": await fabric.state(), "latest": latest}
 
 
+@app.get("/api/fabric/audit", dependencies=[Depends(require_research_access)])
+async def fabric_audit() -> dict[str, Any]:
+    result = await discovery_repo.client.rpc("get_fabric_audit", {})
+    return dict(result or {}) if isinstance(result, dict) else {"result": result}
+
+
 @app.get("/api/live-setups", dependencies=[Depends(require_research_access)])
 async def live_setups(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     return {"items": await intelligence.live_setups(limit), "runtime": intelligence.runtime_status()}
@@ -184,7 +190,7 @@ async def data_health() -> dict[str, Any]:
         "snapshot_definition": (
             "The legacy scientist currently consumes 15-minute research anchors. "
             "The new isolated fabric builds every completed M5 state with causal M1/M15/M30/H1/H4/D1 context. "
-            "The scientist will switch only after the fabric is complete and audited."
+            "The scientist will switch only after get_fabric_audit reports ready_for_scientist_cutover=true."
         ),
     }
 
@@ -244,7 +250,7 @@ async def download_mq5(package_id: str, _: None = Depends(require_package_access
     return Response(
         content=str(row.get("mq5_source") or ""),
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{row.get("mq5_file_name") or "EVE_Discovery.mq5"}"'},
+        headers={"Content-Disposition": f'attachment; filename="{row.get("mq5_file_name") or "EVE_Discovery.mq5"}'},
     )
 
 
