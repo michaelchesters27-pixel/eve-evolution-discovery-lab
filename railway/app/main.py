@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from app.settings import Settings, get_settings
+from app.services.fabric_builder import FabricBuilder
 from app.services.intelligence_v2 import IntelligenceDirector
 from app.services.mt5_generator import decode_package
 from app.services.orchestrator_v3 import DiscoveryOrchestrator
@@ -24,22 +25,27 @@ source_repo = SourceRepository(settings)
 discovery_repo = DiscoveryRepository(settings)
 orchestrator = DiscoveryOrchestrator(settings, source_repo, discovery_repo)
 intelligence = IntelligenceDirector(settings, discovery_repo, orchestrator.rows)
+fabric = FabricBuilder(settings, source_repo, discovery_repo)
 worker_task: asyncio.Task[Any] | None = None
 intelligence_task: asyncio.Task[Any] | None = None
+fabric_task: asyncio.Task[Any] | None = None
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global worker_task, intelligence_task
+    global worker_task, intelligence_task, fabric_task
     if settings.autonomous_enabled:
         worker_task = asyncio.create_task(orchestrator.run_forever(), name="eve-discovery-worker")
         intelligence_task = asyncio.create_task(intelligence.run_forever(), name="eve-autonomous-scientist")
+    if settings.fabric_enabled:
+        fabric_task = asyncio.create_task(fabric.run_forever(), name="eve-m5-observation-fabric")
     try:
         yield
     finally:
+        await fabric.stop()
         await intelligence.stop()
         await orchestrator.stop()
-        for task in (intelligence_task, worker_task):
+        for task in (fabric_task, intelligence_task, worker_task):
             if task:
                 task.cancel()
                 try:
@@ -48,7 +54,7 @@ async def lifespan(_: FastAPI):
                     pass
 
 
-app = FastAPI(title=settings.app_name, version="2.3.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.4.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -109,6 +115,7 @@ async def health() -> dict[str, Any]:
         "environment": settings.environment,
         "runtime": orchestrator.runtime_status(),
         "intelligence": intelligence.runtime_status(),
+        "fabric": {**fabric.runtime_status(), "state": await fabric.state()},
     }
 
 
@@ -119,12 +126,27 @@ async def dashboard() -> dict[str, Any]:
         **stored,
         "runtime": orchestrator.runtime_status(),
         "intelligence": intelligence.runtime_status(),
+        "fabric": {**fabric.runtime_status(), "state": await fabric.state()},
     }
 
 
 @app.get("/api/intelligence", dependencies=[Depends(require_research_access)])
 async def intelligence_dashboard() -> dict[str, Any]:
     return await intelligence.dashboard()
+
+
+@app.get("/api/fabric", dependencies=[Depends(require_research_access)])
+async def fabric_status(limit: int = Query(default=5, ge=1, le=50)) -> dict[str, Any]:
+    latest = await discovery_repo.client.get(
+        "m5_research_snapshots",
+        params={
+            "select": "candle_time,outcome_complete,fabric_version,mtf_context",
+            "symbol": f"eq.{settings.source_symbol}",
+            "order": "candle_time.desc",
+            "limit": str(limit),
+        },
+    )
+    return {"runtime": fabric.runtime_status(), "state": await fabric.state(), "latest": latest}
 
 
 @app.get("/api/live-setups", dependencies=[Depends(require_research_access)])
@@ -158,9 +180,11 @@ async def data_health() -> dict[str, Any]:
         **stored,
         "runtime": orchestrator.runtime_status(),
         "intelligence": intelligence.runtime_status(),
+        "fabric": {**fabric.runtime_status(), "state": await fabric.state()},
         "snapshot_definition": (
-            "One completed research market state at the configured snapshot interval. "
-            "It contains a completed source candle, derived features and precomputed forward outcomes; it is not one raw tick."
+            "The legacy scientist currently consumes 15-minute research anchors. "
+            "The new isolated fabric builds every completed M5 state with causal M1/M15/M30/H1/H4/D1 context. "
+            "The scientist will switch only after the fabric is complete and audited."
         ),
     }
 
@@ -237,6 +261,11 @@ async def run_scientist() -> dict[str, Any]:
 @app.post("/api/admin/run-live-watch", dependencies=[Depends(require_admin)])
 async def run_live_watch() -> dict[str, Any]:
     return await intelligence.run_live_watch_once()
+
+
+@app.post("/api/admin/run-fabric", dependencies=[Depends(require_admin)])
+async def run_fabric() -> dict[str, Any]:
+    return await fabric.build_once()
 
 
 @app.post("/api/admin/wake", dependencies=[Depends(require_admin)])
