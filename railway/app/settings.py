@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     candidates_per_seed: int = Field(default=50, ge=5, le=500)
     row_cache_minutes: int = Field(default=45, ge=5, le=720)
 
+    # Discovery-only every-M5 observation fabric. This runs alongside the
+    # existing 15-minute scientist until the new foundation is complete/audited.
+    fabric_enabled: bool = True
+    fabric_batch_days: int = Field(default=21, ge=2, le=60)
+    fabric_cycle_seconds: int = Field(default=20, ge=5, le=3600)
+    fabric_startup_delay_seconds: int = Field(default=30, ge=0, le=3600)
+
     minimum_locked_trades: int = Field(default=80, ge=30, le=5000)
     minimum_validation_trades: int = Field(default=60, ge=20, le=5000)
     mt5_generation_enabled: bool = True
