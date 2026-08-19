@@ -10,9 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from app.settings import Settings, get_settings
-from app.services.intelligence import IntelligenceDirector
+from app.services.intelligence_v2 import IntelligenceDirector
 from app.services.mt5_generator import decode_package
-from app.services.orchestrator import DiscoveryOrchestrator
+from app.services.orchestrator_v3 import DiscoveryOrchestrator
 from app.services.passport import passport_is_complete
 from app.services.repository import DiscoveryRepository, SourceRepository
 
@@ -48,7 +48,7 @@ async def lifespan(_: FastAPI):
                     pass
 
 
-app = FastAPI(title=settings.app_name, version="2.2.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -140,6 +140,15 @@ async def scientist_hypotheses(limit: int = Query(default=100, ge=1, le=500)) ->
 @app.get("/api/scientist/memory", dependencies=[Depends(require_research_access)])
 async def scientist_memory(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     return {"items": await intelligence.feature_memory(limit), "runtime": intelligence.runtime_status()}
+
+
+@app.get("/api/final-exams", dependencies=[Depends(require_research_access)])
+async def final_exams(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    items = await discovery_repo.client.get(
+        "final_exam_registry",
+        params={"select": "*", "order": "opened_at.desc", "limit": str(limit)},
+    )
+    return {"items": items, "budget": orchestrator.runtime_status().get("final_exam_budget")}
 
 
 @app.get("/api/data-health", dependencies=[Depends(require_research_access)])
