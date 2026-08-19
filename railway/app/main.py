@@ -54,7 +54,7 @@ async def lifespan(_: FastAPI):
                     pass
 
 
-app = FastAPI(title=settings.app_name, version="2.4.1", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.4.2", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -107,6 +107,49 @@ def require_research_access(
     require_admin(authorization=authorization, x_admin_token=x_admin_token)
 
 
+async def safe_fabric_state() -> dict[str, Any]:
+    try:
+        state = await fabric.state()
+        return {"read_ok": True, **state}
+    except Exception as exc:
+        logger.exception("Operator API could not read fabric state")
+        return {
+            "read_ok": False,
+            "status": "unavailable",
+            "last_error": str(exc)[:500],
+        }
+
+
+async def safe_intelligence_dashboard() -> dict[str, Any]:
+    try:
+        return await intelligence.dashboard()
+    except Exception as exc:
+        logger.exception("Operator API could not read intelligence dashboard")
+        return {
+            "runtime": intelligence.runtime_status(),
+            "recent_hypotheses": [],
+            "live_setups": [],
+            "top_learned_features": [],
+            "read_error": str(exc)[:500],
+        }
+
+
+async def safe_dashboard_store() -> dict[str, Any]:
+    try:
+        return await discovery_repo.dashboard()
+    except Exception as exc:
+        logger.exception("Operator API could not read discovery dashboard")
+        return {"read_error": str(exc)[:500]}
+
+
+async def safe_data_health_store() -> dict[str, Any]:
+    try:
+        return await discovery_repo.data_health()
+    except Exception as exc:
+        logger.exception("Operator API could not read data health")
+        return {"status": "unavailable", "read_error": str(exc)[:500]}
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {
@@ -115,49 +158,87 @@ async def health() -> dict[str, Any]:
         "environment": settings.environment,
         "runtime": orchestrator.runtime_status(),
         "intelligence": intelligence.runtime_status(),
-        "fabric": {**fabric.runtime_status(), "state": await fabric.state()},
+        "fabric": {**fabric.runtime_status(), "state": await safe_fabric_state()},
     }
 
 
 @app.get("/api/dashboard", dependencies=[Depends(require_research_access)])
 async def dashboard() -> dict[str, Any]:
-    stored = await discovery_repo.dashboard()
+    stored = await safe_dashboard_store()
     return {
         **stored,
         "runtime": orchestrator.runtime_status(),
         "intelligence": intelligence.runtime_status(),
-        "fabric": {**fabric.runtime_status(), "state": await fabric.state()},
+        "fabric": {**fabric.runtime_status(), "state": await safe_fabric_state()},
     }
 
 
 @app.get("/api/intelligence", dependencies=[Depends(require_research_access)])
 async def intelligence_dashboard() -> dict[str, Any]:
-    return await intelligence.dashboard()
+    return await safe_intelligence_dashboard()
 
 
 @app.get("/api/fabric", dependencies=[Depends(require_research_access)])
 async def fabric_status(limit: int = Query(default=5, ge=1, le=50)) -> dict[str, Any]:
-    latest = await discovery_repo.client.get(
-        "m5_research_snapshots",
-        params={
-            "select": "candle_time,outcome_complete,fabric_version,mtf_context",
-            "symbol": f"eq.{settings.source_symbol}",
-            "order": "candle_time.desc",
-            "limit": str(limit),
-        },
-    )
-    return {"runtime": fabric.runtime_status(), "state": await fabric.state(), "latest": latest}
+    latest: list[dict[str, Any]] = []
+    read_error: str | None = None
+    try:
+        latest = await discovery_repo.client.get(
+            "m5_research_snapshots",
+            params={
+                "select": "candle_time,outcome_complete,fabric_version",
+                "symbol": f"eq.{settings.source_symbol}",
+                "order": "candle_time.desc",
+                "limit": str(limit),
+            },
+        )
+    except Exception as exc:
+        logger.exception("Operator API could not read latest fabric rows")
+        read_error = str(exc)[:500]
+    return {
+        "runtime": fabric.runtime_status(),
+        "state": await safe_fabric_state(),
+        "latest": latest,
+        "read_error": read_error,
+    }
 
 
 @app.get("/api/fabric/audit", dependencies=[Depends(require_research_access)])
 async def fabric_audit() -> dict[str, Any]:
-    result = await discovery_repo.client.rpc("get_fabric_audit", {})
-    return dict(result or {}) if isinstance(result, dict) else {"result": result}
+    try:
+        result = await discovery_repo.client.rpc("get_fabric_audit", {})
+        if isinstance(result, dict):
+            if isinstance(result.get("get_fabric_audit"), dict):
+                return dict(result["get_fabric_audit"])
+            return dict(result)
+        if isinstance(result, list) and len(result) == 1 and isinstance(result[0], dict):
+            row = dict(result[0])
+            if isinstance(row.get("get_fabric_audit"), dict):
+                return dict(row["get_fabric_audit"])
+            return row
+        return {"ready_for_scientist_cutover": False, "result": result}
+    except Exception as exc:
+        logger.exception("Operator API could not run fabric audit")
+        return {
+            "ready_for_scientist_cutover": False,
+            "build_status": "unavailable",
+            "gates": {},
+            "coverage": {},
+            "causality_violations": {},
+            "feature_parity": {},
+            "last_error": str(exc)[:500],
+            "read_error": str(exc)[:500],
+        }
 
 
 @app.get("/api/live-setups", dependencies=[Depends(require_research_access)])
 async def live_setups(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
-    return {"items": await intelligence.live_setups(limit), "runtime": intelligence.runtime_status()}
+    try:
+        items = await intelligence.live_setups(limit)
+        return {"items": items, "runtime": intelligence.runtime_status()}
+    except Exception as exc:
+        logger.exception("Operator API could not read live setups")
+        return {"items": [], "runtime": intelligence.runtime_status(), "read_error": str(exc)[:500]}
 
 
 @app.get("/api/scientist/hypotheses", dependencies=[Depends(require_research_access)])
@@ -181,12 +262,12 @@ async def final_exams(limit: int = Query(default=100, ge=1, le=500)) -> dict[str
 
 @app.get("/api/data-health", dependencies=[Depends(require_research_access)])
 async def data_health() -> dict[str, Any]:
-    stored = await discovery_repo.data_health()
+    stored = await safe_data_health_store()
     return {
         **stored,
         "runtime": orchestrator.runtime_status(),
         "intelligence": intelligence.runtime_status(),
-        "fabric": {**fabric.runtime_status(), "state": await fabric.state()},
+        "fabric": {**fabric.runtime_status(), "state": await safe_fabric_state()},
         "snapshot_definition": (
             "The legacy scientist currently consumes 15-minute research anchors. "
             "The new isolated fabric builds every completed M5 state with causal M1/M15/M30/H1/H4/D1 context. "
