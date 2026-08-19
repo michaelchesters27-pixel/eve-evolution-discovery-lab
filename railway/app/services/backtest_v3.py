@@ -170,8 +170,8 @@ def enrich_market_observations(rows: Iterable[dict[str, Any]]) -> list[dict[str,
         row["obs_three_bar_same_direction"] = same_three
         row["obs_three_bar_direction"] = directions[0] if same_three else 0
 
-        bullish = [pdl_sweep, sweep12_low, pdl_break, break12_high]
-        bearish = [pdh_sweep, sweep12_high, pdh_break, break12_low]
+        bullish = [pdl_sweep, sweep12_low, pdh_break, break12_high]
+        bearish = [pdh_sweep, sweep12_high, pdl_break, break12_low]
         if any(bullish) and not any(bearish):
             row["obs_structure_direction"] = 1
         elif any(bearish) and not any(bullish):
