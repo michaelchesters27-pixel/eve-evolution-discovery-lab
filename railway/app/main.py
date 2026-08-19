@@ -10,10 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from app.settings import Settings, get_settings
-from app.services.orchestrator import DiscoveryOrchestrator
-from app.services.repository import DiscoveryRepository, SourceRepository
+from app.services.intelligence import IntelligenceDirector
 from app.services.mt5_generator import decode_package
+from app.services.orchestrator import DiscoveryOrchestrator
 from app.services.passport import passport_is_complete
+from app.services.repository import DiscoveryRepository, SourceRepository
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,27 +23,32 @@ settings = get_settings()
 source_repo = SourceRepository(settings)
 discovery_repo = DiscoveryRepository(settings)
 orchestrator = DiscoveryOrchestrator(settings, source_repo, discovery_repo)
+intelligence = IntelligenceDirector(settings, discovery_repo, orchestrator.rows)
 worker_task: asyncio.Task[Any] | None = None
+intelligence_task: asyncio.Task[Any] | None = None
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global worker_task
+    global worker_task, intelligence_task
     if settings.autonomous_enabled:
         worker_task = asyncio.create_task(orchestrator.run_forever(), name="eve-discovery-worker")
+        intelligence_task = asyncio.create_task(intelligence.run_forever(), name="eve-autonomous-scientist")
     try:
         yield
     finally:
+        await intelligence.stop()
         await orchestrator.stop()
-        if worker_task:
-            worker_task.cancel()
-            try:
-                await worker_task
-            except asyncio.CancelledError:
-                pass
+        for task in (intelligence_task, worker_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
 
-app = FastAPI(title=settings.app_name, version="2.1.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -70,8 +76,6 @@ def require_package_access(
     require_admin(authorization=authorization, x_admin_token=x_admin_token)
 
 
-
-
 def package_download_ready(row: dict[str, Any]) -> tuple[bool, str]:
     profile_status = str(row.get("profile_status") or "pending")
     eligible = bool(row.get("download_eligible"))
@@ -86,6 +90,7 @@ def package_download_ready(row: dict[str, Any]) -> tuple[bool, str]:
     if str(row.get("status") or "ready") != "ready":
         return False, str(row.get("profile_reason") or "The package is not ready for download.")
     return True, "ready"
+
 
 def require_research_access(
     authorization: str | None = Header(default=None),
@@ -103,13 +108,38 @@ async def health() -> dict[str, Any]:
         "app": settings.app_name,
         "environment": settings.environment,
         "runtime": orchestrator.runtime_status(),
+        "intelligence": intelligence.runtime_status(),
     }
 
 
 @app.get("/api/dashboard", dependencies=[Depends(require_research_access)])
 async def dashboard() -> dict[str, Any]:
     stored = await discovery_repo.dashboard()
-    return {**stored, "runtime": orchestrator.runtime_status()}
+    return {
+        **stored,
+        "runtime": orchestrator.runtime_status(),
+        "intelligence": intelligence.runtime_status(),
+    }
+
+
+@app.get("/api/intelligence", dependencies=[Depends(require_research_access)])
+async def intelligence_dashboard() -> dict[str, Any]:
+    return await intelligence.dashboard()
+
+
+@app.get("/api/live-setups", dependencies=[Depends(require_research_access)])
+async def live_setups(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    return {"items": await intelligence.live_setups(limit), "runtime": intelligence.runtime_status()}
+
+
+@app.get("/api/scientist/hypotheses", dependencies=[Depends(require_research_access)])
+async def scientist_hypotheses(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    return {"items": await intelligence.recent_hypotheses(limit), "runtime": intelligence.runtime_status()}
+
+
+@app.get("/api/scientist/memory", dependencies=[Depends(require_research_access)])
+async def scientist_memory(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    return {"items": await intelligence.feature_memory(limit), "runtime": intelligence.runtime_status()}
 
 
 @app.get("/api/data-health", dependencies=[Depends(require_research_access)])
@@ -118,6 +148,7 @@ async def data_health() -> dict[str, Any]:
     return {
         **stored,
         "runtime": orchestrator.runtime_status(),
+        "intelligence": intelligence.runtime_status(),
         "snapshot_definition": (
             "One completed research market state at the configured snapshot interval. "
             "It contains a completed source candle, derived features and precomputed forward outcomes; it is not one raw tick."
@@ -187,6 +218,16 @@ async def download_mq5(package_id: str, _: None = Depends(require_package_access
 @app.post("/api/admin/run-cycle", dependencies=[Depends(require_admin)])
 async def run_cycle() -> dict[str, Any]:
     return await orchestrator.run_once()
+
+
+@app.post("/api/admin/run-scientist", dependencies=[Depends(require_admin)])
+async def run_scientist() -> dict[str, Any]:
+    return await intelligence.run_science_once(await orchestrator.rows())
+
+
+@app.post("/api/admin/run-live-watch", dependencies=[Depends(require_admin)])
+async def run_live_watch() -> dict[str, Any]:
+    return await intelligence.run_live_watch_once()
 
 
 @app.post("/api/admin/wake", dependencies=[Depends(require_admin)])
