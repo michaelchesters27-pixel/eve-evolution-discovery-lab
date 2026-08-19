@@ -11,7 +11,6 @@ from app.services import intelligence as v1
 from app.services.composer import describe_strategy, strategy_hash
 
 INTELLIGENCE_VERSION = "eve-autonomous-scientist-v2"
-v1.INTELLIGENCE_VERSION = INTELLIGENCE_VERSION
 
 STRUCTURE_POOL: tuple[dict[str, Any], ...] = (
     {"type": "sweep_prior_12_high_reclaim"},
@@ -196,7 +195,16 @@ class IntelligenceDirector(v1.IntelligenceDirector):
         if rows is None:
             rows = await self.row_provider()
         research.enrich_market_observations(rows)
-        result = await super().run_science_once(rows)
+
+        # v1's persisted-version field is still module-level. Scope the v2 value
+        # to this one scientist cycle and restore it immediately so importing v2
+        # never mutates v1 behaviour or its tests/processes globally.
+        previous_version = v1.INTELLIGENCE_VERSION
+        v1.INTELLIGENCE_VERSION = INTELLIGENCE_VERSION
+        try:
+            result = await super().run_science_once(rows)
+        finally:
+            v1.INTELLIGENCE_VERSION = previous_version
         result["scientist_version"] = INTELLIGENCE_VERSION
         result["observation_version"] = research.OBSERVATION_VERSION
         return result
