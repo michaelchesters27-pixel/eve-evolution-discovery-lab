@@ -120,29 +120,44 @@ async def resolve_dataset_state(repo: Any, scientist_version: str, audit: dict[s
 
 
 async def load_fabric_rows(repo: Any, symbol: str, *, complete_only: bool = True) -> list[dict[str, Any]]:
+    """Load the research fabric with bounded keyset pagination.
+
+    OFFSET/range pagination becomes progressively more expensive on the ~475k-row
+    fabric because PostgreSQL must walk past every previous row. Scientist v2
+    only needs a deterministic chronological scan, so advance by the indexed
+    candle_time instead. Each page remains small and independently bounded.
+    """
     rows: list[dict[str, Any]] = []
-    start = 0
+    cursor: str | None = None
     page = 1000
-    params = {
-        "select": FABRIC_RESEARCH_COLUMNS,
-        "symbol": f"eq.{symbol}",
-        "snapshot_interval": f"eq.{FABRIC_SNAPSHOT_INTERVAL}",
-        "source_interval": f"eq.{FABRIC_SOURCE_INTERVAL}",
-        "order": "candle_time.asc",
-    }
-    if complete_only:
-        params["outcome_complete"] = "eq.true"
+
     while True:
-        batch = await repo.client.get(
-            "m5_research_snapshots",
-            params=params,
-            range_start=start,
-            range_end=start + page - 1,
-        )
+        params = {
+            "select": FABRIC_RESEARCH_COLUMNS,
+            "symbol": f"eq.{symbol}",
+            "snapshot_interval": f"eq.{FABRIC_SNAPSHOT_INTERVAL}",
+            "source_interval": f"eq.{FABRIC_SOURCE_INTERVAL}",
+            "order": "candle_time.asc",
+            "limit": str(page),
+        }
+        if complete_only:
+            params["outcome_complete"] = "eq.true"
+        if cursor:
+            params["candle_time"] = f"gt.{cursor}"
+
+        batch = await repo.client.get("m5_research_snapshots", params=params)
+        if not batch:
+            break
+
         rows.extend(batch)
+        next_cursor = str(batch[-1].get("candle_time") or "")
+        if not next_cursor or next_cursor == cursor:
+            raise RuntimeError("M5 fabric keyset scan did not advance candle_time cursor")
+        cursor = next_cursor
+
         if len(batch) < page:
             break
-        start += page
+
     return rows
 
 
