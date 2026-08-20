@@ -38,6 +38,58 @@ def test_director_shrinks_single_trial_memory_and_builds_family_plan():
     assert "multi_timeframe" in plan["strongest_families"]
 
 
+def test_interaction_memory_shrinks_pairs_and_scores_matching_rules():
+    scores, summary = director.build_interaction_memory(
+        [
+            {
+                "feature_a": "condition:mtf_h1_h4_agree",
+                "feature_b": "schedule:session:london",
+                "trials": 12,
+                "positive_trials": 9,
+                "score": 2.0,
+            },
+            {
+                "feature_a": "condition:mtf_d1_opposes_m5",
+                "feature_b": "direction:mtf_d1_direction",
+                "trials": 1,
+                "positive_trials": 0,
+                "score": -4.0,
+            },
+        ]
+    )
+    good_key = director.interaction_key("condition:mtf_h1_h4_agree", "schedule:session:london")
+    weak_key = director.interaction_key("condition:mtf_d1_opposes_m5", "direction:mtf_d1_direction")
+    assert 0 < scores[good_key] < 2.0
+    assert -4.0 < scores[weak_key] < 0
+    assert summary["interactions"] == 2
+
+    rules = {
+        "schedule": {"sessions": ["london"], "hours_utc": [], "weekdays": [1, 2, 3, 4, 5], "months": list(range(1, 13))},
+        "environment": {"regimes": [], "trend_12": "any", "trend_48": "any", "compression": "any"},
+        "entry": {"direction_rule": "current_direction", "conditions": [{"type": "mtf_h1_h4_agree"}]},
+    }
+    assert director.proposal_interaction_score(rules, scores) > 0
+
+
+def test_interaction_score_normalises_pair_count():
+    rules = {
+        "schedule": {"sessions": [], "hours_utc": [], "weekdays": [1, 2, 3, 4, 5], "months": list(range(1, 13))},
+        "environment": {"regimes": [], "trend_12": "any", "trend_48": "any", "compression": "any"},
+        "entry": {
+            "direction_rule": "current_direction",
+            "conditions": [{"type": "mtf_h1_h4_agree"}, {"type": "mtf_m15_m30_agree"}, {"type": "wick_body_ratio_min", "ratio": 1.2}],
+        },
+    }
+    features = sorted(set(director.v1.rule_feature_keys(rules)))
+    scores = {}
+    for i, left in enumerate(features):
+        for right in features[i + 1 :]:
+            scores[director.interaction_key(left, right)] = 1.0
+    score = director.proposal_interaction_score(rules, scores)
+    assert score > 0
+    assert score <= 5.0
+
+
 def test_ablation_removes_redundant_condition_without_using_sealed_data(monkeypatch):
     def fake_evaluate(_rows, rules):
         count = len(rules["entry"]["conditions"])
