@@ -11,7 +11,7 @@ from fastapi.responses import Response
 
 from app.settings import Settings, get_settings
 from app.services.fabric_builder import FabricBuilder
-from app.services.intelligence_v2 import IntelligenceDirector
+from app.services.research_director import ResearchDirectedIntelligenceDirector as IntelligenceDirector
 from app.services.mt5_generator import decode_package
 from app.services.orchestrator_v3 import DiscoveryOrchestrator
 from app.services import mtf_reasoning as _mtf_reasoning  # noqa: F401 — activates shared research/live semantics
