@@ -8,10 +8,12 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from app.settings import Settings, get_settings
 from app.services.fabric_builder import FabricBuilder
 from app.services.evidence_director import EvidenceDirectedIntelligenceDirector as IntelligenceDirector
+from app.services.live_trader import LiveTrader
 from app.services.mt5_generator import decode_package
 from app.services.orchestrator_v3 import DiscoveryOrchestrator
 from app.services import mtf_reasoning as _mtf_reasoning  # noqa: F401 — activates shared research/live semantics
@@ -27,26 +29,35 @@ discovery_repo = DiscoveryRepository(settings)
 orchestrator = DiscoveryOrchestrator(settings, source_repo, discovery_repo)
 intelligence = IntelligenceDirector(settings, discovery_repo, orchestrator.rows)
 fabric = FabricBuilder(settings, source_repo, discovery_repo)
+live_trader = LiveTrader(settings, discovery_repo)
 worker_task: asyncio.Task[Any] | None = None
 intelligence_task: asyncio.Task[Any] | None = None
 fabric_task: asyncio.Task[Any] | None = None
+live_trader_task: asyncio.Task[Any] | None = None
+
+
+class LiveTraderChatRequest(BaseModel):
+    message: str = Field(default="What are we doing?", max_length=4000)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global worker_task, intelligence_task, fabric_task
+    global worker_task, intelligence_task, fabric_task, live_trader_task
     if settings.autonomous_enabled:
         worker_task = asyncio.create_task(orchestrator.run_forever(), name="eve-discovery-worker")
         intelligence_task = asyncio.create_task(intelligence.run_forever(), name="eve-autonomous-scientist")
     if settings.fabric_enabled:
         fabric_task = asyncio.create_task(fabric.run_forever(), name="eve-m5-observation-fabric")
+    if settings.live_trader_enabled:
+        live_trader_task = asyncio.create_task(live_trader.run_forever(), name="eve-live-trader")
     try:
         yield
     finally:
+        await live_trader.stop()
         await fabric.stop()
         await intelligence.stop()
         await orchestrator.stop()
-        for task in (fabric_task, intelligence_task, worker_task):
+        for task in (live_trader_task, fabric_task, intelligence_task, worker_task):
             if task:
                 task.cancel()
                 try:
@@ -55,7 +66,7 @@ async def lifespan(_: FastAPI):
                     pass
 
 
-app = FastAPI(title=settings.app_name, version="2.6.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.7.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -160,6 +171,7 @@ async def health() -> dict[str, Any]:
         "runtime": orchestrator.runtime_status(),
         "intelligence": intelligence.runtime_status(),
         "fabric": {**fabric.runtime_status(), "state": await safe_fabric_state()},
+        "live_trader": live_trader.runtime_status(),
     }
 
 
@@ -171,12 +183,33 @@ async def dashboard() -> dict[str, Any]:
         "runtime": orchestrator.runtime_status(),
         "intelligence": intelligence.runtime_status(),
         "fabric": {**fabric.runtime_status(), "state": await safe_fabric_state()},
+        "live_trader": live_trader.runtime_status(),
     }
 
 
 @app.get("/api/intelligence", dependencies=[Depends(require_research_access)])
 async def intelligence_dashboard() -> dict[str, Any]:
     return await safe_intelligence_dashboard()
+
+
+@app.get("/api/live-trader", dependencies=[Depends(require_research_access)])
+async def live_trader_snapshot() -> dict[str, Any]:
+    return await live_trader.snapshot()
+
+
+@app.get("/api/live-trader/conversation", dependencies=[Depends(require_research_access)])
+async def live_trader_conversation(limit: int = Query(default=40, ge=1, le=100)) -> dict[str, Any]:
+    return {"items": await live_trader.conversation(limit), "runtime": live_trader.runtime_status()}
+
+
+@app.get("/api/live-trader/learning", dependencies=[Depends(require_research_access)])
+async def live_trader_learning() -> dict[str, Any]:
+    return await live_trader.learning_summary()
+
+
+@app.post("/api/live-trader/chat", dependencies=[Depends(require_research_access)])
+async def live_trader_chat(payload: LiveTraderChatRequest) -> dict[str, Any]:
+    return await live_trader.answer(payload.message)
 
 
 @app.get("/api/fabric", dependencies=[Depends(require_research_access)])
@@ -346,7 +379,7 @@ async def download_mq5(package_id: str, _: None = Depends(require_package_access
     return Response(
         content=str(row.get("mq5_source") or ""),
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{row.get("mq5_file_name") or "EVE_Discovery.mq5"}"'},
+        headers={"Content-Disposition": f'attachment; filename="{row.get("mq5_file_name") or "EVE_Discovery.mq5"}'},
     )
 
 
@@ -363,6 +396,11 @@ async def run_scientist() -> dict[str, Any]:
 @app.post("/api/admin/run-live-watch", dependencies=[Depends(require_admin)])
 async def run_live_watch() -> dict[str, Any]:
     return await intelligence.run_live_watch_once()
+
+
+@app.post("/api/admin/run-live-trader-analysis", dependencies=[Depends(require_admin)])
+async def run_live_trader_analysis() -> dict[str, Any]:
+    return await live_trader.refresh_state(force_rows=True)
 
 
 @app.post("/api/admin/run-fabric", dependencies=[Depends(require_admin)])
