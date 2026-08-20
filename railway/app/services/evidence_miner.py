@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 import math
 import statistics
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 from app.services import backtest_v3 as research
 from app.services import intelligence as v1
@@ -120,52 +120,76 @@ def _bh_adjust(items: list[dict[str, Any]]) -> None:
         item["q_value"] = round(adjusted.get(index, 1.0), 8)
 
 
-def _year_stability(
+def _year_context(
     rows: list[dict[str, Any]],
-    matched: Iterable[int],
+    returns_by_horizon: dict[int, list[float | None]],
+) -> tuple[list[int | None], dict[int, dict[int, tuple[int, float]]]]:
+    years: list[int | None] = []
+    for row in rows:
+        timestamp = as_utc(row.get("candle_time"))
+        years.append(timestamp.year if timestamp is not None else None)
+
+    baselines: dict[int, dict[int, tuple[int, float]]] = {}
+    for horizon, returns in returns_by_horizon.items():
+        grouped: dict[int, list[float]] = {}
+        for index, value in enumerate(returns):
+            year = years[index]
+            if year is None or value is None:
+                continue
+            grouped.setdefault(year, []).append(float(value))
+        baselines[horizon] = {
+            year: (len(values), _mean(values))
+            for year, values in grouped.items()
+            if values
+        }
+    return years, baselines
+
+
+def _year_stability(
+    indices: list[int],
     returns: list[float | None],
+    years: list[int | None],
+    baseline_by_year: dict[int, tuple[int, float]],
     expected_sign: int,
 ) -> tuple[float, dict[str, float]]:
-    all_by_year: dict[int, list[float]] = {}
     matched_by_year: dict[int, list[float]] = {}
-    matched_set = set(matched)
-    for index, row in enumerate(rows):
+    for index in indices:
+        if index >= len(returns):
+            continue
         value = returns[index]
-        if value is None:
+        year = years[index]
+        if value is None or year is None:
             continue
-        timestamp = as_utc(row.get("candle_time"))
-        if timestamp is None:
-            continue
-        all_by_year.setdefault(timestamp.year, []).append(float(value))
-        if index in matched_set:
-            matched_by_year.setdefault(timestamp.year, []).append(float(value))
+        matched_by_year.setdefault(year, []).append(float(value))
 
     effects: dict[str, float] = {}
     stable = 0
     tested = 0
-    for year in sorted(all_by_year):
-        feature_values = matched_by_year.get(year) or []
-        baseline_values = all_by_year[year]
-        if len(feature_values) < 40 or len(baseline_values) < 200:
+    for year in sorted(matched_by_year):
+        feature_values = matched_by_year[year]
+        baseline_count, baseline_mean = baseline_by_year.get(year, (0, 0.0))
+        if len(feature_values) < 40 or baseline_count < 200:
             continue
-        effect = _mean(feature_values) - _mean(baseline_values)
+        effect = _mean(feature_values) - baseline_mean
         effects[str(year)] = round(effect, 8)
         tested += 1
-        if expected_sign != 0 and (1 if effect > 0 else -1 if effect < 0 else 0) == expected_sign:
+        sign = 1 if effect > 0 else -1 if effect < 0 else 0
+        if expected_sign != 0 and sign == expected_sign:
             stable += 1
     return (stable / tested if tested else 0.0), effects
 
 
 def _test_indices(
-    rows: list[dict[str, Any]],
     feature_keys: list[str],
     indices: list[int],
     returns_by_horizon: dict[int, list[float | None]],
+    years: list[int | None],
+    year_baselines: dict[int, dict[int, tuple[int, float]]],
     horizon: int,
     minimum_samples: int,
 ) -> dict[str, Any] | None:
     returns = returns_by_horizon[horizon]
-    feature_values = [float(returns[index]) for index in indices if returns[index] is not None]
+    feature_values = [float(returns[index]) for index in indices if index < len(returns) and returns[index] is not None]
     baseline_values = [float(value) for value in returns if value is not None]
     if len(feature_values) < minimum_samples or len(baseline_values) < max(1000, minimum_samples * 2):
         return None
@@ -181,7 +205,13 @@ def _test_indices(
     baseline_sd = math.sqrt(baseline_var)
     standardized = effect / baseline_sd if baseline_sd > 1e-12 else 0.0
     expected_sign = 1 if effect > 0 else -1 if effect < 0 else 0
-    stability, year_effects = _year_stability(rows, indices, returns, expected_sign)
+    stability, year_effects = _year_stability(
+        indices,
+        returns,
+        years,
+        year_baselines.get(horizon, {}),
+        expected_sign,
+    )
     direction = "up" if expected_sign > 0 else "down" if expected_sign < 0 else "flat"
     return {
         "feature_keys": feature_keys,
@@ -221,6 +251,7 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """
     ordered = sorted(rows, key=lambda row: str(row.get("candle_time") or ""))
     returns_by_horizon = _returns_by_horizon(ordered)
+    years, year_baselines = _year_context(ordered, returns_by_horizon)
     specs = feature_specs()
 
     matches: dict[str, list[int]] = {}
@@ -239,10 +270,11 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for feature_key, indices in matches.items():
         for horizon in HORIZONS:
             tested = _test_indices(
-                ordered,
                 [feature_key],
                 indices,
                 returns_by_horizon,
+                years,
+                year_baselines,
                 horizon,
                 MIN_SINGLE_SAMPLES,
             )
@@ -267,18 +299,20 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
             break
 
     pairs: list[dict[str, Any]] = []
+    match_sets = {key: set(indices) for key, indices in matches.items() if key in ranked_single_features}
     for left_index, left in enumerate(ranked_single_features):
-        left_set = set(matches.get(left) or [])
+        left_set = match_sets.get(left, set())
         for right in ranked_single_features[left_index + 1 :]:
-            intersection = sorted(left_set.intersection(matches.get(right) or []))
+            intersection = sorted(left_set.intersection(match_sets.get(right, set())))
             if len(intersection) < MIN_PAIR_SAMPLES:
                 continue
             for horizon in PAIR_HORIZONS:
                 tested = _test_indices(
-                    ordered,
                     [left, right],
                     intersection,
                     returns_by_horizon,
+                    years,
+                    year_baselines,
                     horizon,
                     MIN_PAIR_SAMPLES,
                 )
@@ -297,9 +331,7 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
         item["status"] = "signal" if passed else "screened"
         item["evidence_score"] = round(_score(item) if passed else 0.0, 6)
         feature_keys = list(item.get("feature_keys") or [])
-        item["signature"] = (
-            f"{item.get('kind')}:{'||'.join(sorted(feature_keys))}:{int(item.get('horizon_minutes') or 0)}"
-        )
+        item["signature"] = f"{item.get('kind')}:{'||'.join(sorted(feature_keys))}:{int(item.get('horizon_minutes') or 0)}"
         if passed:
             signals.append(item)
 
