@@ -331,7 +331,7 @@ async def download_mq5(package_id: str, _: None = Depends(require_package_access
     return Response(
         content=str(row.get("mq5_source") or ""),
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{row.get("mq5_file_name") or "EVE_Discovery.mq5"}'},
+        headers={"Content-Disposition": f'attachment; filename="{row.get("mq5_file_name") or "EVE_Discovery.mq5"}"'},
     )
 
 
