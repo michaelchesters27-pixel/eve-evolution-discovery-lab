@@ -10,16 +10,20 @@ FABRIC_VERSION = "eve-multitimeframe-fabric-v1"
 FABRIC_SNAPSHOT_INTERVAL = "5min"
 FABRIC_SOURCE_INTERVAL = "5min"
 
-# Keep the large six-year in-memory research set compact. The full mtf_context
-# remains stored in Supabase and is read for the live/latest window, but the
-# current Scientist v2 grammar only needs these deterministic research fields.
+# Keep the six-year Scientist set compact. The canonical mtf_context JSON remains
+# on m5_research_snapshots for audit/live recognition. Historical Scientist reads
+# use m5_scientist_research, which exposes only deterministic causal relationships.
 FABRIC_RESEARCH_COLUMNS = (
     "symbol,snapshot_interval,source_interval,candle_time,open,high,low,close,volume,weekday,month,quarter,"
     "hour_utc,week_of_month,session,direction,range_price,body_price,upper_wick,lower_wick,close_location,"
     "atr_14,average_range_12,volatility_12,compression_ratio,return_1_pct,return_3_pct,return_12_pct,"
-    "return_48_pct,return_288_pct,context_m15_return_pct,context_h1_return_pct,context_h4_return_pct,"
-    "context_d1_return_pct,trend_12_atr,trend_48_atr,streak,regime,alignment_score,outcomes,"
-    "outcome_horizons,outcome_complete,feature_version,fabric_version"
+    "return_48_pct,return_288_pct,context_m15_return_pct,context_m30_return_pct,context_h1_return_pct,"
+    "context_h4_return_pct,context_d1_return_pct,trend_12_atr,trend_48_atr,streak,regime,alignment_score,"
+    "mtf_m1_available,mtf_m1_direction,mtf_m1_direction_score,mtf_m1_direction_changes,"
+    "mtf_m1_path_efficiency,mtf_m1_first_direction,mtf_m1_last_direction,mtf_m15_direction,"
+    "mtf_m30_direction,mtf_h1_direction,mtf_h4_direction,mtf_d1_direction,"
+    "mtf_direction_alignment_score,mtf_htf_alignment_score,mtf_context_complete,"
+    "outcomes,outcome_horizons,outcome_complete,feature_version,fabric_version"
 )
 
 # A Railway process should pay the six-year download cost only once. Subsequent
@@ -149,7 +153,7 @@ async def _scan_fabric_rows(
         if cursor:
             params["candle_time"] = f"gt.{cursor}"
 
-        batch = await repo.client.get("m5_research_snapshots", params=params)
+        batch = await repo.client.get("m5_scientist_research", params=params)
         if not batch:
             break
         rows.extend(batch)
@@ -193,8 +197,11 @@ async def load_fabric_rows(
 
 
 async def latest_fabric_rows(repo: Any, symbol: str, *, limit: int = 120) -> list[dict[str, Any]]:
+    # The Scientist view includes s.* (including canonical mtf_context) plus the
+    # same flattened relationship fields used historically, keeping live and
+    # research evaluation definitions identical.
     return await repo.client.get(
-        "m5_research_snapshots",
+        "m5_scientist_research",
         params={
             "select": "*",
             "symbol": f"eq.{symbol}",
