@@ -6,13 +6,23 @@ function renderEveIntelligence() {
   const audit = eveIntelligenceState.audit || {};
   const scientist = eveIntelligenceState.scientist || {};
   const runtime = scientist.runtime || scientist.scientist || {};
+  const authority = audit.scientist_authority || {};
+  const persistent = audit.scientist_persistent_stats || {};
   const coverage = audit.coverage || {};
   const gates = audit.gates || {};
   const causality = audit.causality_violations || {};
   const parity = audit.feature_parity || {};
   const ready = Boolean(audit.ready_for_scientist_cutover);
-  const activeFabric = String(runtime.active_dataset || '').toLowerCase() === 'every_m5_fabric' && String(runtime.dataset_status || '').toLowerCase() === 'active';
+  const persistedFabricActive = String(authority.active_dataset || '').toLowerCase() === 'every_m5_fabric' && String(authority.status || '').toLowerCase() === 'active';
+  const runtimeFabricActive = String(runtime.active_dataset || '').toLowerCase() === 'every_m5_fabric' && String(runtime.dataset_status || '').toLowerCase() === 'active';
+  const activeFabric = persistedFabricActive || runtimeFabricActive;
   const building = String(audit.build_status || '').toLowerCase() === 'building';
+  const memoryFeatures = Math.max(Number(runtime.memory_features || 0), Number(audit.scientist_memory_features || 0));
+  const scienceCycles = Math.max(Number(runtime.science_cycles || 0), Number(persistent.science_cycles || 0));
+  const screened = Math.max(Number(runtime.hypotheses_screened || 0), Number(persistent.screened || 0));
+  const queued = Math.max(Number(runtime.hypotheses_queued || 0), Number(persistent.queued || 0));
+  const lastScienceAt = runtime.last_science_at || persistent.last_science_at || null;
+  const cutoverAt = runtime.cutover_at || authority.cutover_at || null;
 
   const summary = $('#fabricSummary');
   if (summary) {
@@ -69,7 +79,7 @@ function renderEveIntelligence() {
       check('Zero look-ahead', Boolean(gates.zero_lookahead), `${fmt.format(causality.total || 0)} causality violations found`),
       check('Historical outcomes', Boolean(gates.historical_outcomes), `${pct(coverage.historical_outcomes)} completed forward-label coverage`),
       check('Inherited feature parity', Boolean(gates.feature_parity), `${pct(parity.pass_rate)} parity against trusted 15-minute anchors`),
-      check('Scientist dataset authority', activeFabric, activeFabric ? `ACTIVE · every-M5 fabric${runtime.cutover_at ? ` · cut over ${dateText(runtime.cutover_at)}` : ''}` : ready ? 'Fabric eligible; waiting for Scientist runtime authority.' : 'Scientist remains on legacy dataset.')
+      check('Scientist dataset authority', activeFabric, activeFabric ? `ACTIVE · every-M5 fabric${cutoverAt ? ` · cut over ${dateText(cutoverAt)}` : ''}` : ready ? 'Fabric eligible; waiting for Scientist runtime authority.' : 'Scientist remains on legacy dataset.')
     ].join('');
   }
 
@@ -79,11 +89,15 @@ function renderEveIntelligence() {
     scientistBox.className = 'feature-card';
     scientistBox.innerHTML = `<div class="card-top"><div><h3>${esc(runtime.version || 'EVE Scientist')}</h3><p>${esc(runtime.observation_version || 'Causal market observation engine')}</p></div>${badge(runtime.last_error ? 'failed' : 'active')}</div>${stats([
       ['Dataset', activeFabric ? 'Every M5' : 'Legacy 15m'],
-      ['Science cycles', fmt.format(runtime.science_cycles || 0)],
-      ['Screened', fmt.format(runtime.hypotheses_screened || 0)],
-      ['Queued', fmt.format(runtime.hypotheses_queued || 0)],
-      ['Memory features', fmt.format(runtime.memory_features || 0)]
-    ])}<div class="rules">${capabilities.slice(0, 12).map(x => `<span>${esc(human(x))}</span>`).join('')}</div><p>${esc(runtime.last_error || (runtime.last_science_at ? `Last scientist cycle ${dateText(runtime.last_science_at)}` : activeFabric ? 'Scientist is active on the every-M5 fabric and working through its next autonomous cycle.' : 'Scientist is active and waiting for its next autonomous cycle.'))}</p>`;
+      ['Science cycles', fmt.format(scienceCycles)],
+      ['Screened', fmt.format(screened)],
+      ['Queued', fmt.format(queued)],
+      ['Memory features', fmt.format(memoryFeatures)]
+    ])}<div class="rules">${capabilities.slice(0, 12).map(x => `<span>${esc(human(x))}</span>`).join('')}</div><p>${esc(runtime.last_error || (lastScienceAt ? `Last scientist cycle ${dateText(lastScienceAt)}` : activeFabric ? 'Scientist is active on the every-M5 fabric and working through its next autonomous cycle.' : 'Scientist is active and waiting for its next autonomous cycle.'))}</p>`;
+  }
+
+  if (activeFabric && !audit.last_error) {
+    setHealth(true, `Scientist v2 · Every M5 · ${fmt.format(audit.rows || 0)} states`);
   }
 
   const setups = scientist.live_setups || [];
