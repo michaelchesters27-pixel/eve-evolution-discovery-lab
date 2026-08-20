@@ -96,6 +96,44 @@ function renderEveIntelligence() {
     ])}<div class="rules">${capabilities.slice(0, 12).map(x => `<span>${esc(human(x))}</span>`).join('')}</div><p>${esc(runtime.last_error || (lastScienceAt ? `Last scientist cycle ${dateText(lastScienceAt)}` : activeFabric ? 'Scientist is active on the every-M5 fabric and working through its next autonomous cycle.' : 'Scientist is active and waiting for its next autonomous cycle.'))}</p>`;
   }
 
+  const directorBox = $('#researchDirector');
+  if (directorBox) {
+    const director = runtime.research_director || {};
+    const families = Array.isArray(director.families) ? director.families : [];
+    const strongest = director.strongest_families || [];
+    const weakest = director.weakest_families || [];
+    directorBox.className = `feature-card ${families.length ? '' : 'empty'}`;
+    if (families.length) {
+      directorBox.innerHTML = `<div class="card-top"><div><h3>${esc(runtime.research_director_version || director.version || 'EVE Research Director')}</h3><p>${esc(director.policy || 'Evidence-weighted research allocation')}</p></div>${badge('active')}</div>${stats([
+        ['Memory used', fmt.format(director.memory_features || memoryFeatures)],
+        ['Families tracked', fmt.format(families.length)],
+        ['Strongest', strongest.length ? strongest.map(human).join(', ') : 'Exploration'],
+        ['Weakest', weakest.length ? weakest.map(human).join(', ') : 'None yet']
+      ])}<div class="rules">${families.slice(0, 8).map(x => `<span>${esc(`${human(x.family)} · score ${num(x.evidence_score,2)} · ${fmt.format(x.trials || 0)} trials`)}</span>`).join('')}</div><p>EVE shrinks weak single-trial evidence, follows repeated positive evidence more often, and keeps an exploration floor so it can still discover something new.</p>`;
+    } else {
+      directorBox.textContent = 'Waiting for the first Research Director cycle on the deployed runtime.';
+    }
+  }
+
+  const ablationBox = $('#ablationSummary');
+  if (ablationBox) {
+    const ablation = runtime.ablation || {};
+    const checked = Number(ablation.hypotheses_checked || 0);
+    const simplified = Number(ablation.hypotheses_simplified || 0);
+    const removed = Number(ablation.conditions_removed || 0);
+    ablationBox.className = `feature-card ${checked ? '' : 'empty'}`;
+    if (checked) {
+      ablationBox.innerHTML = `<div class="card-top"><div><h3>${esc(ablation.version || 'Development ablation')}</h3><p>Qualified ideas are simplified before sealed validation.</p></div>${badge('active')}</div>${stats([
+        ['Checked', fmt.format(checked)],
+        ['Simplified', fmt.format(simplified)],
+        ['Conditions removed', fmt.format(removed)],
+        ['Sealed data used', 'NO']
+      ])}<p>${removed ? `EVE removed ${fmt.format(removed)} condition${removed === 1 ? '' : 's'} that did not earn their place while preserving the development edge.` : 'No condition could be safely removed in the latest cycle.'}</p>`;
+    } else {
+      ablationBox.textContent = 'Waiting for a qualified hypothesis to reach development-only simplification.';
+    }
+  }
+
   if (activeFabric && !audit.last_error) {
     setHealth(true, `Scientist v2 · Every M5 · ${fmt.format(audit.rows || 0)} states`);
   }
