@@ -11,29 +11,38 @@ function renderEveIntelligence() {
   const causality = audit.causality_violations || {};
   const parity = audit.feature_parity || {};
   const ready = Boolean(audit.ready_for_scientist_cutover);
+  const activeFabric = String(runtime.active_dataset || '').toLowerCase() === 'every_m5_fabric' && String(runtime.dataset_status || '').toLowerCase() === 'active';
   const building = String(audit.build_status || '').toLowerCase() === 'building';
 
   const summary = $('#fabricSummary');
   if (summary) {
-    const statusClass = ready ? 'ok' : building ? 'warn' : audit.last_error ? 'bad' : 'warn';
-    const title = ready ? 'READY FOR SCIENTIST CUTOVER' : building ? 'BUILDING SIX-YEAR M5 FABRIC' : audit.last_error ? 'FABRIC NEEDS ATTENTION' : 'AUDITING FABRIC';
-    const message = ready
-      ? 'Every hard integrity gate has passed. The new every-M5 multi-timeframe dataset is eligible for controlled scientist cutover.'
-      : building
-        ? `${fmt.format(audit.rows || 0)} M5 research states built so far. Scientist v2 remains on the trusted legacy dataset until the audit passes.`
-        : (audit.last_error || 'Waiting for the next fabric audit result.');
+    const statusClass = activeFabric || ready ? 'ok' : building ? 'warn' : audit.last_error ? 'bad' : 'warn';
+    const title = activeFabric ? 'SCIENTIST V2 ACTIVE ON EVERY-M5 FABRIC' : ready ? 'READY FOR SCIENTIST CUTOVER' : building ? 'BUILDING SIX-YEAR M5 FABRIC' : audit.last_error ? 'FABRIC NEEDS ATTENTION' : 'AUDITING FABRIC';
+    const message = activeFabric
+      ? `Scientist v2 is authorised to research the every-M5 multi-timeframe fabric. New scientist hypotheses are tied to the 5-minute dataset and cannot be validated on the legacy 15-minute dataset.`
+      : ready
+        ? 'Every hard integrity gate has passed. The new every-M5 multi-timeframe dataset is eligible for controlled scientist cutover.'
+        : building
+          ? `${fmt.format(audit.rows || 0)} M5 research states built so far. Scientist v2 remains on the trusted legacy dataset until the audit passes.`
+          : (audit.last_error || 'Waiting for the next fabric audit result.');
     summary.innerHTML = `<div><span class="status-orb ${statusClass}"></span><div><p class="eyebrow">FABRIC STATUS</p><h3>${esc(title)}</h3><p>${esc(message)}</p></div></div><small>${esc(audit.last_time ? `Built through ${dateText(audit.last_time)}` : 'No completed fabric timestamp yet')}</small>`;
   }
 
   const metrics = $('#fabricMetrics');
   if (metrics) {
+    const scientistDatasetValue = activeFabric ? 'ACTIVE M5' : ready ? 'READY' : 'LEGACY';
+    const scientistDatasetNote = activeFabric
+      ? `${fmt.format(runtime.dataset_rows || audit.rows || 0)} M5 states under scientist authority`
+      : ready
+        ? 'all gates passed; awaiting runtime activation'
+        : 'legacy 15-minute dataset remains active';
     metrics.innerHTML = [
       ['M5 states', fmt.format(audit.rows || 0), 'every completed M5 observation'],
       ['M1 coverage', pct(coverage.M1), 'microstructure inside each M5'],
       ['HTF coverage', pct(Math.min(Number(coverage.M15 ?? 0), Number(coverage.M30 ?? 0), Number(coverage.H1 ?? 0), Number(coverage.H4 ?? 0), Number(coverage.D1 ?? 0))), 'M15 · M30 · H1 · H4 · D1'],
       ['Feature parity', pct(parity.pass_rate), `${fmt.format(parity.rows_matching || 0)} / ${fmt.format(parity.rows_compared || 0)} matched`],
       ['Look-ahead errors', fmt.format(causality.total || 0), 'must remain exactly zero'],
-      ['Scientist cutover', ready ? 'READY' : 'LOCKED', ready ? 'all gates passed' : 'legacy dataset remains active']
+      ['Scientist dataset', scientistDatasetValue, scientistDatasetNote]
     ].map(x => metric(...x)).join('');
   }
 
@@ -59,7 +68,8 @@ function renderEveIntelligence() {
       check('Higher-timeframe coverage', Boolean(gates.higher_timeframe_coverage), 'M15/M30/H1/H4/D1 must each meet the coverage threshold'),
       check('Zero look-ahead', Boolean(gates.zero_lookahead), `${fmt.format(causality.total || 0)} causality violations found`),
       check('Historical outcomes', Boolean(gates.historical_outcomes), `${pct(coverage.historical_outcomes)} completed forward-label coverage`),
-      check('Inherited feature parity', Boolean(gates.feature_parity), `${pct(parity.pass_rate)} parity against trusted 15-minute anchors`)
+      check('Inherited feature parity', Boolean(gates.feature_parity), `${pct(parity.pass_rate)} parity against trusted 15-minute anchors`),
+      check('Scientist dataset authority', activeFabric, activeFabric ? `ACTIVE · every-M5 fabric${runtime.cutover_at ? ` · cut over ${dateText(runtime.cutover_at)}` : ''}` : ready ? 'Fabric eligible; waiting for Scientist runtime authority.' : 'Scientist remains on legacy dataset.')
     ].join('');
   }
 
@@ -68,11 +78,12 @@ function renderEveIntelligence() {
     const capabilities = runtime.capabilities || [];
     scientistBox.className = 'feature-card';
     scientistBox.innerHTML = `<div class="card-top"><div><h3>${esc(runtime.version || 'EVE Scientist')}</h3><p>${esc(runtime.observation_version || 'Causal market observation engine')}</p></div>${badge(runtime.last_error ? 'failed' : 'active')}</div>${stats([
+      ['Dataset', activeFabric ? 'Every M5' : 'Legacy 15m'],
       ['Science cycles', fmt.format(runtime.science_cycles || 0)],
       ['Screened', fmt.format(runtime.hypotheses_screened || 0)],
       ['Queued', fmt.format(runtime.hypotheses_queued || 0)],
       ['Memory features', fmt.format(runtime.memory_features || 0)]
-    ])}<div class="rules">${capabilities.slice(0, 12).map(x => `<span>${esc(human(x))}</span>`).join('')}</div><p>${esc(runtime.last_error || (runtime.last_science_at ? `Last scientist cycle ${dateText(runtime.last_science_at)}` : 'Scientist is active and waiting for its next autonomous cycle.'))}</p>`;
+    ])}<div class="rules">${capabilities.slice(0, 12).map(x => `<span>${esc(human(x))}</span>`).join('')}</div><p>${esc(runtime.last_error || (runtime.last_science_at ? `Last scientist cycle ${dateText(runtime.last_science_at)}` : activeFabric ? 'Scientist is active on the every-M5 fabric and working through its next autonomous cycle.' : 'Scientist is active and waiting for its next autonomous cycle.'))}</p>`;
   }
 
   const setups = scientist.live_setups || [];
