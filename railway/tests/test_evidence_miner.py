@@ -67,7 +67,7 @@ def test_miner_finds_repeatable_london_outcome_shift():
     result = mine_evidence(rows)
     london_60 = [
         item
-        for item in result["top_signals"]
+        for item in result["rows"]
         if item["feature_keys"] == ["schedule:session:london"] and item["horizon_minutes"] == 60
     ]
     assert london_60
