@@ -4,9 +4,11 @@ import asyncio
 from datetime import timedelta
 from typing import Any
 
+from app.services import evidence_direction as _evidence_direction  # noqa: F401 - installs shared explicit anomaly direction
 from app.services import intelligence as v1
 from app.services import intelligence_v2 as scientist
 from app.services.evidence_miner import EVIDENCE_MINER_VERSION, evidence_priors, mine_evidence
+from app.services.evidence_seeding import EVIDENCE_SEEDER_VERSION, SEED_SHARE, build_seeded_proposals, verified_evidence_rows
 from app.services.multitimeframe import as_utc
 from app.services.research_director import ResearchDirectedIntelligenceDirector
 
@@ -24,20 +26,33 @@ def _float_or(value: Any, default: float) -> float:
 
 
 class EvidenceDirectedIntelligenceDirector(ResearchDirectedIntelligenceDirector):
-    """Research Director that seeds hypothesis generation from measured anomalies."""
+    """Research Director that mines anomalies and converts verified ones into testable hypotheses."""
 
     def __init__(self, settings: Any, repo: Any, row_provider: Any) -> None:
         super().__init__(settings, repo, row_provider)
         self.evidence_scores: dict[str, float] = {}
+        self.evidence_rows: list[dict[str, Any]] = []
         self.evidence_miner_summary: dict[str, Any] = {
             "version": EVIDENCE_MINER_VERSION,
             "signals": 0,
+            "verified_signals": 0,
+            "withheld_signals": 0,
             "features_screened": 0,
             "single_tests": 0,
             "pair_tests": 0,
             "status": "waiting_for_first_scan",
             "data_access": "development_only",
             "confirmation_holdout_access": "forbidden",
+        }
+        self.evidence_seed_summary: dict[str, Any] = {
+            "version": EVIDENCE_SEEDER_VERSION,
+            "seeded_hypotheses": 0,
+            "seed_share_cap": SEED_SHARE,
+            "status": "waiting_for_verified_evidence",
+            "generation_data": "development_only",
+            "validation_access": "forbidden",
+            "confirmation_holdout_access": "forbidden",
+            "mt5_export_status": "advanced_rule_parity_required",
         }
         self._evidence_last_updated = None
 
@@ -57,7 +72,12 @@ class EvidenceDirectedIntelligenceDirector(ResearchDirectedIntelligenceDirector)
         except Exception:
             rows = []
 
-        self.evidence_scores = evidence_priors(rows)
+        verified = verified_evidence_rows(rows)
+        self.evidence_rows = verified
+        # Critical trust boundary: persisted rows are re-checked before they can
+        # teach hypothesis generation. A stale/malformed signal cannot influence
+        # research merely because its stored status still says `signal`.
+        self.evidence_scores = evidence_priors(verified)
         latest = None
         for row in rows:
             parsed = as_utc(row.get("updated_at"))
@@ -66,10 +86,12 @@ class EvidenceDirectedIntelligenceDirector(ResearchDirectedIntelligenceDirector)
         self._evidence_last_updated = latest
         self.evidence_miner_summary = {
             "version": EVIDENCE_MINER_VERSION,
-            "status": "active" if rows else "waiting_for_first_scan",
+            "status": "active" if verified else "waiting_for_verified_scan",
             "signals": len(rows),
+            "verified_signals": len(verified),
+            "withheld_signals": max(0, len(rows) - len(verified)),
             "priors": len(self.evidence_scores),
-            "top_signals": rows[:12],
+            "top_signals": verified[:12],
             "last_mined_at": latest.isoformat() if latest else None,
             "refresh_hours": EVIDENCE_REFRESH_HOURS,
             "data_access": "development_only",
@@ -80,8 +102,8 @@ class EvidenceDirectedIntelligenceDirector(ResearchDirectedIntelligenceDirector)
     async def _load_memory(self) -> dict[str, float]:
         memory = await super()._load_memory()
         await self._load_evidence()
-        # Evidence Miner only influences hypothesis generation. Selection-stage
-        # memory remains the stronger source and all sealed stages stay excluded.
+        # Statistical evidence is a hypothesis-generation prior only. Completed
+        # selection-stage learning remains stronger, and sealed stages never teach.
         for feature_key, score in self.evidence_scores.items():
             memory[feature_key] = v1.clamp(float(memory.get(feature_key, 0.0)) + float(score) * 0.65, -4.0, 6.0)
         return memory
@@ -136,6 +158,56 @@ class EvidenceDirectedIntelligenceDirector(ResearchDirectedIntelligenceDirector)
             return True
         return v1.utc_now() >= self._evidence_last_updated + timedelta(hours=EVIDENCE_REFRESH_HOURS)
 
+    def _proposals(self, memory: dict[str, float], existing: set[str], *, seed: int) -> list[dict[str, Any]]:
+        # Keep a permanent exploration floor. Evidence can direct at most 55% of
+        # each Scientist cycle; the rest still comes from the broader grammar.
+        exploratory = super()._proposals(memory, existing, seed=seed)
+        seed_target = max(0, min(self.proposal_count, int(round(self.proposal_count * SEED_SHARE))))
+        seeded: list[dict[str, Any]] = []
+        summary: dict[str, Any] = {
+            "version": EVIDENCE_SEEDER_VERSION,
+            "seeded_hypotheses": 0,
+            "target": seed_target,
+            "seed_share_cap": SEED_SHARE,
+            "verified_signals": len(self.evidence_rows),
+            "status": "no_seedable_evidence",
+            "generation_data": "development_only",
+            "validation_access": "forbidden",
+            "confirmation_holdout_access": "forbidden",
+            "mt5_export_status": "advanced_rule_parity_required",
+        }
+        if self.active_dataset == scientist.FABRIC_DATASET and self.evidence_rows and seed_target:
+            seeded, summary = build_seeded_proposals(
+                self.evidence_rows,
+                existing,
+                target=seed_target,
+                seed=seed,
+                symbol=self.settings.source_symbol,
+                timeframe=self.settings.research_timeframe,
+                snapshot_interval=self.active_snapshot_interval,
+                source_interval=self.active_source_interval,
+                research_dataset=self.active_dataset,
+                fabric_version=scientist.FABRIC_VERSION,
+            )
+
+        combined: list[dict[str, Any]] = []
+        seen = set(existing)
+        for item in [*seeded, *exploratory]:
+            key = str(item.get("hypothesis_key") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            combined.append(item)
+            if len(combined) >= self.proposal_count:
+                break
+
+        summary["seeded_hypotheses"] = len(seeded)
+        summary["exploration_hypotheses"] = max(0, len(combined) - len(seeded))
+        summary["total_hypotheses"] = len(combined)
+        summary["status"] = "active" if seeded else summary.get("status", "no_seedable_evidence")
+        self.evidence_seed_summary = summary
+        return combined
+
     async def run_science_once(self, rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         selected_rows = await self._select_science_rows(rows)
         segments = v1.chronological_segments(selected_rows)
@@ -183,6 +255,25 @@ class EvidenceDirectedIntelligenceDirector(ResearchDirectedIntelligenceDirector)
 
         result = await super().run_science_once(selected_rows)
         result["evidence_miner"] = self.evidence_miner_summary
+        result["evidence_seeding"] = self.evidence_seed_summary
+        if result.get("ok"):
+            try:
+                seeded_count = int(self.evidence_seed_summary.get("seeded_hypotheses") or 0)
+                exploration_count = int(self.evidence_seed_summary.get("exploration_hypotheses") or 0)
+                await self.repo.event(
+                    "success" if seeded_count else "info",
+                    "evidence_seeder",
+                    (
+                        f"Evidence Seeder created {seeded_count} targeted development hypotheses from verified anomalies; "
+                        f"{exploration_count} hypotheses preserved broad exploration."
+                    ),
+                    {
+                        **self.evidence_seed_summary,
+                        "research_dataset": self.active_dataset,
+                    },
+                )
+            except Exception:
+                pass
         return result
 
     def runtime_status(self) -> dict[str, Any]:
@@ -192,11 +283,16 @@ class EvidenceDirectedIntelligenceDirector(ResearchDirectedIntelligenceDirector)
             "development_only_evidence_mining",
             "false_discovery_rate_control",
             "cross_year_anomaly_stability",
-            "anomaly_guided_hypothesis_generation",
+            "verified_evidence_only_learning",
+            "evidence_to_hypothesis_seeding",
+            "explicit_anomaly_direction_testing",
+            "research_exploration_floor",
         ):
             if capability not in capabilities:
                 capabilities.append(capability)
         status["capabilities"] = capabilities
         status["evidence_miner_version"] = EVIDENCE_MINER_VERSION
         status["evidence_miner"] = self.evidence_miner_summary
+        status["evidence_seeder_version"] = EVIDENCE_SEEDER_VERSION
+        status["evidence_seeding"] = self.evidence_seed_summary
         return status
