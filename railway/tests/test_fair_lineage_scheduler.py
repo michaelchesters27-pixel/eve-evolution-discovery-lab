@@ -126,3 +126,61 @@ def test_full_queue_cannot_starve_new_promising_lineage():
     # again; fairness cannot grow the mutation backlog without bound.
     assert asyncio.run(worker.ensure_mutation_queue()) == 0
     assert len(repo.client.children) == FIRST_GENERATION_TARGET
+
+
+class WorkRepo:
+    def __init__(self):
+        self.events = []
+        self.claims = []
+
+    async def claim_candidate(self, _worker_id):
+        self.claims.append("candidate_claim")
+        return {"id": "candidate"}
+
+    async def claim_mutation(self, _worker_id):
+        self.claims.append("mutation_claim")
+        return {"id": "mutation"}
+
+    async def event(self, level, component, message, details):
+        self.events.append((level, component, message, details))
+
+
+class WorkAllocationHarness(FairLineageDiscoveryOrchestrator):
+    def __init__(self):
+        settings = SimpleNamespace(lineage_queue_floor=20)
+        super().__init__(settings, None, WorkRepo())
+        self.processed = []
+
+    async def sync_source(self):
+        return 0
+
+    async def rows(self, force=False):
+        return [{}] * 5000
+
+    async def profile_legacy_package(self, rows):
+        return False
+
+    async def generate_pending_package(self):
+        return False
+
+    async def ensure_mutation_queue(self):
+        return 0
+
+    async def ensure_candidate_queue(self):
+        return 0
+
+    async def process_candidate(self, candidate, rows):
+        self.processed.append("candidate")
+
+    async def process_mutation(self, mutation, rows):
+        self.processed.append("mutation")
+
+
+def test_worker_alternates_candidate_and_mutation_when_both_queues_have_work():
+    worker = WorkAllocationHarness()
+
+    for _ in range(6):
+        result = asyncio.run(worker.run_once())
+        assert result["ok"] is True
+
+    assert worker.processed == ["candidate", "mutation", "candidate", "mutation", "candidate", "mutation"]
