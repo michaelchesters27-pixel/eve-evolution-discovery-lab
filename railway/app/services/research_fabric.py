@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +21,11 @@ FABRIC_RESEARCH_COLUMNS = (
     "context_d1_return_pct,trend_12_atr,trend_48_atr,streak,regime,alignment_score,outcomes,"
     "outcome_horizons,outcome_complete,feature_version,fabric_version"
 )
+
+# A Railway process should pay the six-year download cost only once. Subsequent
+# consumers and cache refreshes append newly completed M5 rows by candle_time.
+_FABRIC_ROW_CACHE: dict[tuple[int, str, bool], list[dict[str, Any]]] = {}
+_FABRIC_CACHE_LOCKS: dict[tuple[int, str, bool], asyncio.Lock] = {}
 
 
 def utc_now_iso() -> str:
@@ -119,23 +125,16 @@ async def resolve_dataset_state(repo: Any, scientist_version: str, audit: dict[s
     return payload
 
 
-async def load_fabric_rows(
+async def _scan_fabric_rows(
     repo: Any,
     symbol: str,
     *,
-    complete_only: bool = True,
-    after: str | None = None,
+    complete_only: bool,
+    after: str | None,
 ) -> list[dict[str, Any]]:
-    """Load the research fabric with bounded keyset pagination.
-
-    `after` makes cache refreshes incremental: once Scientist v2 has loaded the
-    six-year history it asks only for newly completed M5 rows. This avoids
-    re-downloading hundreds of thousands of historical rows every cache cycle.
-    """
     rows: list[dict[str, Any]] = []
-    cursor: str | None = after
+    cursor = after
     page = 1000
-
     while True:
         params = {
             "select": FABRIC_RESEARCH_COLUMNS,
@@ -153,17 +152,44 @@ async def load_fabric_rows(
         batch = await repo.client.get("m5_research_snapshots", params=params)
         if not batch:
             break
-
         rows.extend(batch)
         next_cursor = str(batch[-1].get("candle_time") or "")
         if not next_cursor or next_cursor == cursor:
             raise RuntimeError("M5 fabric keyset scan did not advance candle_time cursor")
         cursor = next_cursor
-
         if len(batch) < page:
             break
-
     return rows
+
+
+async def load_fabric_rows(
+    repo: Any,
+    symbol: str,
+    *,
+    complete_only: bool = True,
+    after: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load completed every-M5 research rows with process-local incremental caching.
+
+    Explicit `after` calls are uncached bounded scans. Normal Scientist/orchestrator
+    calls share one process cache: first call loads history; later calls request
+    only rows newer than the cached candle_time and append them in place.
+    """
+    if after is not None:
+        return await _scan_fabric_rows(repo, symbol, complete_only=complete_only, after=after)
+
+    key = (id(repo.client), symbol, complete_only)
+    lock = _FABRIC_CACHE_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        cached = _FABRIC_ROW_CACHE.get(key)
+        cursor = str(cached[-1].get("candle_time") or "") if cached else None
+        fresh = await _scan_fabric_rows(repo, symbol, complete_only=complete_only, after=cursor)
+        if cached is None:
+            cached = fresh
+            _FABRIC_ROW_CACHE[key] = cached
+        elif fresh:
+            cached.extend(fresh)
+        return cached
 
 
 async def latest_fabric_rows(repo: Any, symbol: str, *, limit: int = 120) -> list[dict[str, Any]]:
