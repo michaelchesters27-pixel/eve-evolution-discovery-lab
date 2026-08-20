@@ -37,3 +37,8 @@ def activate() -> None:
 
 
 activate()
+
+# Import after direction activation. The parity gate imports the base orchestrator,
+# which in turn imports M1 replay; doing this here guarantees M1 binds the same
+# explicit evidence direction before any evidence-seeded candidate can reach it.
+from app.services import mt5_evidence_gate as _mt5_evidence_gate  # noqa: E402,F401
