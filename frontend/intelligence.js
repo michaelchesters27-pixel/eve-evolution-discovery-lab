@@ -74,6 +74,7 @@ function renderEveIntelligence() {
   const runtime = scientist.runtime || scientist.scientist || {};
   const authority = audit.scientist_authority || {};
   const persistent = audit.scientist_persistent_stats || {};
+  const persistedDirector = audit.scientist_persistent_director || {};
   const coverage = audit.coverage || {};
   const gates = audit.gates || {};
   const causality = audit.causality_violations || {};
@@ -167,13 +168,26 @@ function renderEveIntelligence() {
 
   const directorBox = $('#researchDirector');
   if (directorBox) {
-    const director = runtime.research_director || {};
-    const interaction = runtime.interaction_memory || {};
-    const families = Array.isArray(director.families) ? director.families : [];
+    const runtimeDirector = runtime.research_director || {};
+    const runtimeFamilies = Array.isArray(runtimeDirector.families) ? runtimeDirector.families : [];
+    const persistedFamilies = Array.isArray(persistedDirector.family_plan) ? persistedDirector.family_plan : [];
+    const families = runtimeFamilies.length ? runtimeFamilies : persistedFamilies;
+    const director = runtimeFamilies.length ? runtimeDirector : {
+      version: persistedDirector.research_director_version || 'eve-research-director-v1',
+      memory_features: persistedDirector.memory_features || memoryFeatures,
+      families,
+      strongest_families: families.filter(x => Number(x.evidence_score || 0) > 0).slice(0, 3).map(x => x.family),
+      weakest_families: [...families].filter(x => Number(x.evidence_score || 0) < 0).sort((a,b) => Number(a.evidence_score || 0) - Number(b.evidence_score || 0)).slice(0, 3).map(x => x.family),
+      policy: 'shrink single-trial evidence; exploit repeated positive families; retain exploration floor'
+    };
+    const runtimeInteraction = runtime.interaction_memory || {};
+    const persistedInteraction = persistedDirector.interaction_memory || {};
+    const interaction = Number(runtimeInteraction.interactions || 0) > 0 ? runtimeInteraction : persistedInteraction;
     const strongest = director.strongest_families || [];
     const weakest = director.weakest_families || [];
     const researchMode = strongest.length ? 'Evidence-guided' : 'Exploration';
     const leadingFamily = strongest.length ? strongest.map(human).join(', ') : 'None proven yet';
+    const directorAt = runtimeFamilies.length ? lastScienceAt : persistedDirector.created_at;
     directorBox.className = `feature-card ${families.length ? '' : 'empty'}`;
     if (families.length) {
       directorBox.innerHTML = `<div class="card-top"><div><h3>${esc(runtime.research_director_version || director.version || 'EVE Research Director')}</h3><p>${esc(director.policy || 'Evidence-weighted research allocation')}</p></div>${badge('active')}</div>${stats([
@@ -183,26 +197,31 @@ function renderEveIntelligence() {
         ['Research mode', researchMode],
         ['Leading family', leadingFamily],
         ['Weakest', weakest.length ? weakest.map(human).join(', ') : 'None yet']
-      ])}<div class="rules">${families.slice(0, 8).map(x => `<span>${esc(`${human(x.family)} · score ${num(x.evidence_score,2)} · ${fmt.format(x.trials || 0)} trials`)}</span>`).join('')}</div><p>${strongest.length ? 'Repeated positive evidence is now steering more research budget, while an exploration floor remains active.' : 'No family has earned a positive leadership signal yet. EVE is deliberately staying in exploration mode instead of pretending weak evidence is a winner.'}</p>`;
+      ])}<div class="rules">${families.slice(0, 8).map(x => `<span>${esc(`${human(x.family)} · score ${num(x.evidence_score,2)} · ${fmt.format(x.trials || 0)} trials`)}</span>`).join('')}</div><p>${strongest.length ? 'Repeated positive evidence is now steering more research budget, while an exploration floor remains active.' : 'No family has earned a positive leadership signal yet. EVE is deliberately staying in exploration mode instead of pretending weak evidence is a winner.'}</p>${directorAt ? `<small>${esc(`Last completed Director cycle ${dateText(directorAt)}`)}</small>` : ''}`;
     } else {
-      directorBox.textContent = 'Waiting for the first Research Director cycle on the deployed runtime.';
+      directorBox.textContent = 'Waiting for the first completed Research Director cycle.';
     }
   }
 
   const ablationBox = $('#ablationSummary');
   if (ablationBox) {
-    const ablation = runtime.ablation || {};
+    const runtimeAblation = runtime.ablation || {};
+    const persistedAblation = persistedDirector.ablation || {};
+    const hasRuntimeDirector = Array.isArray((runtime.research_director || {}).families) && (runtime.research_director || {}).families.length > 0;
+    const hasPersistedDirector = Boolean(persistedDirector.created_at);
+    const ablation = hasRuntimeDirector ? runtimeAblation : persistedAblation;
     const checked = Number(ablation.hypotheses_checked || 0);
     const simplified = Number(ablation.hypotheses_simplified || 0);
     const removed = Number(ablation.conditions_removed || 0);
-    ablationBox.className = `feature-card ${checked ? '' : 'empty'}`;
-    if (checked) {
+    const completedCycle = hasRuntimeDirector || hasPersistedDirector;
+    ablationBox.className = `feature-card ${completedCycle ? '' : 'empty'}`;
+    if (completedCycle) {
       ablationBox.innerHTML = `<div class="card-top"><div><h3>${esc(ablation.version || 'Development ablation')}</h3><p>Qualified ideas are simplified before sealed validation.</p></div>${badge('active')}</div>${stats([
         ['Checked', fmt.format(checked)],
         ['Simplified', fmt.format(simplified)],
         ['Conditions removed', fmt.format(removed)],
         ['Sealed data used', 'NO']
-      ])}<p>${removed ? `EVE removed ${fmt.format(removed)} condition${removed === 1 ? '' : 's'} that did not earn their place while preserving the development edge.` : 'No condition could be safely removed in the latest cycle.'}</p>`;
+      ])}<p>${checked === 0 ? 'The last Director cycle completed, but no hypothesis was strong enough to reach ablation. EVE correctly simplified nothing.' : removed ? `EVE removed ${fmt.format(removed)} condition${removed === 1 ? '' : 's'} that did not earn their place while preserving the development edge.` : 'Qualified hypotheses were checked, but no condition could be safely removed in the latest cycle.'}</p>${persistedDirector.created_at && !hasRuntimeDirector ? `<small>${esc(`Last completed Director cycle ${dateText(persistedDirector.created_at)}`)}</small>` : ''}`;
     } else {
       ablationBox.textContent = 'Waiting for a qualified hypothesis to reach development-only simplification.';
     }
