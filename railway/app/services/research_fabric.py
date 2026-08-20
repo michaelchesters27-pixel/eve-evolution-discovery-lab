@@ -119,16 +119,21 @@ async def resolve_dataset_state(repo: Any, scientist_version: str, audit: dict[s
     return payload
 
 
-async def load_fabric_rows(repo: Any, symbol: str, *, complete_only: bool = True) -> list[dict[str, Any]]:
+async def load_fabric_rows(
+    repo: Any,
+    symbol: str,
+    *,
+    complete_only: bool = True,
+    after: str | None = None,
+) -> list[dict[str, Any]]:
     """Load the research fabric with bounded keyset pagination.
 
-    OFFSET/range pagination becomes progressively more expensive on the ~475k-row
-    fabric because PostgreSQL must walk past every previous row. Scientist v2
-    only needs a deterministic chronological scan, so advance by the indexed
-    candle_time instead. Each page remains small and independently bounded.
+    `after` makes cache refreshes incremental: once Scientist v2 has loaded the
+    six-year history it asks only for newly completed M5 rows. This avoids
+    re-downloading hundreds of thousands of historical rows every cache cycle.
     """
     rows: list[dict[str, Any]] = []
-    cursor: str | None = None
+    cursor: str | None = after
     page = 1000
 
     while True:
