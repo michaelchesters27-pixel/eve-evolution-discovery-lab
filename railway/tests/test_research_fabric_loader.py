@@ -1,5 +1,6 @@
 import asyncio
 
+from app.services import research_fabric
 from app.services.research_fabric import load_fabric_rows
 
 
@@ -36,7 +37,13 @@ class FakeRepo:
         self.client = FakeClient()
 
 
+def clear_cache():
+    research_fabric._FABRIC_ROW_CACHE.clear()
+    research_fabric._FABRIC_CACHE_LOCKS.clear()
+
+
 def test_full_fabric_load_uses_candle_time_keyset_not_offset_ranges():
+    clear_cache()
     repo = FakeRepo()
     rows = asyncio.run(load_fabric_rows(repo, "XAU/USD", complete_only=True))
 
@@ -56,7 +63,32 @@ def test_full_fabric_load_uses_candle_time_keyset_not_offset_ranges():
     assert second["params"]["order"] == "candle_time.asc"
 
 
+def test_normal_refresh_reuses_process_cache_and_scans_only_after_last_row():
+    clear_cache()
+    repo = FakeRepo()
+    first = asyncio.run(load_fabric_rows(repo, "XAU/USD", complete_only=True))
+    second = asyncio.run(load_fabric_rows(repo, "XAU/USD", complete_only=True))
+
+    assert first is second
+    assert len(second) == 1002
+    assert len(repo.client.calls) == 3
+    refresh = repo.client.calls[-1]
+    assert refresh["params"]["candle_time"] == "gt.2020-01-02T00:10:00+00:00"
+    assert refresh["range_start"] is None
+    assert refresh["range_end"] is None
+
+
+def test_explicit_after_scan_does_not_replace_shared_history_cache():
+    clear_cache()
+    repo = FakeRepo()
+    rows = asyncio.run(load_fabric_rows(repo, "XAU/USD", complete_only=True, after="2020-01-02T00:00:00+00:00"))
+    assert len(rows) == 2
+    assert repo.client.calls[0]["params"]["candle_time"] == "gt.2020-01-02T00:00:00+00:00"
+    assert research_fabric._FABRIC_ROW_CACHE == {}
+
+
 def test_fabric_load_can_include_incomplete_rows_without_complete_filter():
+    clear_cache()
     repo = FakeRepo()
     asyncio.run(load_fabric_rows(repo, "XAU/USD", complete_only=False))
     assert "outcome_complete" not in repo.client.calls[0]["params"]
