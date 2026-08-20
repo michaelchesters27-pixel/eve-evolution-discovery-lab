@@ -51,12 +51,17 @@ def test_full_fabric_load_uses_candle_time_keyset_not_offset_ranges():
     assert len(repo.client.calls) == 2
     first, second = repo.client.calls
 
+    assert first["table"] == "m5_scientist_research"
     assert first["range_start"] is None
     assert first["range_end"] is None
     assert first["params"]["limit"] == "1000"
     assert first["params"]["outcome_complete"] == "eq.true"
     assert "candle_time" not in first["params"]
+    assert "mtf_m1_path_efficiency" in first["params"]["select"]
+    assert "mtf_h1_direction" in first["params"]["select"]
+    assert "context_m30_return_pct" in first["params"]["select"]
 
+    assert second["table"] == "m5_scientist_research"
     assert second["range_start"] is None
     assert second["range_end"] is None
     assert second["params"]["candle_time"] == "gt.2020-01-02T00:00:00+00:00"
@@ -73,6 +78,7 @@ def test_normal_refresh_reuses_process_cache_and_scans_only_after_last_row():
     assert len(second) == 1002
     assert len(repo.client.calls) == 3
     refresh = repo.client.calls[-1]
+    assert refresh["table"] == "m5_scientist_research"
     assert refresh["params"]["candle_time"] == "gt.2020-01-02T00:10:00+00:00"
     assert refresh["range_start"] is None
     assert refresh["range_end"] is None
