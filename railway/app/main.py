@@ -14,6 +14,7 @@ from app.services.fabric_builder import FabricBuilder
 from app.services.intelligence_v2 import IntelligenceDirector
 from app.services.mt5_generator import decode_package
 from app.services.orchestrator_v3 import DiscoveryOrchestrator
+from app.services import mtf_reasoning as _mtf_reasoning  # noqa: F401 — activates shared research/live semantics
 from app.services.passport import passport_is_complete
 from app.services.repository import DiscoveryRepository, SourceRepository
 
@@ -54,7 +55,7 @@ async def lifespan(_: FastAPI):
                     pass
 
 
-app = FastAPI(title=settings.app_name, version="2.4.2", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.5.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -269,9 +270,8 @@ async def data_health() -> dict[str, Any]:
         "intelligence": intelligence.runtime_status(),
         "fabric": {**fabric.runtime_status(), "state": await safe_fabric_state()},
         "snapshot_definition": (
-            "The legacy scientist currently consumes 15-minute research anchors. "
-            "The new isolated fabric builds every completed M5 state with causal M1/M15/M30/H1/H4/D1 context. "
-            "The scientist will switch only after get_fabric_audit reports ready_for_scientist_cutover=true."
+            "Scientist v2 is authorised on the every-M5 fabric. Each completed M5 state carries causal M1/M15/M30/H1/H4/D1 context, "
+            "and cross-timeframe relationship rules are evaluated from the same audited context in historical research and live recognition."
         ),
     }
 
@@ -331,7 +331,7 @@ async def download_mq5(package_id: str, _: None = Depends(require_package_access
     return Response(
         content=str(row.get("mq5_source") or ""),
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{row.get("mq5_file_name") or "EVE_Discovery.mq5"}"'},
+        headers={"Content-Disposition": f'attachment; filename="{row.get("mq5_file_name") or "EVE_Discovery.mq5"}'},
     )
 
 
