@@ -197,10 +197,11 @@ async def load_fabric_rows(
 
 
 async def latest_fabric_rows(repo: Any, symbol: str, *, limit: int = 120) -> list[dict[str, Any]]:
-    # Live recognition needs the full canonical mtf_context, so it deliberately
-    # reads the base table rather than the compact six-year Scientist view.
+    # The Scientist view includes s.* (including canonical mtf_context) plus the
+    # same flattened relationship fields used historically, keeping live and
+    # research evaluation definitions identical.
     return await repo.client.get(
-        "m5_research_snapshots",
+        "m5_scientist_research",
         params={
             "select": "*",
             "symbol": f"eq.{symbol}",
