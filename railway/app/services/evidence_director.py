@@ -13,6 +13,16 @@ from app.services.research_director import ResearchDirectedIntelligenceDirector
 EVIDENCE_REFRESH_HOURS = 6
 
 
+def _float_or(value: Any, default: float) -> float:
+    """Convert numeric persistence values without treating a genuine zero as missing."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class EvidenceDirectedIntelligenceDirector(ResearchDirectedIntelligenceDirector):
     """Research Director that seeds hypothesis generation from measured anomalies."""
 
@@ -90,17 +100,17 @@ class EvidenceDirectedIntelligenceDirector(ResearchDirectedIntelligenceDirector)
                     "horizon_minutes": int(item.get("horizon_minutes") or 0),
                     "sample_count": int(item.get("sample_count") or 0),
                     "baseline_count": int(item.get("baseline_count") or 0),
-                    "occurrence_rate": float(item.get("occurrence_rate") or 0.0),
-                    "mean_return_pct": float(item.get("mean_return_pct") or 0.0),
-                    "baseline_mean_return_pct": float(item.get("baseline_mean_return_pct") or 0.0),
-                    "effect_pct": float(item.get("effect_pct") or 0.0),
-                    "standardized_effect": float(item.get("standardized_effect") or 0.0),
-                    "p_value": float(item.get("p_value") or 1.0),
-                    "q_value": float(item.get("q_value") or 1.0),
-                    "year_stability": float(item.get("year_stability") or 0.0),
+                    "occurrence_rate": _float_or(item.get("occurrence_rate"), 0.0),
+                    "mean_return_pct": _float_or(item.get("mean_return_pct"), 0.0),
+                    "baseline_mean_return_pct": _float_or(item.get("baseline_mean_return_pct"), 0.0),
+                    "effect_pct": _float_or(item.get("effect_pct"), 0.0),
+                    "standardized_effect": _float_or(item.get("standardized_effect"), 0.0),
+                    "p_value": _float_or(item.get("p_value"), 1.0),
+                    "q_value": _float_or(item.get("q_value"), 1.0),
+                    "year_stability": _float_or(item.get("year_stability"), 0.0),
                     "direction": str(item.get("direction") or "flat"),
                     "status": str(item.get("status") or "screened"),
-                    "evidence_score": float(item.get("evidence_score") or 0.0),
+                    "evidence_score": _float_or(item.get("evidence_score"), 0.0),
                     "metadata": {
                         "miner_version": EVIDENCE_MINER_VERSION,
                         "year_effects": item.get("year_effects") or {},
