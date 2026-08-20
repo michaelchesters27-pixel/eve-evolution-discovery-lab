@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from app.services.evidence_director import _float_or
 from app.services.evidence_miner import _bh_adjust, _returns_by_horizon, mine_evidence
 
 
@@ -14,6 +15,12 @@ def test_bh_adjust_is_monotone_and_bounded():
     q_values = [row["q_value"] for row in rows]
     assert all(0.0 <= value <= 1.0 for value in q_values)
     assert q_values[0] <= q_values[1] <= q_values[2] <= q_values[3]
+
+
+def test_persistence_numeric_helper_preserves_real_zero():
+    assert _float_or(0.0, 1.0) == 0.0
+    assert _float_or("0", 1.0) == 0.0
+    assert _float_or(None, 1.0) == 1.0
 
 
 def test_120_minute_label_refuses_market_gap():
