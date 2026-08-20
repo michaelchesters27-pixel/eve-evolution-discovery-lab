@@ -7,7 +7,7 @@ from typing import Any
 from app.services import orchestrator_v3
 from app.services.composer import mutation_batch
 
-FAIR_LINEAGE_SCHEDULER_VERSION = "eve-lineage-fairness-v1"
+FAIR_LINEAGE_SCHEDULER_VERSION = "eve-lineage-fairness-v2"
 FIRST_GENERATION_TARGET = 4
 FIRST_GENERATION_PRIORITY = 120
 UNSTARTED_SCAN_LIMIT = 100
@@ -17,13 +17,13 @@ OriginalDiscoveryOrchestrator = orchestrator_v3.DiscoveryOrchestrator
 
 
 class FairLineageDiscoveryOrchestrator(OriginalDiscoveryOrchestrator):
-    """Prevent new promising lineages from being starved by old mutation work.
+    """Prevent promising lineages and mutation work from being starved.
 
-    The normal queue remains fitness-driven. A Generation-0 active lineage that
-    has not yet received four Generation-1 children gets one reserved high-priority
-    child whenever the queue is at or below its configured floor. This keeps the
-    queue bounded while guaranteeing that every promising discovery gets a fair
-    first evolutionary test.
+    The normal queue remains fitness-driven after a fair first generation. A
+    Generation-0 active lineage that has fewer than four Generation-1 children
+    receives one reserved high-priority child whenever the queue is at or below
+    its configured floor. Worker cycles also alternate candidate-first and
+    mutation-first processing when both queues have work.
     """
 
     async def _lineage_needing_first_generation(self) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -64,8 +64,8 @@ class FairLineageDiscoveryOrchestrator(OriginalDiscoveryOrchestrator):
         queued = await self.repo.count_by_status("mutation_candidates", "queued")
 
         # Never let fairness grow an already-overfull queue. At the normal floor,
-        # one reserved child may temporarily make floor+1; the worker immediately
-        # claims that priority-120 child, bringing the queue back to its floor.
+        # one reserved child may temporarily make floor+1; a mutation-first cycle
+        # claims that priority-120 child and returns the queue to its normal floor.
         if queued <= self.settings.lineage_queue_floor:
             lineage, existing = await self._lineage_needing_first_generation()
             if lineage is not None:
@@ -75,9 +75,6 @@ class FairLineageDiscoveryOrchestrator(OriginalDiscoveryOrchestrator):
                 slot = len(existing) + 1
                 created: list[dict[str, Any]] = []
 
-                # Different deterministic slot seeds make duplicate one-gene
-                # children unlikely; the explicit key check prevents reseeding an
-                # identical child if the grammar happens to choose the same gene.
                 for attempt in range(12):
                     batch = mutation_batch(
                         lineage,
@@ -122,14 +119,107 @@ class FairLineageDiscoveryOrchestrator(OriginalDiscoveryOrchestrator):
 
         return await super().ensure_mutation_queue()
 
+    async def run_once(self) -> dict[str, Any]:
+        """Run one autonomous cycle with bounded candidate/mutation fairness."""
+        self.cycle_count += 1
+        self.last_cycle_at = datetime.now(timezone.utc).isoformat()
+        self.last_error = None
+        actions: list[str] = []
+        try:
+            synced = await self.sync_source()
+            if synced:
+                actions.append(f"synced:{synced}")
+
+            rows = await self.rows(force=bool(synced))
+            if len(rows) < 5000:
+                actions.append("waiting_for_data")
+                self.last_action = f"Waiting for source bridge ({len(rows):,} research states local)"
+                self.last_successful_cycle_at = datetime.now(timezone.utc).isoformat()
+                return {"ok": True, "actions": actions, "rows": len(rows)}
+
+            if await self.profile_legacy_package(rows):
+                actions.append("profiled_legacy_package")
+                self.last_successful_cycle_at = datetime.now(timezone.utc).isoformat()
+                return {"ok": True, "actions": actions, "rows": len(rows)}
+
+            if await self.generate_pending_package():
+                actions.append("generated_package")
+                self.last_successful_cycle_at = datetime.now(timezone.utc).isoformat()
+                return {"ok": True, "actions": actions, "rows": len(rows)}
+
+            # Give a new promising lineage access to Generation 1 before claiming
+            # the next unit of research work. This is intentionally bounded to one
+            # reserved child per cycle.
+            reserved = await self.ensure_mutation_queue()
+            if reserved:
+                actions.append(f"mutations:{reserved}")
+
+            # The legacy loop always claimed a normal candidate first, which could
+            # starve a non-empty mutation queue forever. Alternate the preferred
+            # queue every cycle and fall back to the other queue if it is empty.
+            mutation_first = self.cycle_count % 2 == 0
+            if mutation_first:
+                mutation = await self.repo.claim_mutation(self.worker_id)
+                if mutation:
+                    await self.process_mutation(mutation, rows)
+                    actions.append("tested_mutation")
+                    self.last_successful_cycle_at = datetime.now(timezone.utc).isoformat()
+                    return {"ok": True, "actions": actions, "rows": len(rows)}
+                candidate = await self.repo.claim_candidate(self.worker_id)
+                if candidate:
+                    await self.process_candidate(candidate, rows)
+                    actions.append("tested_candidate")
+                    self.last_successful_cycle_at = datetime.now(timezone.utc).isoformat()
+                    return {"ok": True, "actions": actions, "rows": len(rows)}
+            else:
+                candidate = await self.repo.claim_candidate(self.worker_id)
+                if candidate:
+                    await self.process_candidate(candidate, rows)
+                    actions.append("tested_candidate")
+                    self.last_successful_cycle_at = datetime.now(timezone.utc).isoformat()
+                    return {"ok": True, "actions": actions, "rows": len(rows)}
+                mutation = await self.repo.claim_mutation(self.worker_id)
+                if mutation:
+                    await self.process_mutation(mutation, rows)
+                    actions.append("tested_mutation")
+                    self.last_successful_cycle_at = datetime.now(timezone.utc).isoformat()
+                    return {"ok": True, "actions": actions, "rows": len(rows)}
+
+            seeded = await self.ensure_candidate_queue()
+            if seeded:
+                actions.append(f"seeded:{seeded}")
+            if not reserved:
+                mutations = await self.ensure_mutation_queue()
+                if mutations:
+                    actions.append(f"mutations:{mutations}")
+            if not actions:
+                self.last_action = "All research queues healthy; waiting for next cycle"
+                actions.append("idle")
+            self.last_successful_cycle_at = datetime.now(timezone.utc).isoformat()
+            return {"ok": True, "actions": actions, "rows": len(rows)}
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.last_action = "Cycle failed safely"
+            try:
+                await self.repo.event(
+                    "error",
+                    "orchestrator",
+                    "Discovery cycle failed safely.",
+                    {"error": str(exc), "scheduler_version": FAIR_LINEAGE_SCHEDULER_VERSION},
+                )
+            except Exception:
+                pass
+            return {"ok": False, "error": str(exc), "actions": actions}
+
     def runtime_status(self) -> dict[str, Any]:
         status = super().runtime_status()
         status["lineage_scheduler_version"] = FAIR_LINEAGE_SCHEDULER_VERSION
         status["lineage_scheduler"] = {
-            "policy": "guaranteed first-generation access, then normal fitness competition",
+            "policy": "guaranteed first-generation access, then alternating candidate/mutation work and normal fitness competition",
             "first_generation_target": FIRST_GENERATION_TARGET,
             "reserved_priority": FIRST_GENERATION_PRIORITY,
             "queue_floor": self.settings.lineage_queue_floor,
+            "work_allocation": "alternate candidate-first and mutation-first cycles",
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
         return status
