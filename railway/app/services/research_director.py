@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import math
+import random
 from typing import Any
 
 from app.services import backtest_v3 as research
@@ -12,6 +13,7 @@ from app.services.composer import describe_strategy, strategy_hash
 
 RESEARCH_DIRECTOR_VERSION = "eve-research-director-v1"
 ABLATION_VERSION = "eve-development-ablation-v1"
+INTERACTION_VERSION = "eve-feature-interaction-learning-v1"
 
 
 def feature_family(feature_key: str) -> str:
@@ -47,13 +49,13 @@ def feature_family(feature_key: str) -> str:
     return "other"
 
 
-def build_director_memory(memory_rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, Any]]:
-    """Shrink noisy feature scores and add cautious family-level steering.
+def interaction_key(left: str, right: str) -> str:
+    a, b = sorted((str(left), str(right)))
+    return f"interaction:{a}||{b}"
 
-    One lucky or unlucky experiment must not dominate future research. Feature
-    scores therefore earn influence gradually as trial count grows. Family-level
-    influence only becomes material after repeated evidence accumulates.
-    """
+
+def build_director_memory(memory_rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, Any]]:
+    """Shrink noisy feature scores and add cautious family-level steering."""
 
     base: dict[str, dict[str, float | str]] = {}
     families: dict[str, dict[str, float]] = {}
@@ -75,7 +77,10 @@ def build_director_memory(memory_rows: list[dict[str, Any]]) -> tuple[dict[str, 
             "reliability": reliability,
             "shrunk_score": shrunk,
         }
-        agg = families.setdefault(family, {"trials": 0.0, "positives": 0.0, "weighted_score": 0.0, "weight": 0.0, "features": 0.0})
+        agg = families.setdefault(
+            family,
+            {"trials": 0.0, "positives": 0.0, "weighted_score": 0.0, "weight": 0.0, "features": 0.0},
+        )
         weight = max(1.0, float(trials))
         agg["trials"] += float(trials)
         agg["positives"] += float(positives)
@@ -118,6 +123,59 @@ def build_director_memory(memory_rows: list[dict[str, Any]]) -> tuple[dict[str, 
     return adjusted, plan
 
 
+def build_interaction_memory(rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, Any]]:
+    """Build cautious pairwise priors from selection-only interaction evidence."""
+
+    scores: dict[str, float] = {}
+    ranked: list[dict[str, Any]] = []
+    for row in rows:
+        left = str(row.get("feature_a") or "")
+        right = str(row.get("feature_b") or "")
+        if not left or not right or left == right:
+            continue
+        trials = max(0, int(v1.number(row.get("trials"))))
+        positives = max(0, int(v1.number(row.get("positive_trials"))))
+        raw = float(v1.number(row.get("score")))
+        reliability = math.sqrt(trials / (trials + 12.0)) if trials > 0 else 0.0
+        shrunk = v1.clamp(raw * reliability, -3.0, 4.0)
+        key = interaction_key(left, right)
+        scores[key] = shrunk
+        ranked.append(
+            {
+                "feature_a": left,
+                "feature_b": right,
+                "trials": trials,
+                "positive_trials": positives,
+                "positive_rate": round(positives / max(1, trials), 4),
+                "raw_score": round(raw, 6),
+                "evidence_score": round(shrunk, 6),
+            }
+        )
+    ranked.sort(key=lambda item: (abs(float(item["evidence_score"])), int(item["trials"])), reverse=True)
+    return scores, {
+        "version": INTERACTION_VERSION,
+        "interactions": len(scores),
+        "top_evidence": ranked[:20],
+        "policy": "pairwise selection evidence only; stronger shrinkage than single features; 30% proposal exploration retained",
+        "confirmation_holdout_access": "forbidden",
+    }
+
+
+def proposal_interaction_score(rules: dict[str, Any], scores: dict[str, float]) -> float:
+    features = sorted(set(v1.rule_feature_keys(rules)))
+    hits: list[float] = []
+    for i, left in enumerate(features):
+        for right in features[i + 1 :]:
+            key = interaction_key(left, right)
+            if key in scores:
+                hits.append(float(scores[key]))
+    if not hits:
+        return 0.0
+    # Normalise so a strategy with more conditions does not win simply because
+    # it creates more feature pairs.
+    return v1.clamp(sum(hits) / math.sqrt(len(hits)), -4.0, 5.0)
+
+
 def _feature_keys(rules: dict[str, Any]) -> list[str]:
     keys = list(v1.rule_feature_keys(rules))
     conditions = [item for item in (rules.get("entry") or {}).get("conditions") or [] if isinstance(item, dict)]
@@ -136,12 +194,7 @@ def _qualifies(self: Any, metrics: Any) -> bool:
 
 
 def ablate_hypothesis(self: Any, development: list[dict[str, Any]], item: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Greedy backward elimination using development data only.
-
-    A condition is removed only if the simpler rule still clears the normal
-    development gates and remains close to the parent's PF, expectancy and
-    composite development score. Confirmation and final holdout are never read.
-    """
+    """Greedy backward elimination using development data only."""
 
     working = deepcopy(item)
     current_rules = deepcopy(working["rules"])
@@ -216,11 +269,13 @@ def ablate_hypothesis(self: Any, development: list[dict[str, Any]], item: dict[s
 
 
 class ResearchDirectedIntelligenceDirector(scientist.IntelligenceDirector):
-    """Scientist v2 with cautious memory steering and development-only ablation."""
+    """Scientist v2 with research steering, interaction learning and ablation."""
 
     def __init__(self, settings: Any, repo: Any, row_provider: Any) -> None:
         super().__init__(settings, repo, row_provider)
         self.research_director_plan: dict[str, Any] = {"version": RESEARCH_DIRECTOR_VERSION, "families": []}
+        self.interaction_scores: dict[str, float] = {}
+        self.interaction_memory: dict[str, Any] = {"version": INTERACTION_VERSION, "interactions": 0, "top_evidence": []}
         self.last_ablation_summary: dict[str, Any] = {
             "version": ABLATION_VERSION,
             "hypotheses_checked": 0,
@@ -228,16 +283,79 @@ class ResearchDirectedIntelligenceDirector(scientist.IntelligenceDirector):
             "conditions_removed": 0,
         }
 
+    async def _load_interactions(self) -> None:
+        try:
+            rows = await self.repo.client.get(
+                "scientist_interaction_memory",
+                params={
+                    "select": "feature_a,feature_b,trials,positive_trials,score,mean_validation_pf,mean_validation_expectancy_r",
+                    "scientist_version": f"eq.{scientist.INTELLIGENCE_VERSION}",
+                    "research_dataset": f"eq.{self.active_dataset}",
+                    "order": "trials.desc",
+                    "limit": "5000",
+                },
+            )
+        except Exception:
+            rows = []
+        self.interaction_scores, self.interaction_memory = build_interaction_memory(rows)
+
     async def _load_memory(self) -> dict[str, float]:
         rows = await self.feature_memory(500)
         self.memory_features = len(rows)
         adjusted, plan = build_director_memory(rows)
         self.research_director_plan = plan
+        await self._load_interactions()
         return adjusted
 
     async def _rebuild_memory(self) -> dict[str, float]:
         await super()._rebuild_memory()
         return await self._load_memory()
+
+    def _proposals(self, memory: dict[str, float], existing: set[str], *, seed: int) -> list[dict[str, Any]]:
+        """Oversample then rank by learned pair interactions, retaining exploration."""
+
+        rng = random.Random(seed)
+        target = self.proposal_count
+        pool_target = min(max(target * 4, target + 12), 500)
+        pool: dict[str, dict[str, Any]] = {}
+        attempts = 0
+        while len(pool) < pool_target and attempts < pool_target * 80:
+            attempts += 1
+            rules = scientist._proposal_rules(
+                rng,
+                memory,
+                symbol=self.settings.source_symbol,
+                timeframe=self.settings.research_timeframe,
+                snapshot_interval=self.active_snapshot_interval,
+                source_interval=self.active_source_interval,
+            )
+            rules["market"]["research_dataset"] = self.active_dataset
+            if self.active_dataset == scientist.FABRIC_DATASET:
+                rules["market"]["fabric_version"] = scientist.FABRIC_VERSION
+            digest = strategy_hash(rules)
+            key = f"science-{digest[:32]}"
+            if key in existing or key in pool:
+                continue
+            pair_score = proposal_interaction_score(rules, self.interaction_scores)
+            conditions = [item for item in (rules.get("entry") or {}).get("conditions") or [] if isinstance(item, dict)]
+            structure_count = sum(str(item.get("type") or "") in research.STRUCTURE_CONDITION_TYPES for item in conditions)
+            pool[key] = {
+                "hypothesis_key": key,
+                "candidate_key": f"candidate-{digest[:28]}",
+                "rules": rules,
+                "hypothesis": describe_strategy(rules),
+                "feature_keys": [*v1.rule_feature_keys(rules), f"scientist:structure_conditions:{structure_count}"],
+                "interaction_prior_score": round(pair_score, 6),
+            }
+
+        candidates = list(pool.values())
+        candidates.sort(key=lambda item: float(item.get("interaction_prior_score") or 0.0), reverse=True)
+        exploit_count = min(len(candidates), int(round(target * 0.70))) if self.interaction_scores else 0
+        selected = candidates[:exploit_count]
+        remaining = candidates[exploit_count:]
+        rng.shuffle(remaining)
+        selected.extend(remaining[: max(0, target - len(selected))])
+        return selected[:target]
 
     def _screen_sync(self, development: list[dict[str, Any]], proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         screened = super()._screen_sync(development, proposals)
@@ -270,12 +388,19 @@ class ResearchDirectedIntelligenceDirector(scientist.IntelligenceDirector):
     def runtime_status(self) -> dict[str, Any]:
         status = super().runtime_status()
         capabilities = list(status.get("capabilities") or [])
-        for capability in ("evidence_weighted_research_direction", "development_only_ablation", "strategy_simplification"):
+        for capability in (
+            "evidence_weighted_research_direction",
+            "pairwise_feature_interaction_learning",
+            "development_only_ablation",
+            "strategy_simplification",
+        ):
             if capability not in capabilities:
                 capabilities.append(capability)
         status["capabilities"] = capabilities
         status["research_director_version"] = RESEARCH_DIRECTOR_VERSION
         status["research_director"] = self.research_director_plan
+        status["interaction_learning_version"] = INTERACTION_VERSION
+        status["interaction_memory"] = self.interaction_memory
         status["ablation"] = self.last_ablation_summary
         return status
 
@@ -286,6 +411,7 @@ class ResearchDirectedIntelligenceDirector(scientist.IntelligenceDirector):
         director = {
             "version": RESEARCH_DIRECTOR_VERSION,
             "plan": self.research_director_plan,
+            "interaction_memory": self.interaction_memory,
             "ablation": self.last_ablation_summary,
         }
         result["research_director"] = director
@@ -295,20 +421,22 @@ class ResearchDirectedIntelligenceDirector(scientist.IntelligenceDirector):
                 "info",
                 "research_director",
                 (
-                    f"Research Director steered this cycle toward {strongest}; ablation simplified "
+                    f"Research Director steered this cycle toward {strongest}; used "
+                    f"{self.interaction_memory.get('interactions', 0)} learned feature interactions; ablation simplified "
                     f"{self.last_ablation_summary.get('hypotheses_simplified', 0)} hypotheses and removed "
                     f"{self.last_ablation_summary.get('conditions_removed', 0)} redundant conditions."
                 ),
                 {
                     "research_director_version": RESEARCH_DIRECTOR_VERSION,
+                    "interaction_learning_version": INTERACTION_VERSION,
                     "active_dataset": self.active_dataset,
                     "memory_features": self.memory_features,
+                    "interaction_memory": self.interaction_memory,
                     "family_plan": self.research_director_plan.get("families") or [],
                     "ablation": self.last_ablation_summary,
                     "confirmation_holdout_access": "forbidden",
                 },
             )
         except Exception:
-            # Scientist output must not fail because an operator event could not be written.
             pass
         return result
