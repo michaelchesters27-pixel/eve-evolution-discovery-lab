@@ -99,6 +99,16 @@ def _variance(values: list[float]) -> float:
     return statistics.pvariance(values) if len(values) >= 2 else 0.0
 
 
+def _float_or(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
+
 def _normal_two_sided_p(z_score: float) -> float:
     return max(0.0, min(1.0, math.erfc(abs(z_score) / math.sqrt(2.0))))
 
@@ -106,13 +116,13 @@ def _normal_two_sided_p(z_score: float) -> float:
 def _bh_adjust(items: list[dict[str, Any]]) -> None:
     if not items:
         return
-    ordered = sorted(enumerate(items), key=lambda pair: float(pair[1].get("p_value") or 1.0))
+    ordered = sorted(enumerate(items), key=lambda pair: _float_or(pair[1].get("p_value"), 1.0))
     m = len(ordered)
     running = 1.0
     adjusted: dict[int, float] = {}
     for reverse_rank, (original_index, item) in enumerate(reversed(ordered), start=1):
         rank = m - reverse_rank + 1
-        raw = float(item.get("p_value") or 1.0)
+        raw = _float_or(item.get("p_value"), 1.0)
         q_value = min(1.0, raw * m / max(1, rank))
         running = min(running, q_value)
         adjusted[original_index] = running
@@ -232,9 +242,9 @@ def _test_indices(
 
 
 def _score(item: dict[str, Any]) -> float:
-    q_value = max(float(item.get("q_value") or 1.0), 1e-12)
-    standardized = abs(float(item.get("standardized_effect") or 0.0))
-    stability = float(item.get("year_stability") or 0.0)
+    q_value = max(_float_or(item.get("q_value"), 1.0), 1e-12)
+    standardized = abs(_float_or(item.get("standardized_effect"), 0.0))
+    stability = _float_or(item.get("year_stability"), 0.0)
     sample = int(item.get("sample_count") or 0)
     sample_weight = min(1.0, math.sqrt(sample / 1000.0))
     significance = min(3.0, max(0.0, -math.log10(q_value)))
@@ -287,8 +297,8 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for item in sorted(
         singles,
         key=lambda value: (
-            float(value.get("q_value") or 1.0),
-            -abs(float(value.get("standardized_effect") or 0.0)),
+            _float_or(value.get("q_value"), 1.0),
+            -abs(_float_or(value.get("standardized_effect"), 0.0)),
             -int(value.get("sample_count") or 0),
         ),
     ):
@@ -324,9 +334,9 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
     all_tests = singles + pairs
     signals: list[dict[str, Any]] = []
     for item in all_tests:
-        q_value = float(item.get("q_value") or 1.0)
-        stability = float(item.get("year_stability") or 0.0)
-        standardized = abs(float(item.get("standardized_effect") or 0.0))
+        q_value = _float_or(item.get("q_value"), 1.0)
+        stability = _float_or(item.get("year_stability"), 0.0)
+        standardized = abs(_float_or(item.get("standardized_effect"), 0.0))
         passed = q_value <= FDR_GATE and stability >= YEAR_STABILITY_GATE and standardized >= 0.03
         item["status"] = "signal" if passed else "screened"
         item["evidence_score"] = round(_score(item) if passed else 0.0, 6)
@@ -337,8 +347,8 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     signals.sort(
         key=lambda item: (
-            float(item.get("evidence_score") or 0.0),
-            abs(float(item.get("standardized_effect") or 0.0)),
+            _float_or(item.get("evidence_score"), 0.0),
+            abs(_float_or(item.get("standardized_effect"), 0.0)),
             int(item.get("sample_count") or 0),
         ),
         reverse=True,
@@ -346,8 +356,8 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
     all_tests.sort(
         key=lambda item: (
             0 if item.get("status") == "signal" else 1,
-            float(item.get("q_value") or 1.0),
-            -abs(float(item.get("standardized_effect") or 0.0)),
+            _float_or(item.get("q_value"), 1.0),
+            -abs(_float_or(item.get("standardized_effect"), 0.0)),
         )
     )
     return {
