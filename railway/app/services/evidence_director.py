@@ -7,6 +7,7 @@ from typing import Any
 from app.services import intelligence as v1
 from app.services import intelligence_v2 as scientist
 from app.services.evidence_miner import EVIDENCE_MINER_VERSION, evidence_priors, mine_evidence
+from app.services.multitimeframe import as_utc
 from app.services.research_director import ResearchDirectedIntelligenceDirector
 
 EVIDENCE_REFRESH_HOURS = 6
@@ -49,7 +50,7 @@ class EvidenceDirectedIntelligenceDirector(ResearchDirectedIntelligenceDirector)
         self.evidence_scores = evidence_priors(rows)
         latest = None
         for row in rows:
-            parsed = v1.as_utc(row.get("updated_at"))
+            parsed = as_utc(row.get("updated_at"))
             if parsed is not None and (latest is None or parsed > latest):
                 latest = parsed
         self._evidence_last_updated = latest
