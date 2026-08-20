@@ -11,7 +11,7 @@ from fastapi.responses import Response
 
 from app.settings import Settings, get_settings
 from app.services.fabric_builder import FabricBuilder
-from app.services.research_director import ResearchDirectedIntelligenceDirector as IntelligenceDirector
+from app.services.evidence_director import EvidenceDirectedIntelligenceDirector as IntelligenceDirector
 from app.services.mt5_generator import decode_package
 from app.services.orchestrator_v3 import DiscoveryOrchestrator
 from app.services import mtf_reasoning as _mtf_reasoning  # noqa: F401 — activates shared research/live semantics
@@ -55,7 +55,7 @@ async def lifespan(_: FastAPI):
                     pass
 
 
-app = FastAPI(title=settings.app_name, version="2.5.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="2.6.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -250,6 +250,21 @@ async def scientist_hypotheses(limit: int = Query(default=100, ge=1, le=500)) ->
 @app.get("/api/scientist/memory", dependencies=[Depends(require_research_access)])
 async def scientist_memory(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     return {"items": await intelligence.feature_memory(limit), "runtime": intelligence.runtime_status()}
+
+
+@app.get("/api/scientist/evidence", dependencies=[Depends(require_research_access)])
+async def scientist_evidence(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    items = await discovery_repo.client.get(
+        "scientist_evidence_miner",
+        params={
+            "select": "*",
+            "scientist_version": "eq.eve-autonomous-scientist-v2",
+            "research_dataset": "eq.every_m5_fabric",
+            "order": "status.desc,evidence_score.desc,q_value.asc",
+            "limit": str(limit),
+        },
+    )
+    return {"items": items, "runtime": intelligence.runtime_status()}
 
 
 @app.get("/api/final-exams", dependencies=[Depends(require_research_access)])
