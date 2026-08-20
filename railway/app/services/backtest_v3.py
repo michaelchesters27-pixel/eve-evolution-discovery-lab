@@ -65,13 +65,24 @@ def _safe_low(rows: list[dict[str, Any]]) -> float | None:
 def enrich_market_observations(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Add causal, past-only market-structure observations to research rows.
 
-    The enrichment is deterministic and uses only information available at the
-    completed signal candle. It never reads forward outcomes. Rows are mutated in
-    place so the orchestrator cache pays the calculation cost once per data sync.
+    The fabric and orchestrator already supply chronological lists. Avoid copying
+    and sorting hundreds of thousands of rows again when the observations are
+    already present; this function is called repeatedly during Scientist screens.
+    If a raw tail has been appended, verify chronology in O(n) and recompute once.
     """
-    ordered = sorted(list(rows), key=lambda row: str(row.get("candle_time") or ""))
-    if ordered and all(row.get("observation_version") == OBSERVATION_VERSION for row in ordered[: min(20, len(ordered))]):
-        return ordered
+    source = rows if isinstance(rows, list) else list(rows)
+    if not source:
+        return source
+
+    sample_indexes = {0, len(source) - 1, len(source) // 2}
+    if all(source[index].get("observation_version") == OBSERVATION_VERSION for index in sample_indexes):
+        return source
+
+    chronological = all(
+        str(source[index - 1].get("candle_time") or "") <= str(source[index].get("candle_time") or "")
+        for index in range(1, len(source))
+    )
+    ordered = source if chronological else sorted(source, key=lambda row: str(row.get("candle_time") or ""))
 
     history: deque[dict[str, Any]] = deque(maxlen=48)
     current_day: str | None = None
