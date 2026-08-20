@@ -2,12 +2,23 @@ from __future__ import annotations
 
 import hashlib
 import os
+from datetime import timedelta
 from typing import Any
 
 # Patch deterministic research semantics before importing the legacy orchestrator.
 from app.services import backtest_v3 as research
 from app.services import orchestrator as base
 from app.services.m1_replay import validate_with_m1
+from app.services.research_fabric import (
+    FABRIC_DATASET,
+    dataset_state,
+    fabric_audit,
+    hard_integrity_passes,
+    load_fabric_rows,
+    rules_use_fabric,
+)
+
+SCIENTIST_VERSION = "eve-autonomous-scientist-v2"
 
 
 def _env_int(name: str, default: int, low: int, high: int) -> int:
@@ -22,7 +33,8 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
     """Research-integrity v3 orchestrator.
 
     Adds causal market observations, actual-entry-time selection locking, moving
-    block Monte Carlo (via backtest_v3), and a global final-exam spending budget.
+    block Monte Carlo (via backtest_v3), a global final-exam spending budget,
+    and dataset-consistent routing for every-M5 Scientist v2 discoveries.
     """
 
     def __init__(self, settings: Any, source: Any, repo: Any) -> None:
@@ -34,11 +46,55 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
             "limit": self.final_exams_per_epoch,
             "remaining": self.final_exams_per_epoch,
         }
+        self._fabric_rows_cache: list[dict[str, Any]] = []
+        self._fabric_cache_at = None
+        self.fabric_validation_rows = 0
 
     async def rows(self, force: bool = False) -> list[dict[str, Any]]:
         rows = await super().rows(force=force)
         research.enrich_market_observations(rows)
         return rows
+
+    async def _authorised_fabric_rows(self, force: bool = False) -> list[dict[str, Any]]:
+        state = await dataset_state(self.repo, SCIENTIST_VERSION)
+        if not (
+            str(state.get("active_dataset") or "") == FABRIC_DATASET
+            and str(state.get("status") or "") == "active"
+        ):
+            raise RuntimeError("Every-M5 scientist validation requested before the verified dataset cutover is active.")
+
+        # Re-check hard integrity whenever possible. A transient audit read outage
+        # may use an already-loaded verified cache, but an actual hard-gate failure
+        # is never ignored.
+        try:
+            audit = await fabric_audit(self.repo)
+            if not hard_integrity_passes(audit):
+                raise RuntimeError("Every-M5 fabric hard integrity gate is not currently satisfied.")
+        except RuntimeError:
+            raise
+        except Exception:
+            if not self._fabric_rows_cache:
+                raise
+
+        fresh_until = (self._fabric_cache_at or base.utc_now() - timedelta(days=1)) + timedelta(
+            minutes=self.settings.row_cache_minutes
+        )
+        if force or not self._fabric_rows_cache or base.utc_now() >= fresh_until:
+            self._fabric_rows_cache = await load_fabric_rows(
+                self.repo,
+                self.settings.source_symbol,
+                complete_only=True,
+            )
+            research.enrich_market_observations(self._fabric_rows_cache)
+            self._fabric_cache_at = base.utc_now()
+        self.fabric_validation_rows = len(self._fabric_rows_cache)
+        return self._fabric_rows_cache
+
+    async def _rows_for_item(self, item: dict[str, Any], legacy_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rules = dict(item.get("rules") or {})
+        if rules_use_fabric(rules):
+            return await self._authorised_fabric_rows()
+        return legacy_rows
 
     def runtime_status(self) -> dict[str, Any]:
         status = super().runtime_status()
@@ -49,6 +105,8 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
                 "selection_execution_model": "signal close -> entry at next completed timeframe open; conservative max-hold lock",
                 "monte_carlo_model": "moving_block_bootstrap",
                 "final_exam_budget": dict(self.final_exam_budget_status),
+                "fabric_validation_rows_cached": self.fabric_validation_rows,
+                "dataset_routing": "rules.market.research_dataset selects legacy_15m or every_m5_fabric; cross-dataset validation is forbidden",
             }
         )
         return status
@@ -151,8 +209,47 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
         )
         return True
 
+    async def process_candidate(self, candidate: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+        try:
+            rows = await self._rows_for_item(candidate, rows)
+            result = research.evaluate_strategy(
+                candidate,
+                rows,
+                min_validation_trades=self.settings.minimum_validation_trades,
+                min_locked_trades=self.settings.minimum_locked_trades,
+                stage="selection",
+            )
+            await self.repo.finish_candidate(str(candidate["id"]), result)
+            completed = {**candidate, **result}
+            if result["result_status"] == "promising":
+                await self.repo.ensure_lineage_for_candidate(completed)
+            validation = dict(result.get("metrics", {}).get("validation") or {})
+            research_dataset = str((candidate.get("rules") or {}).get("market", {}).get("research_dataset") or "legacy_15m")
+            await self.repo.event(
+                "success" if result["result_status"] == "promising" else "info",
+                "candidate_test",
+                (
+                    f"{candidate.get('name')} → {result['result_status']} in selection on {research_dataset}. "
+                    f"Validation PF {research.number(validation.get('profit_factor')):.2f}, expectancy "
+                    f"{research.number(validation.get('expectancy_r')):+.3f}R, {int(research.number(validation.get('trades')))} trades. "
+                    "Confirmation and final holdout were not opened."
+                ),
+                {
+                    "fitness": result.get("fitness_score"),
+                    "decision": result.get("evidence", {}).get("decision"),
+                    "candidate_key": candidate.get("candidate_key"),
+                    "dataset_version": result.get("dataset_version"),
+                    "research_dataset": research_dataset,
+                },
+            )
+            self.last_action = f"Candidate {result['result_status']}: {candidate.get('name')}"
+        except Exception as exc:
+            await self.repo.fail_candidate(str(candidate["id"]), str(exc))
+            raise
+
     async def process_mutation(self, mutation: dict[str, Any], rows: list[dict[str, Any]]) -> None:
         try:
+            rows = await self._rows_for_item(mutation, rows)
             child_result = research.evaluate_strategy(
                 mutation,
                 rows,
@@ -279,6 +376,7 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
                     "finalist": finalist,
                     "holdout_epoch": exam_epoch,
                     "frozen": frozen,
+                    "research_dataset": str((mutation.get("rules") or {}).get("market", {}).get("research_dataset") or "legacy_15m"),
                 },
             )
             if final_result:
