@@ -17,3 +17,5 @@ from app.services import fair_lineage_scheduler as _fair_lineage_scheduler  # no
 from app.services import live_trader_learning_v2 as _live_trader_learning_v2  # noqa: F401
 # Tighten episode identity so zone-ID churn cannot manufacture independent samples.
 from app.services import live_trader_learning_v21 as _live_trader_learning_v21  # noqa: F401
+# Generalise structural families while weighting session/regime/momentum context.
+from app.services import live_trader_learning_v22 as _live_trader_learning_v22  # noqa: F401
