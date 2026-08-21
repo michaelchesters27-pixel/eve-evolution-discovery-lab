@@ -31,3 +31,5 @@ from app.services import live_trader_intelligence_v24 as _live_trader_intelligen
 from app.services import live_trader_learning_governor_v25 as _live_trader_learning_governor_v25  # noqa: F401
 # Audit hardening: stable learning namespace, source-M1 outcome paths and feed-policy socket health.
 from app.services import live_trader_audit_hardening_v26 as _live_trader_audit_hardening_v26  # noqa: F401
+# Expose permanent-learning progress separately from current-family calibration.
+from app.services import live_trader_learning_visibility_v27 as _live_trader_learning_visibility_v27  # noqa: F401

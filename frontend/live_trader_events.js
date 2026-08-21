@@ -18,7 +18,17 @@
     .lt-event-explain{margin:14px 0 0;color:#b8d1c4;line-height:1.6;font-size:12px}
     .lt-event-more{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
     .lt-event-chip{border:1px solid var(--line);border-radius:999px;padding:5px 8px;font-size:9px;color:var(--muted)}
-    @media(max-width:760px){.lt-event-meta{grid-template-columns:1fr 1fr}.lt-event-title{font-size:19px}}
+    .lt-learning-overall{margin-top:14px;border-top:1px solid var(--line);padding-top:14px}
+    .lt-learning-overall-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+    .lt-learning-overall-head b{font-size:11px;letter-spacing:.08em;color:var(--green)}
+    .lt-learning-overall-head span{font-size:9px;color:var(--muted)}
+    .lt-learning-overall-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+    .lt-learning-overall-grid>div{border:1px solid var(--line);background:#06100b;border-radius:11px;padding:11px}
+    .lt-learning-overall-grid span,.lt-learning-overall-grid strong{display:block}
+    .lt-learning-overall-grid span{font-size:8px;color:var(--muted)}
+    .lt-learning-overall-grid strong{font-size:17px;margin-top:4px}
+    .lt-learning-progress-note{font-size:10px;color:#a9c4b6;line-height:1.55;margin:10px 0 0}
+    @media(max-width:760px){.lt-event-meta{grid-template-columns:1fr 1fr}.lt-event-title{font-size:19px}.lt-learning-overall-grid{grid-template-columns:1fr 1fr}}
   `;
   document.head.appendChild(style);
 
@@ -47,6 +57,7 @@
   let lastEventSignature = null;
   let lastTradeSignature = null;
   let timer = null;
+  let learningProgressTimer = null;
 
   function eventSpeech(event) {
     const level = fmt(event.level);
@@ -124,6 +135,77 @@
     lastTradeSignature = tradeSig;
   }
 
+  function renameCurrentFamilyMetric() {
+    const learning = document.getElementById('ltLearning');
+    const firstLabel = learning?.querySelector('span');
+    if (firstLabel && firstLabel.textContent !== 'Current-family matches') {
+      firstLabel.textContent = 'Current-family matches';
+    }
+  }
+
+  function ensureLearningProgress() {
+    renameCurrentFamilyMetric();
+    let panel = document.getElementById('ltLearningOverall');
+    if (panel) return panel;
+    const policy = document.getElementById('ltLearningPolicy');
+    if (!policy) return null;
+    panel = document.createElement('div');
+    panel.className = 'lt-learning-overall';
+    panel.id = 'ltLearningOverall';
+    panel.innerHTML = `
+      <div class="lt-learning-overall-head"><b>PERMANENT LEARNING PROGRESS</b><span id="ltLearningEngine">Loading</span></div>
+      <div class="lt-learning-overall-grid" id="ltLearningOverallGrid"></div>
+      <p class="lt-learning-progress-note" id="ltLearningProgressNote">Reading EVE's permanent learning memory.</p>
+    `;
+    policy.insertAdjacentElement('beforebegin', panel);
+    return panel;
+  }
+
+  function dueText(value) {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit', timeZone:'UTC'}) + ' UTC';
+  }
+
+  async function refreshLearningProgress() {
+    const panel = ensureLearningProgress();
+    if (!panel) return;
+    try {
+      const summary = await api('/live-trader/learning');
+      renameCurrentFamilyMetric();
+      const recorded = Number(summary.recorded || 0);
+      const resolved = Number(summary.resolved || 0);
+      const scored = Number(summary.scored || 0);
+      const families = Number(summary.families_seen || 0);
+      const accuracy = summary.accuracy == null ? 'Learning' : `${Math.round(Number(summary.accuracy) * 100)}%`;
+      document.getElementById('ltLearningEngine').textContent = summary.engine_version || summary.version || 'Live';
+      document.getElementById('ltLearningOverallGrid').innerHTML = [
+        ['Recorded episodes', recorded],
+        ['Resolved outcomes', resolved],
+        ['Scored outcomes', scored],
+        ['Families seen', families],
+      ].map(([name,value]) => `<div><span>${safe(name)}</span><strong>${safe(value)}</strong></div>`).join('');
+      const due = dueText(summary.next_due_at);
+      const note = document.getElementById('ltLearningProgressNote');
+      if (recorded === 0) {
+        note.textContent = 'No independent episode has been recorded in the permanent learner yet.';
+      } else if (resolved === 0) {
+        note.textContent = `${recorded} independent episode${recorded === 1 ? '' : 's'} recorded; ${Number(summary.open || 0)} awaiting outcome.${due ? ` First outcome becomes eligible around ${due}.` : ''} Current-family matches above are a separate measure.`;
+      } else {
+        note.textContent = `${recorded} independent episodes recorded, ${resolved} resolved and ${scored} scored. Overall scored accuracy: ${accuracy}. Current-family matches above only show evidence relevant to EVE's present setup family.`;
+      }
+    } catch (_) {
+      document.getElementById('ltLearningProgressNote').textContent = 'Permanent learning progress is temporarily unavailable.';
+    }
+  }
+
+  const learningTarget = document.getElementById('ltLearning');
+  if (learningTarget) {
+    const learningObserver = new MutationObserver(renameCurrentFamilyMetric);
+    learningObserver.observe(learningTarget, {childList:true, subtree:true});
+  }
+
   async function refresh() {
     if (!view.classList.contains('active')) return;
     try {
@@ -134,8 +216,11 @@
 
   function start() {
     clearInterval(timer);
+    clearInterval(learningProgressTimer);
     refresh();
+    refreshLearningProgress();
     timer = setInterval(refresh, 2500);
+    learningProgressTimer = setInterval(refreshLearningProgress, 10000);
   }
 
   document.querySelector('[data-view="live-trader"]')?.addEventListener('click', start);
