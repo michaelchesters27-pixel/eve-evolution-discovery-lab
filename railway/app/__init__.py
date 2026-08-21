@@ -23,3 +23,7 @@ from app.services import live_trader_learning_v22 as _live_trader_learning_v22  
 from app.services import live_trader_feed_guard as _live_trader_feed_guard  # noqa: F401
 # Add sweep/reclaim, fake-out and accepted-break semantics to execution and learning.
 from app.services import live_trader_market_events_v23 as _live_trader_market_events_v23  # noqa: F401
+# Load the richer causal trend features used by the v2.4 bias engine.
+from app.services import live_trader_feature_feed_v24 as _live_trader_feature_feed_v24  # noqa: F401
+# Upgrade directional reasoning and exact-horizon learning semantics.
+from app.services import live_trader_intelligence_v24 as _live_trader_intelligence_v24  # noqa: F401
