@@ -33,3 +33,5 @@ from app.services import live_trader_learning_governor_v25 as _live_trader_learn
 from app.services import live_trader_audit_hardening_v26 as _live_trader_audit_hardening_v26  # noqa: F401
 # Expose permanent-learning progress separately from current-family calibration.
 from app.services import live_trader_learning_visibility_v27 as _live_trader_learning_visibility_v27  # noqa: F401
+# Lock one published trade campaign at a time and follow it through trigger to terminal outcome.
+from app.services import live_trader_trade_lock_v28 as _live_trader_trade_lock_v28  # noqa: F401
