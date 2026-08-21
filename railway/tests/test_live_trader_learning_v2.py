@@ -9,10 +9,10 @@ from app.services.live_trader_learning_v2 import (
 )
 
 
-def market_state(zone_id: str = "zone-a") -> dict:
+def market_state(zone_id: str = "zone-a", *, as_of: str = "2026-08-21T09:15:00+00:00", session: str = "london") -> dict:
     return {
         "symbol": "XAU/USD",
-        "as_of": "2026-08-21T09:15:00+00:00",
+        "as_of": as_of,
         "bias": {
             "overall": "bullish",
             "timeframes": {
@@ -25,7 +25,7 @@ def market_state(zone_id: str = "zone-a") -> dict:
             },
         },
         "market": {
-            "session": "london",
+            "session": session,
             "regime": "compression",
             "return_12_pct": 0.08,
             "return_48_pct": 0.14,
@@ -38,11 +38,19 @@ def market_state(zone_id: str = "zone-a") -> dict:
     }
 
 
-def test_setup_family_generalises_across_exact_zone_ids() -> None:
-    first = market_state("demand-day-one")
-    second = market_state("demand-day-two")
+def test_setup_family_and_episode_ignore_exact_zone_id_churn() -> None:
+    first = market_state("demand-original")
+    second = market_state("demand-relabelled")
     assert family_signature(first) == family_signature(second)
-    assert episode_key(first) != episode_key(second)
+    assert episode_key(first) == episode_key(second)
+
+
+def test_episode_changes_only_for_a_genuinely_separate_day_or_session() -> None:
+    london_today = market_state("zone-a", as_of="2026-08-21T09:15:00+00:00", session="london")
+    new_york_today = market_state("zone-a", as_of="2026-08-21T14:15:00+00:00", session="new_york")
+    london_tomorrow = market_state("zone-a", as_of="2026-08-22T09:15:00+00:00", session="london")
+    assert episode_key(london_today) != episode_key(new_york_today)
+    assert episode_key(london_today) != episode_key(london_tomorrow)
 
 
 def test_calibration_requires_independent_depth_and_multiple_days() -> None:
