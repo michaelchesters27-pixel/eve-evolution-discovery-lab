@@ -51,7 +51,7 @@
   const fmt = value => Number.isFinite(Number(value))
     ? Number(value).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2})
     : '—';
-  const safe = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;,'"':'&quot;'}[ch]));
+  const safe = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
   const human = value => String(value || '—').replaceAll('_',' ').replace(/\b\w/g, ch => ch.toUpperCase());
 
   let lastEventSignature = null;
