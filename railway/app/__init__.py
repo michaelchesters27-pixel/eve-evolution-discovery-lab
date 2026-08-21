@@ -19,3 +19,5 @@ from app.services import live_trader_learning_v2 as _live_trader_learning_v2  # 
 from app.services import live_trader_learning_v21 as _live_trader_learning_v21  # noqa: F401
 # Generalise structural families while weighting session/regime/momentum context.
 from app.services import live_trader_learning_v22 as _live_trader_learning_v22  # noqa: F401
+# Match feed freshness to Twelve Data's minute-stamped production cadence.
+from app.services import live_trader_feed_guard as _live_trader_feed_guard  # noqa: F401
