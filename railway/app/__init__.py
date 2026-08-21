@@ -6,6 +6,9 @@ from app.services import data_quality_guard as _data_quality_guard  # noqa: F401
 # Install compact research observations and bounded Evidence Miner working memory
 # before Scientist/backtest modules bind their helper functions.
 from app.services import memory_guard_v1 as _memory_guard_v1  # noqa: F401
+# Preserve expanded obs_* debug fields only for small synthetic/operator inputs;
+# the six-year production fabric remains compact.
+from app.services import memory_guard_compat_v1 as _memory_guard_compat_v1  # noqa: F401
 
 # Install the bounded fairness extension before app.main imports orchestrator_v3.
 from app.services import fair_lineage_scheduler as _fair_lineage_scheduler  # noqa: F401
