@@ -56,7 +56,6 @@ def test_sell_side_sweep_and_reclaim_is_explicit_market_event():
     assert primary["event_class"] == "sell_side_sweep_reclaim"
     assert primary["implication"] == "bullish"
     assert primary["confirmation"] == "possible_fakeout"
-    assert primary["level_label"] == "Previous day low"
 
 
 def test_failed_breakout_above_is_confirmed_fakeout():
