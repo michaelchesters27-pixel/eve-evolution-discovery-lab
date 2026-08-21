@@ -57,14 +57,15 @@ def test_bias_v24_does_not_force_direction_when_structure_and_momentum_conflict(
     trader = v2.LiveTrader.__new__(v2.LiveTrader)
     row = latest_row(trend=-0.22, return_12=-0.55, return_48=-1.1)
     row["regime"] = "range"
-    row["mtf_context"]["H1"] = tf(-1, body_ratio=0.8)
     row["mtf_context"]["M30"] = tf(-1, body_ratio=0.8)
     row["mtf_context"]["M15"] = tf(-1, body_ratio=0.8)
+    row["mtf_context"]["M5"] = tf(-1, body_ratio=0.8)
 
     bias, _ = v24._bias_v24(trader, row)
 
     assert bias["overall"] == "neutral"
-    assert bias["components"]["structural_score"] * bias["components"]["momentum_score"] <= 0
+    assert bias["components"]["structural_score"] > 0
+    assert bias["components"]["momentum_score"] < 0
 
 
 def bar(start: datetime, close: float, *, high: float | None = None, low: float | None = None) -> dict:
