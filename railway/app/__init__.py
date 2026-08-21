@@ -21,3 +21,5 @@ from app.services import live_trader_learning_v21 as _live_trader_learning_v21  
 from app.services import live_trader_learning_v22 as _live_trader_learning_v22  # noqa: F401
 # Match feed freshness to Twelve Data's minute-stamped production cadence.
 from app.services import live_trader_feed_guard as _live_trader_feed_guard  # noqa: F401
+# Add sweep/reclaim, fake-out and accepted-break semantics to execution and learning.
+from app.services import live_trader_market_events_v23 as _live_trader_market_events_v23  # noqa: F401
