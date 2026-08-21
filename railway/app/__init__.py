@@ -27,3 +27,5 @@ from app.services import live_trader_market_events_v23 as _live_trader_market_ev
 from app.services import live_trader_feature_feed_v24 as _live_trader_feature_feed_v24  # noqa: F401
 # Upgrade directional reasoning and exact-horizon learning semantics.
 from app.services import live_trader_intelligence_v24 as _live_trader_intelligence_v24  # noqa: F401
+# Let mature poor-performing families veto live candidates while shadow-scoring them.
+from app.services import live_trader_learning_governor_v25 as _live_trader_learning_governor_v25  # noqa: F401
