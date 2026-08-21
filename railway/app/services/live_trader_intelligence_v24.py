@@ -53,8 +53,16 @@ def _candle_conviction(item: dict[str, Any]) -> float:
     if direction == 0:
         return 0.0
     range_price = max(_num(item.get("range_price")), 0.0)
+    has_shape = range_price > 0 and any(key in item for key in ("body_abs", "body_price", "close_location"))
+    if not has_shape:
+        # Compatibility fallback for sparse/legacy MTF rows. Direction still carries
+        # the vote, while absolute return magnitude determines how much conviction
+        # to attach instead of silently collapsing every sparse candle to 0.45.
+        move = abs(_num(item.get("return_pct")))
+        conviction = 0.70 + 0.25 * math.tanh(move * 2.0)
+        return direction * _clamp(conviction, 0.70, 0.95)
     body_abs = abs(_num(item.get("body_abs"), abs(_num(item.get("body_price")))))
-    body_ratio = _clamp(body_abs / range_price, 0.0, 1.0) if range_price > 0 else 0.0
+    body_ratio = _clamp(body_abs / range_price, 0.0, 1.0)
     close_location = _clamp(_num(item.get("close_location"), 0.5), 0.0, 1.0)
     close_edge = abs(close_location - 0.5) * 2.0
     conviction = 0.45 + body_ratio * 0.35 + close_edge * 0.20
