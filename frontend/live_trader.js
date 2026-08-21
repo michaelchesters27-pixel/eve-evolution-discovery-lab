@@ -139,7 +139,8 @@
     byId('ltAsOf').textContent = `${feed.connected ? 'Live tick' : 'Latest EVE market state'} · ${timeText(state.as_of)}`;
     const feedEl = byId('ltFeed');
     feedEl.className = `lt-feed ${feed.connected ? 'live' : ''}`;
-    feedEl.querySelector('b').textContent = feed.connected ? 'LIVE' : feed.api_key_configured ? 'RECONNECTING' : 'API KEY NEEDED';
+    const feedStatus = String(feed.status || '').toLowerCase();
+    feedEl.querySelector('b').textContent = feed.connected ? 'LIVE' : feedStatus === 'stale' ? 'STALE — RECONNECTING' : feed.api_key_configured ? 'RECONNECTING' : 'API KEY NEEDED';
     const bias = state.bias || {};
     const biasEl = byId('ltBias');
     biasEl.textContent = String(bias.overall || 'neutral').toUpperCase();

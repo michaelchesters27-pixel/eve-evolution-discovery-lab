@@ -109,12 +109,30 @@ class LiveTrader:
     async def stop(self) -> None:
         self._stop.set()
 
+    def _tick_age_seconds(self) -> float | None:
+        if not self.last_tick_at:
+            return None
+        try:
+            stamp = datetime.fromisoformat(self.last_tick_at.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return max(0.0, (utc_now() - stamp.astimezone(timezone.utc)).total_seconds())
+
+    def _feed_is_fresh(self, max_age_seconds: float = 30.0) -> bool:
+        age = self._tick_age_seconds()
+        return bool(self.connected and age is not None and age <= max_age_seconds)
+
     def runtime_status(self) -> dict[str, Any]:
+        tick_age = self._tick_age_seconds()
         return {
             "version": LIVE_TRADER_VERSION,
             "enabled": self.settings.live_trader_enabled,
             "symbol": self.symbol,
-            "connected": self.connected,
+            "connected": self._feed_is_fresh(),
+            "socket_connected": self.connected,
+            "tick_age_seconds": round(tick_age, 1) if tick_age is not None else None,
             "last_tick_at": self.last_tick_at,
             "last_error": self.last_error,
             "reconnects": self.reconnects,
@@ -552,15 +570,19 @@ class LiveTrader:
         atr = max(number(latest.get("atr_14")), 0.01)
         magnet = self._magnet(str(bias.get("overall")), price, zones, liquidity)
         setup, trade = self._trade_idea(price, atr, bias, zones, liquidity)
+        feed_fresh = self._feed_is_fresh()
+        tick_age = self._tick_age_seconds()
         state: dict[str, Any] = {
             "version": LIVE_TRADER_VERSION,
             "symbol": self.symbol,
             "price": round(price, 3),
             "as_of": self.last_tick_at or latest.get("candle_time") or iso_now(),
             "feed": {
-                "status": "live" if self.connected else "waiting_for_api_key" if not self.settings.twelve_data_api_key else "reconnecting",
+                "status": "live" if feed_fresh else "waiting_for_api_key" if not self.settings.twelve_data_api_key else "stale" if self.connected else "reconnecting",
                 "provider": "Twelve Data WebSocket",
-                "connected": self.connected,
+                "connected": feed_fresh,
+                "socket_connected": self.connected,
+                "tick_age_seconds": round(tick_age, 1) if tick_age is not None else None,
                 "last_tick_at": self.last_tick_at,
                 "api_key_configured": bool(self.settings.twelve_data_api_key),
                 "messages_received": self.messages_received,
@@ -876,16 +898,25 @@ class LiveTrader:
                     backoff = 2
                     await websocket.send(json.dumps({"action": "subscribe", "params": {"symbols": self.symbol}}))
                     heartbeat = asyncio.create_task(self._heartbeat(websocket), name="eve-live-trader-heartbeat")
+                    connected_at = utc_now()
                     try:
-                        async for message in websocket:
-                            if self._stop.is_set():
-                                break
+                        while not self._stop.is_set():
+                            try:
+                                message = await asyncio.wait_for(websocket.recv(), timeout=15)
+                            except asyncio.TimeoutError:
+                                age = self._tick_age_seconds()
+                                if (utc_now() - connected_at) >= timedelta(seconds=30) and (age is None or age > 30):
+                                    raise RuntimeError(f"stale Twelve Data price feed: no fresh tick for {age if age is not None else 'unknown'} seconds")
+                                continue
                             try:
                                 payload = json.loads(message)
                             except (TypeError, json.JSONDecodeError):
                                 continue
                             if isinstance(payload, dict):
                                 await self._handle_price(payload)
+                            age = self._tick_age_seconds()
+                            if (utc_now() - connected_at) >= timedelta(seconds=30) and age is not None and age > 30:
+                                raise RuntimeError(f"stale Twelve Data price feed: last price tick is {age:.1f} seconds old")
                     finally:
                         self.connected = False
                         heartbeat.cancel()
