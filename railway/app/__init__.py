@@ -35,3 +35,5 @@ from app.services import live_trader_audit_hardening_v26 as _live_trader_audit_h
 from app.services import live_trader_learning_visibility_v27 as _live_trader_learning_visibility_v27  # noqa: F401
 # Lock one published trade campaign at a time and follow it through trigger to terminal outcome.
 from app.services import live_trader_trade_lock_v28 as _live_trader_trade_lock_v28  # noqa: F401
+# Preserve pure execution-engine semantics while the campaign lock remains runtime-only.
+from app.services import live_trader_trade_lock_compat_v29 as _live_trader_trade_lock_compat_v29  # noqa: F401
