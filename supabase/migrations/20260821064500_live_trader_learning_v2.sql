@@ -9,12 +9,9 @@ alter table if exists public.live_trader_opinions
     add column if not exists trade_outcome text,
     add column if not exists realised_r double precision;
 
--- Preserve all v1 observations for audit, but stop unresolved v1 rows from being
--- mistaken for evidence in the independent v2 learner.
-update public.live_trader_opinions
-set status = 'legacy_archived'
-where learning_version = 'eve-live-learning-v1'
-  and status = 'open';
+-- Existing v1 rows keep their original open/resolved status for audit. V2 code
+-- filters on learning_version + independent_sample, so legacy observations can
+-- never enter the new calibration pool even when an old v1 row is still open.
 
 create index if not exists idx_live_trader_opinions_learning_family
     on public.live_trader_opinions (learning_version, setup_family, status, observed_at desc);
