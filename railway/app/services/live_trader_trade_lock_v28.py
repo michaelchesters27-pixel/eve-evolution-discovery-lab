@@ -15,6 +15,7 @@ TERMINAL_STATUSES = {"won", "lost", "invalidated", "expired"}
 
 _original_refresh_state = core.LiveTrader.refresh_state
 _original_trade_idea = core.LiveTrader._trade_idea
+_original_calibration = core.LiveTrader._calibration
 _original_persist_state = core.LiveTrader._maybe_persist_state
 _original_runtime_status = core.LiveTrader.runtime_status
 _original_trade_sentence = core.LiveTrader._trade_sentence
@@ -117,6 +118,7 @@ def _new_campaign(self: core.LiveTrader, trade: dict[str, Any], price: float) ->
         },
     }
     self._live_campaign_dirty = True
+    self._live_campaign_new_v28 = True
     return campaign
 
 
@@ -129,7 +131,13 @@ def _complete(campaign: dict[str, Any], status: str, result: str, price: float, 
     return campaign
 
 
-def _advance_campaign(self: core.LiveTrader, campaign: dict[str, Any], price: float) -> dict[str, Any] | None:
+def _advance_campaign(
+    self: core.LiveTrader,
+    campaign: dict[str, Any],
+    price: float,
+    *,
+    allow_price_events: bool = True,
+) -> dict[str, Any] | None:
     now = core.utc_now()
     status = str(campaign.get("status") or "").lower()
 
@@ -152,7 +160,7 @@ def _advance_campaign(self: core.LiveTrader, campaign: dict[str, Any], price: fl
         expires_at = _parse_time(campaign.get("expires_at"))
         if expires_at is not None and now >= expires_at:
             campaign = _complete(campaign, "expired", "NO TRIGGER — SETUP EXPIRED", price, now)
-        else:
+        elif allow_price_events:
             triggered = False
             invalidated = False
             if order_type == "buy_stop":
@@ -174,7 +182,7 @@ def _advance_campaign(self: core.LiveTrader, campaign: dict[str, Any], price: fl
                 campaign["status"] = "active"
                 campaign["triggered_at"] = now.isoformat()
 
-    if str(campaign.get("status") or "").lower() == "active":
+    if str(campaign.get("status") or "").lower() == "active" and allow_price_events:
         if side == "BUY":
             if stop > 0 and price <= stop:
                 campaign = _complete(campaign, "lost", "LOSS — STOP HIT", price, now)
@@ -264,7 +272,7 @@ def _trade_idea_v28(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     campaign = getattr(self, "_live_campaign", None)
     if isinstance(campaign, dict):
-        campaign = _advance_campaign(self, campaign, price)
+        campaign = _advance_campaign(self, campaign, price, allow_price_events=self._feed_is_fresh())
         self._live_campaign = campaign
         if isinstance(campaign, dict):
             return _campaign_setup(campaign), _campaign_trade(campaign)
@@ -297,8 +305,22 @@ async def _restore_campaign(self: core.LiveTrader) -> None:
     self._live_campaign_loaded_v28 = True
     self._live_campaign = None
     self._live_campaign_dirty = False
+    self._live_campaign_new_v28 = False
     self._live_campaign_last_persisted_fingerprint = None
     try:
+        open_rows = await self.repo.client.get(
+            "live_trader_campaigns",
+            params={
+                "select": "campaign,status,updated_at",
+                "symbol": f"eq.{self.symbol}",
+                "status": "in.(pending,active)",
+                "order": "updated_at.desc",
+                "limit": "1",
+            },
+        )
+        if open_rows:
+            self._live_campaign = dict((open_rows[0] or {}).get("campaign") or {})
+            return
         rows = await self.repo.client.get(
             "live_trader_campaigns",
             params={
@@ -316,9 +338,6 @@ async def _restore_campaign(self: core.LiveTrader) -> None:
     row = dict(rows[0] or {})
     campaign = dict(row.get("campaign") or {})
     status = str(campaign.get("status") or row.get("status") or "").lower()
-    if status in OPEN_STATUSES:
-        self._live_campaign = campaign
-        return
     if status in TERMINAL_STATUSES:
         completed_at = _parse_time(campaign.get("completed_at"))
         if completed_at and (core.utc_now() - completed_at).total_seconds() < TERMINAL_HOLD_SECONDS:
@@ -353,6 +372,28 @@ async def _refresh_state_v28(self: core.LiveTrader, *, force_rows: bool = False)
         }
     self._latest_state = state
     return state
+
+
+async def _calibration_v28(self: core.LiveTrader, signature: str) -> dict[str, Any]:
+    learning = await _original_calibration(self, signature)
+    campaign = getattr(self, "_live_campaign", None)
+    state = getattr(self, "_learning_governor_pending_state", None)
+    if (
+        isinstance(campaign, dict)
+        and str(campaign.get("status") or "").lower() in OPEN_STATUSES
+        and not getattr(self, "_live_campaign_new_v28", False)
+        and isinstance(state, dict)
+    ):
+        governor = dict(state.get("learning_governor") or {})
+        if governor.get("decision") == "veto":
+            governor["decision"] = "locked_campaign_continues"
+            governor["reason"] = (
+                "This family would be vetoed for a new trade, but the one-trade rule forbids EVE from rewriting or cancelling an already published campaign."
+            )
+            state["learning_governor"] = governor
+            state["setup"] = _campaign_setup(campaign)
+            state["trade"] = _campaign_trade(campaign)
+    return learning
 
 
 def _campaign_fingerprint(campaign: dict[str, Any]) -> str:
@@ -402,12 +443,33 @@ async def _persist_campaign(self: core.LiveTrader, campaign: dict[str, Any]) -> 
         )
         self._live_campaign_last_persisted_fingerprint = fingerprint
         self._live_campaign_dirty = False
+        self._live_campaign_new_v28 = False
     except Exception as exc:
         core.logger.warning("Live Trader v2.8 could not persist campaign ledger: %s", exc)
 
 
 async def _maybe_persist_state_v28(self: core.LiveTrader, state: dict[str, Any]) -> None:
     campaign = getattr(self, "_live_campaign", None)
+    governor = dict(state.get("learning_governor") or {})
+    if (
+        isinstance(campaign, dict)
+        and getattr(self, "_live_campaign_new_v28", False)
+        and governor.get("decision") == "veto"
+    ):
+        self._live_campaign = None
+        self._live_campaign_dirty = False
+        self._live_campaign_new_v28 = False
+        state["trade_campaign"] = None
+        state["trade_lock"] = {
+            "version": CAMPAIGN_VERSION,
+            "one_trade_at_a_time": True,
+            "status": "searching",
+            "campaign_id": None,
+            "new_ideas_blocked": False,
+        }
+        await _original_persist_state(self, state)
+        return
+
     if isinstance(campaign, dict):
         state["trade_campaign"] = dict(campaign)
         state["trade_lock"] = {
@@ -497,6 +559,7 @@ def _runtime_status_v28(self: core.LiveTrader) -> dict[str, Any]:
 
 
 core.LiveTrader._trade_idea = _trade_idea_v28  # type: ignore[method-assign]
+core.LiveTrader._calibration = _calibration_v28  # type: ignore[method-assign]
 core.LiveTrader.refresh_state = _refresh_state_v28  # type: ignore[method-assign]
 core.LiveTrader._maybe_persist_state = _maybe_persist_state_v28  # type: ignore[method-assign]
 core.LiveTrader._trade_sentence = _trade_sentence_v28  # type: ignore[method-assign]
