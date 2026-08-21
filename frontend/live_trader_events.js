@@ -55,7 +55,6 @@
   const human = value => String(value || '—').replaceAll('_',' ').replace(/\b\w/g, ch => ch.toUpperCase());
 
   let lastEventSignature = null;
-  let lastTradeSignature = null;
   let timer = null;
   let learningProgressTimer = null;
 
@@ -72,13 +71,27 @@
     return '';
   }
 
-  function speakEvent(text) {
-    if (!text || !document.getElementById('ltSpeakChanges')?.checked || !('speechSynthesis' in window)) return;
+  function speakEvent(text, eventSig, cls) {
+    if (!text || !document.getElementById('ltSpeakChanges')?.checked) return false;
+    const failed = cls === 'failed_breakout_up' || cls === 'failed_breakout_down';
+    const sweep = cls === 'buy_side_sweep_reclaim' || cls === 'sell_side_sweep_reclaim';
+    const priority = failed ? 3 : sweep ? 2 : 1;
+    const cooldownMs = failed ? 480000 : sweep ? 480000 : 600000;
+    if (window.eveLiveVoice?.say) {
+      return window.eveLiveVoice.say(text, {
+        key:`event:${eventSig}`,
+        priority,
+        cooldownMs,
+        interrupt:failed,
+      });
+    }
+    if (!('speechSynthesis' in window)) return false;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'en-GB';
     utterance.rate = 1.02;
     window.speechSynthesis.speak(utterance);
+    return true;
   }
 
   function appendEventMessage(text) {
@@ -119,20 +132,16 @@
       .map(item => `<span class="lt-event-chip">${safe(item.label || human(item.event_class))} · ${safe(item.level_label || '')}</span>`).join('');
 
     const eventSig = active ? `${cls}|${event.level_key || event.level}|${event.confirmation || ''}` : 'none';
-    const tradeSig = `${state?.setup?.status || ''}|${state?.trade?.action || ''}`;
     if (
       lastEventSignature &&
       eventSig !== lastEventSignature &&
       active &&
-      tradeSig === lastTradeSignature &&
       view.classList.contains('active')
     ) {
       const message = eventSpeech(event);
-      speakEvent(message);
-      appendEventMessage(message);
+      if (speakEvent(message, eventSig, cls)) appendEventMessage(message);
     }
     lastEventSignature = eventSig;
-    lastTradeSignature = tradeSig;
   }
 
   function renameCurrentFamilyMetric() {

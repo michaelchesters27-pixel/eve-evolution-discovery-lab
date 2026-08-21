@@ -81,22 +81,96 @@
   let pollTimer = null;
   let learningTimer = null;
   let lastState = null;
-  let lastImportantSignature = null;
   let recognition = null;
 
   const byId = id => document.getElementById(id);
   const formatPrice = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—';
   const label = value => String(value || '—').replaceAll('_',' ').replace(/\b\w/g, c => c.toUpperCase());
   const timeText = value => value ? new Date(value).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
+  const number = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const actionable = action => !['NO TRADE','WAIT',''].includes(String(action || '').toUpperCase());
 
-  function speak(text) {
-    if (!text || !('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'en-GB';
-    utterance.rate = 1.02;
-    window.speechSynthesis.speak(utterance);
+  function buildVoiceGovernor() {
+    if (window.eveLiveVoice) return window.eveLiveVoice;
+    const supported = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+    const recentKeys = new Map();
+    const recentTexts = [];
+    const stats = {spoken:0,suppressed:0,interrupted:0};
+    let current = null;
+
+    const normalise = text => String(text || '')
+      .toLowerCase()
+      .replace(/\d+(?:[.,]\d+)?/g, '#')
+      .replace(/[^a-z# ]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const similarity = (a, b) => {
+      const left = new Set(normalise(a).split(' ').filter(Boolean));
+      const right = new Set(normalise(b).split(' ').filter(Boolean));
+      if (!left.size || !right.size) return 0;
+      let overlap = 0;
+      left.forEach(token => { if (right.has(token)) overlap += 1; });
+      return overlap / Math.max(left.size, right.size);
+    };
+
+    function say(text, options = {}) {
+      const message = String(text || '').trim();
+      if (!message || !supported) return false;
+      const now = Date.now();
+      const key = String(options.key || '');
+      const priority = Number(options.priority || 1);
+      const cooldownMs = Math.max(0, Number(options.cooldownMs ?? 45000));
+      const interrupt = Boolean(options.interrupt);
+
+      if (key && recentKeys.has(key) && now - recentKeys.get(key) < cooldownMs) {
+        stats.suppressed += 1;
+        return false;
+      }
+
+      while (recentTexts.length && now - recentTexts[0].at > 25000) recentTexts.shift();
+      if (recentTexts.some(item => similarity(message, item.text) >= 0.82)) {
+        stats.suppressed += 1;
+        return false;
+      }
+
+      if (current) {
+        if (interrupt || priority >= 3) {
+          window.speechSynthesis.cancel();
+          current = null;
+          stats.interrupted += 1;
+        } else {
+          stats.suppressed += 1;
+          return false;
+        }
+      }
+
+      const utterance = new SpeechSynthesisUtterance(message);
+      utterance.lang = 'en-GB';
+      utterance.rate = 1.02;
+      const token = `${now}-${Math.random()}`;
+      current = {token, priority, text:message};
+      const clear = () => { if (current?.token === token) current = null; };
+      utterance.onend = clear;
+      utterance.onerror = clear;
+      window.speechSynthesis.speak(utterance);
+      if (key) recentKeys.set(key, now);
+      recentTexts.push({text:message, at:now});
+      stats.spoken += 1;
+      return true;
+    }
+
+    window.eveLiveVoice = {
+      version:'eve-live-voice-governor-v1',
+      say,
+      stats,
+      stop:() => { if (supported) window.speechSynthesis.cancel(); current = null; },
+    };
+    return window.eveLiveVoice;
   }
+
+  const voice = buildVoiceGovernor();
+  const speak = (text, options = {}) => voice.say(text, options);
 
   function zoneHtml(zone, kind) {
     const statusClass = String(zone.status || '').toLowerCase().replaceAll(' ','-');
@@ -127,11 +201,91 @@
     byId('ltInvalidation').textContent = trade.invalidation || '';
   }
 
-  function importantSignature(state) {
-    return [state?.bias?.overall,state?.setup?.status,state?.trade?.action,state?.zones?.demand?.[0]?.id,state?.zones?.supply?.[0]?.id].join('|');
+  function feedFresh(state) {
+    const feed = state?.feed || {};
+    return Boolean(feed.connected) && String(feed.status || 'live').toLowerCase() !== 'stale';
+  }
+
+  function zoneRelation(state, kind) {
+    const zone = state?.zones?.[kind]?.[0];
+    const price = number(state?.price, NaN);
+    if (!zone || !Number.isFinite(price)) return {relation:'none',zone:null};
+    const low = number(zone.low, NaN);
+    const high = number(zone.high, NaN);
+    if (Number.isFinite(low) && Number.isFinite(high) && low <= price && price <= high) return {relation:'in',zone};
+    const distance = number(zone.distance_atr, 99);
+    return {relation:distance <= 0.5 ? 'near' : 'far',zone};
+  }
+
+  function geometryChanged(previous, current, atr) {
+    if (!actionable(previous?.action) || !actionable(current?.action)) return false;
+    if (String(previous.action) !== String(current.action)) return true;
+    const threshold = Math.max(number(atr, 0) * 0.25, 0.5);
+    return ['entry','stop','target'].some(key => {
+      const a = number(previous?.[key], NaN);
+      const b = number(current?.[key], NaN);
+      return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) >= threshold;
+    });
+  }
+
+  function marketChangeAnnouncement(previous, current) {
+    if (!previous || !current) return null;
+    const beforeFresh = feedFresh(previous);
+    const nowFresh = feedFresh(current);
+    if (beforeFresh && !nowFresh) {
+      return {
+        text:"Micky, EVE's live price feed has gone stale or disconnected. Do not act on a new trade until I tell you the feed is live again.",
+        key:'feed:stale', priority:3, cooldownMs:60000,
+      };
+    }
+    if (!beforeFresh && nowFresh) {
+      return {text:"Micky, the live price feed is back and current.", key:'feed:restored', priority:2, cooldownMs:60000};
+    }
+
+    const oldTrade = previous.trade || {};
+    const newTrade = current.trade || {};
+    const oldAction = String(oldTrade.action || 'NO TRADE').toUpperCase();
+    const newAction = String(newTrade.action || 'NO TRADE').toUpperCase();
+    if (actionable(oldAction) && !actionable(newAction)) {
+      return {
+        text:`Micky, cancel the previous ${oldAction} idea. EVE is now ${newAction}. ${newTrade.reason || current.setup?.reason || ''}`.trim(),
+        key:`trade:cancel:${oldAction}->${newAction}`, priority:3, cooldownMs:45000,
+      };
+    }
+    if (actionable(newAction) && (oldAction !== newAction || geometryChanged(oldTrade, newTrade, current.market?.atr))) {
+      return {
+        text:`Micky, EVE's trade is now ${newAction}. Entry ${formatPrice(newTrade.entry)}, stop ${formatPrice(newTrade.stop)}, target ${formatPrice(newTrade.target)}.${newTrade.risk_reward ? ` About ${Number(newTrade.risk_reward).toFixed(1)} R.` : ''}`,
+        key:`trade:${newAction}:${Math.round(number(newTrade.entry))}:${Math.round(number(newTrade.stop))}:${Math.round(number(newTrade.target))}`,
+        priority:3, cooldownMs:45000,
+      };
+    }
+
+    const oldBias = String(previous.bias?.overall || 'neutral').toLowerCase();
+    const newBias = String(current.bias?.overall || 'neutral').toLowerCase();
+    if (oldBias !== newBias) {
+      return {
+        text:`Micky, my overall bias has changed from ${oldBias} to ${newBias}. Confidence is ${current.bias?.confidence ?? 'unknown'} out of 100. ${current.setup?.reason || ''}`.trim(),
+        key:`bias:${oldBias}->${newBias}`, priority:2, cooldownMs:90000,
+      };
+    }
+
+    for (const kind of ['demand','supply']) {
+      const before = zoneRelation(previous, kind);
+      const now = zoneRelation(current, kind);
+      if (before.relation !== 'in' && now.relation === 'in' && now.zone) {
+        return {
+          text:`Micky, price has entered EVE's best ${kind} zone from ${formatPrice(now.zone.low)} to ${formatPrice(now.zone.high)}. I am watching for confirmation before treating it as a trade.`,
+          key:`zone:${kind}:in:${Math.round(number(now.zone.low))}:${Math.round(number(now.zone.high))}`,
+          priority:2, cooldownMs:180000,
+        };
+      }
+    }
+
+    return null;
   }
 
   function renderState(state, allowSpeak = true) {
+    const previousState = lastState;
     lastState = state;
     const feed = state.feed || {};
     byId('ltSymbol').textContent = state.symbol || 'XAU/USD';
@@ -179,12 +333,12 @@
       ['Confidence calibration', `${Number(learning.confidence_adjustment || 0) >= 0 ? '+' : ''}${Number(learning.confidence_adjustment || 0).toFixed(1)}`]
     ].map(([name,value])=>`<div><span>${esc(name)}</span><strong>${esc(value)}</strong></div>`).join('');
 
-    const sig = importantSignature(state);
-    if (allowSpeak && lastImportantSignature && sig !== lastImportantSignature && byId('ltSpeakChanges')?.checked && view.classList.contains('active')) {
-      speak(state.opinion);
-      appendMessage('assistant', state.opinion, true);
+    if (allowSpeak && previousState && byId('ltSpeakChanges')?.checked && view.classList.contains('active')) {
+      const announcement = marketChangeAnnouncement(previousState, state);
+      if (announcement && speak(announcement.text, announcement)) {
+        appendMessage('assistant', announcement.text, true);
+      }
     }
-    lastImportantSignature = sig;
   }
 
   function appendMessage(role, message, transient = false) {
@@ -236,7 +390,9 @@
       const payload = await api('/live-trader/chat', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
       appendMessage('assistant', payload.reply);
       if (payload.state) renderState(payload.state, false);
-      if (byId('ltSpeakReplies').checked) speak(payload.reply);
+      if (byId('ltSpeakReplies').checked) {
+        speak(payload.reply, {key:`reply:${Date.now()}`, priority:3, cooldownMs:0, interrupt:true});
+      }
     } catch (error) {
       appendMessage('assistant', `Micky, I could not answer that because the Live Trader service returned: ${error.message}`);
     }
