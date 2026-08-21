@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 from app.services import live_trader_trade_lock_v28 as lock
 
@@ -39,6 +40,7 @@ def open_campaign() -> dict:
 def test_stale_feed_cannot_trigger_or_stop_locked_campaign(monkeypatch) -> None:
     engine = Dummy()
     engine._live_campaign = open_campaign()
+    monkeypatch.setattr(lock.core, "utc_now", lambda: datetime(2026, 8, 21, 12, 10, tzinfo=timezone.utc))
     result = lock._advance_campaign(engine, engine._live_campaign, 111.0, allow_price_events=False)
     assert result["status"] == "pending"
 
