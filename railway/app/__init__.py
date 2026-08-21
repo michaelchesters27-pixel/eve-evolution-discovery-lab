@@ -29,3 +29,5 @@ from app.services import live_trader_feature_feed_v24 as _live_trader_feature_fe
 from app.services import live_trader_intelligence_v24 as _live_trader_intelligence_v24  # noqa: F401
 # Let mature poor-performing families veto live candidates while shadow-scoring them.
 from app.services import live_trader_learning_governor_v25 as _live_trader_learning_governor_v25  # noqa: F401
+# Audit hardening: stable learning namespace, source-M1 outcome paths and feed-policy socket health.
+from app.services import live_trader_audit_hardening_v26 as _live_trader_audit_hardening_v26  # noqa: F401
