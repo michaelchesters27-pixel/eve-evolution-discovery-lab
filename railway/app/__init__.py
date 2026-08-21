@@ -8,3 +8,5 @@ from app.services import fair_lineage_scheduler as _fair_lineage_scheduler  # no
 
 # Install independent, generalised Live Trader learning before app.main imports LiveTrader.
 from app.services import live_trader_learning_v2 as _live_trader_learning_v2  # noqa: F401
+# Tighten episode identity so zone-ID churn cannot manufacture independent samples.
+from app.services import live_trader_learning_v21 as _live_trader_learning_v21  # noqa: F401
