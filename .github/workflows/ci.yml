@@ -35,7 +35,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Syntax check frontend JavaScript
-        run: node --check frontend/app.js
+      - name: Syntax check all frontend JavaScript
+        run: find frontend -maxdepth 1 -type f -name '*.js' -print0 | xargs -0 -n1 node --check
       - name: Syntax check Netlify API function
         run: node --check frontend/netlify/functions/api.mjs
