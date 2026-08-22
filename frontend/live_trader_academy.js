@@ -1,0 +1,135 @@
+(() => {
+  const view = document.getElementById('view-live-trader');
+  if (!view || document.getElementById('ltHistoricalAcademy')) return;
+
+  const safe = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+  const number = value => Number.isFinite(Number(value)) ? Number(value) : 0;
+  const dateText = value => {
+    if (!value) return '—';
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('en-GB', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  };
+
+  const style = document.createElement('style');
+  style.textContent = `
+    .lt-academy{margin-top:14px;border-top:1px solid var(--line);padding-top:14px}
+    .lt-academy-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:9px}
+    .lt-academy-head b{font-size:11px;letter-spacing:.08em;color:var(--green)}
+    .lt-academy-head span{font-size:9px;color:var(--muted)}
+    .lt-academy-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+    .lt-academy-grid>div{border:1px solid var(--line);background:#06100b;border-radius:11px;padding:11px}
+    .lt-academy-grid span,.lt-academy-grid strong{display:block}
+    .lt-academy-grid span{font-size:8px;color:var(--muted)}
+    .lt-academy-grid strong{font-size:17px;margin-top:4px}
+    .lt-academy-note{font-size:10px;color:#a9c4b6;line-height:1.55;margin:10px 0 0}
+    .lt-market-closed-banner{display:none;margin:0 0 14px;border:1px solid #725b22;background:#171307;border-radius:12px;padding:12px 14px;color:#e8d99d;font-size:11px;line-height:1.55}
+    .lt-market-closed-banner.show{display:block}
+    .lt-feed.market-closed{border-color:#725b22!important;color:#e8d99d!important}
+    @media(max-width:760px){.lt-academy-grid{grid-template-columns:1fr 1fr}}
+  `;
+  document.head.appendChild(style);
+
+  const warning = view.querySelector('.lt-manual-warning');
+  const banner = document.createElement('div');
+  banner.id = 'ltMarketClosedBanner';
+  banner.className = 'lt-market-closed-banner';
+  if (warning) warning.insertAdjacentElement('afterend', banner);
+
+  const policy = document.getElementById('ltLearningPolicy');
+  const academy = document.createElement('div');
+  academy.id = 'ltHistoricalAcademy';
+  academy.className = 'lt-academy';
+  academy.innerHTML = `
+    <div class="lt-academy-head"><b>HISTORICAL ACADEMY</b><span id="ltAcademyStatus">Starting</span></div>
+    <div class="lt-academy-grid" id="ltAcademyGrid"></div>
+    <p class="lt-academy-note" id="ltAcademyNote">EVE is preparing causal replay of the six-year archive.</p>
+  `;
+  if (policy) policy.insertAdjacentElement('beforebegin', academy);
+
+  // Automatic market announcements are useless while the broker is closed.
+  // User-requested spoken replies remain allowed.
+  if (window.eveLiveVoice?.say && !window.eveLiveVoice._academyWrapped) {
+    const rawSay = window.eveLiveVoice.say.bind(window.eveLiveVoice);
+    window.eveLiveVoice._academyWrapped = true;
+    window.eveLiveVoice._academyRawSay = rawSay;
+    window.eveLiveVoice.say = (text, options = {}) => {
+      const key = String(options.key || '');
+      const userReply = key.startsWith('reply:');
+      if (window.eveLiveMarketTradable === false && !userReply) {
+        window.eveLiveVoice.stats.suppressed += 1;
+        return false;
+      }
+      return rawSay(text, options);
+    };
+  }
+
+  let timer = null;
+
+  function renderMarket(state) {
+    const hours = state?.market_hours || {};
+    const tradable = hours.tradable !== false;
+    const previous = window.eveLiveMarketTradable;
+    window.eveLiveMarketTradable = tradable;
+    const feed = document.getElementById('ltFeed');
+    const feedText = feed?.querySelector('b');
+    if (!tradable) {
+      if (feed) feed.classList.add('market-closed');
+      if (feedText) feedText.textContent = 'MARKET CLOSED';
+      const campaign = state?.trade_campaign;
+      banner.classList.add('show');
+      banner.innerHTML = campaign
+        ? `<b>LIVE CAMPAIGN FROZEN:</b> ${safe(String(campaign.side || ''))} ${safe(String(campaign.order_type || '').replaceAll('_',' ').toUpperCase())} ${safe(campaign.entry ?? '')}. Weekend/closed-market quotes cannot trigger it, hit TP/SL, invalidate it or expire it. Historical Academy continues learning.`
+        : '<b>MARKET CLOSED:</b> Live trading and forward learning are paused. EVE is still learning from the six-year historical archive.';
+    } else {
+      if (feed) feed.classList.remove('market-closed');
+      banner.classList.remove('show');
+      if (previous === false && window.eveLiveVoice?._academyRawSay && document.getElementById('ltSpeakChanges')?.checked) {
+        window.eveLiveVoice._academyRawSay(
+          'Micky, the broker market is open again. Live campaign management and forward learning have resumed.',
+          {key:'academy:market-open', priority:2, cooldownMs:300000}
+        );
+      }
+    }
+  }
+
+  function renderAcademy(summary) {
+    const hist = summary?.historical_learning || {};
+    const rows = number(hist.rows_scanned);
+    const episodes = number(hist.episodes_recorded);
+    const scored = number(hist.scored_episodes);
+    const challengers = number(hist.challenger_runs);
+    document.getElementById('ltAcademyStatus').textContent = hist.last_error ? 'Attention' : 'RUNNING 24/7';
+    document.getElementById('ltAcademyGrid').innerHTML = [
+      ['M5 rows scanned', rows.toLocaleString('en-GB')],
+      ['Historical episodes', episodes.toLocaleString('en-GB')],
+      ['Episodes scored', scored.toLocaleString('en-GB')],
+      ['Challengers tested', challengers.toLocaleString('en-GB')],
+    ].map(([name,value]) => `<div><span>${safe(name)}</span><strong>${safe(value)}</strong></div>`).join('');
+    const note = document.getElementById('ltAcademyNote');
+    if (hist.last_error) {
+      note.textContent = `Historical Academy hit an error and will retry automatically: ${hist.last_error}`;
+    } else if (!episodes) {
+      note.textContent = 'Historical Academy is starting at the beginning of EVE’s six-year every-M5 fabric. Future data is hidden until each historical decision is made.';
+    } else {
+      note.textContent = `Replay has reached ${dateText(hist.cursor_time)}. Each historical family is down-weighted versus genuine forward-live experience, while market, confirmation-stop and pullback-limit challengers are scored on the exact same causal M1 future path.`;
+    }
+  }
+
+  async function refresh() {
+    if (!view.classList.contains('active')) return;
+    try {
+      const [state, summary] = await Promise.all([api('/live-trader'), api('/live-trader/learning')]);
+      renderMarket(state);
+      renderAcademy(summary);
+    } catch (_) {}
+  }
+
+  function start() {
+    clearInterval(timer);
+    refresh();
+    timer = setInterval(refresh, 5000);
+  }
+
+  document.querySelector('[data-view="live-trader"]')?.addEventListener('click', start);
+  if (view.classList.contains('active')) start();
+})();
