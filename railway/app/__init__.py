@@ -47,3 +47,5 @@ from app.services import live_trader_historical_compat_v31 as _live_trader_histo
 from app.services import live_trader_historical_m1_coverage_v32 as _live_trader_historical_m1_coverage_v32  # noqa: F401
 # Publish an evidence-based intelligence index and persist its progress over time.
 from app.services import live_trader_intelligence_indicator_v33 as _live_trader_intelligence_indicator_v33  # noqa: F401
+# Freeze XAU/USD across IC Markets' daily metals rollover/maintenance window as well as weekends.
+from app.services import live_trader_metals_hours_v34 as _live_trader_metals_hours_v34  # noqa: F401
