@@ -41,3 +41,5 @@ from app.services import live_trader_trade_lock_compat_v29 as _live_trader_trade
 from app.services import live_trader_historical_learning_v29 as _live_trader_historical_learning_v29  # noqa: F401
 # Run Historical Academy alongside Live Trader and keep provider transport separate from tradability.
 from app.services import live_trader_historical_runtime_v30 as _live_trader_historical_runtime_v30  # noqa: F401
+# Preserve pure-strategy and earlier audit/lock regression contracts through the latest runtime wrappers.
+from app.services import live_trader_historical_compat_v31 as _live_trader_historical_compat_v31  # noqa: F401
