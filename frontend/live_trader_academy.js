@@ -46,8 +46,9 @@
   `;
   if (policy) policy.insertAdjacentElement('beforebegin', academy);
 
-  // Automatic market announcements are useless while the broker is closed.
-  // User-requested spoken replies remain allowed.
+  // Automatic market announcements are only allowed when the broker-hours payload
+  // explicitly says tradable=true. Missing/unknown hours fail closed. User-requested
+  // spoken replies remain allowed.
   if (window.eveLiveVoice?.say && !window.eveLiveVoice._academyWrapped) {
     const rawSay = window.eveLiveVoice.say.bind(window.eveLiveVoice);
     window.eveLiveVoice._academyWrapped = true;
@@ -55,7 +56,7 @@
     window.eveLiveVoice.say = (text, options = {}) => {
       const key = String(options.key || '');
       const userReply = key.startsWith('reply:');
-      if (window.eveLiveMarketTradable === false && !userReply) {
+      if (window.eveLiveMarketTradable !== true && !userReply) {
         window.eveLiveVoice.stats.suppressed += 1;
         return false;
       }
@@ -65,13 +66,29 @@
 
   let timer = null;
 
+  function marketStatus(state) {
+    const hours = state?.market_hours;
+    if (!hours || typeof hours.tradable !== 'boolean') return 'unknown';
+    return hours.tradable === true ? 'open' : 'closed';
+  }
+
   function renderMarket(state) {
-    const hours = state?.market_hours || {};
-    const tradable = hours.tradable !== false;
+    const status = marketStatus(state);
+    const tradable = status === 'open';
     const previous = window.eveLiveMarketTradable;
-    window.eveLiveMarketTradable = tradable;
+    // true=open, false=closed, null=unknown. Only true permits automatic market speech.
+    window.eveLiveMarketTradable = status === 'unknown' ? null : tradable;
     const feed = document.getElementById('ltFeed');
     const feedText = feed?.querySelector('b');
+
+    if (status === 'unknown') {
+      if (feed) feed.classList.add('market-closed');
+      if (feedText) feedText.textContent = 'MARKET STATUS UNKNOWN';
+      banner.classList.add('show');
+      banner.innerHTML = '<b>MARKET STATUS UNKNOWN — CLOSED-SAFE:</b> EVE has not received an explicit broker-hours confirmation. She will not treat the market as open or make an automatic market-open announcement until tradable status is confirmed.';
+      return;
+    }
+
     if (!tradable) {
       if (feed) feed.classList.add('market-closed');
       if (feedText) feedText.textContent = 'MARKET CLOSED';
@@ -83,6 +100,8 @@
     } else {
       if (feed) feed.classList.remove('market-closed');
       banner.classList.remove('show');
+      // Announce a reopen only after a previously explicit CLOSED state. Unknown -> OPEN
+      // is deliberately silent so startup/deployment gaps cannot create a false reopen alert.
       if (previous === false && window.eveLiveVoice?._academyRawSay && document.getElementById('ltSpeakChanges')?.checked) {
         window.eveLiveVoice._academyRawSay(
           'Micky, the broker market is open again. Live campaign management and forward learning have resumed.',
@@ -121,7 +140,16 @@
       const [state, summary] = await Promise.all([api('/live-trader'), api('/live-trader/learning')]);
       renderMarket(state);
       renderAcademy(summary);
-    } catch (_) {}
+    } catch (_) {
+      // A failed refresh must never leave a prior OPEN state authoritative.
+      window.eveLiveMarketTradable = null;
+      const feed = document.getElementById('ltFeed');
+      const feedText = feed?.querySelector('b');
+      if (feed) feed.classList.add('market-closed');
+      if (feedText) feedText.textContent = 'MARKET STATUS UNKNOWN';
+      banner.classList.add('show');
+      banner.innerHTML = '<b>MARKET STATUS UNKNOWN — CLOSED-SAFE:</b> Live market status could not be refreshed. Automatic market-open announcements are suppressed until broker-hours status is confirmed.';
+    }
   }
 
   function start() {
