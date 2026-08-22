@@ -36,6 +36,7 @@ core.LiveTrader._trade_idea = _trade_idea_v31  # type: ignore[method-assign]
 # v2.6/v2.8 implementation. This keeps the old contracts true without bypassing
 # the new Historical Academy runtime policy.
 lock._trade_idea_v28 = _trade_idea_v31
+lock._refresh_state_v28 = runtime._refresh_state_v30
 hardening._run_forever_v26 = runtime._run_forever_v30
 hardening._record_v26 = academy._record_v29
 hardening._resolve_v26 = academy._resolve_v29
