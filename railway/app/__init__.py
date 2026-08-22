@@ -45,3 +45,5 @@ from app.services import live_trader_historical_runtime_v30 as _live_trader_hist
 from app.services import live_trader_historical_compat_v31 as _live_trader_historical_compat_v31  # noqa: F401
 # Discover source-M1 history boundary and avoid recording unscorable pre-M1 historical episodes.
 from app.services import live_trader_historical_m1_coverage_v32 as _live_trader_historical_m1_coverage_v32  # noqa: F401
+# Publish an evidence-based intelligence index and persist its progress over time.
+from app.services import live_trader_intelligence_indicator_v33 as _live_trader_intelligence_indicator_v33  # noqa: F401
