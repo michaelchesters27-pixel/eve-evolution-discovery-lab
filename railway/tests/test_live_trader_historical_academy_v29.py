@@ -14,19 +14,36 @@ def utc(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime
 
 
 def test_ic_markets_weekend_boundary_respects_new_york_dst() -> None:
-    # August is EDT: 17:00 ET == 21:00 UTC.
-    assert academy.broker_market_open(utc(2026, 8, 21, 20, 59)) is True
-    assert academy.broker_market_open(utc(2026, 8, 21, 21, 0)) is False
+    # August is EDT. EVE conservatively freezes XAU/USD from 16:59 ET and
+    # does not treat the short Sunday pre-maintenance quote window as normal liquidity.
+    assert academy.broker_market_open(utc(2026, 8, 21, 20, 58)) is True
+    assert academy.broker_market_open(utc(2026, 8, 21, 20, 59)) is False
     assert academy.broker_market_open(utc(2026, 8, 22, 12, 0)) is False
-    assert academy.broker_market_open(utc(2026, 8, 23, 20, 59)) is False
-    assert academy.broker_market_open(utc(2026, 8, 23, 21, 0)) is True
+    assert academy.broker_market_open(utc(2026, 8, 23, 21, 59)) is False
+    assert academy.broker_market_open(utc(2026, 8, 23, 22, 0)) is True
 
 
-def test_forward_learning_requires_full_horizon_before_weekend_close() -> None:
-    # Friday 16:30 ET with a 60-minute horizon crosses the 17:00 ET close.
+def test_daily_metals_rollover_is_frozen_in_summer_and_winter() -> None:
+    # EDT: 16:59-18:00 ET == 20:59-22:00 UTC.
+    assert academy.broker_market_open(utc(2026, 8, 19, 20, 58)) is True
+    assert academy.broker_market_open(utc(2026, 8, 19, 20, 59)) is False
+    assert academy.broker_market_open(utc(2026, 8, 19, 21, 30)) is False
+    assert academy.broker_market_open(utc(2026, 8, 19, 22, 0)) is True
+
+    # EST: 16:59-18:00 ET == 21:59-23:00 UTC.
+    assert academy.broker_market_open(utc(2026, 1, 14, 21, 58)) is True
+    assert academy.broker_market_open(utc(2026, 1, 14, 21, 59)) is False
+    assert academy.broker_market_open(utc(2026, 1, 14, 22, 30)) is False
+    assert academy.broker_market_open(utc(2026, 1, 14, 23, 0)) is True
+
+
+def test_forward_learning_requires_full_horizon_before_close_or_rollover() -> None:
+    # Friday 16:30 ET with a 60-minute horizon crosses the conservative close.
     assert academy.broker_market_open_through(utc(2026, 8, 21, 20, 30), 60) is False
     # Friday 15:30 ET resolves before the close.
     assert academy.broker_market_open_through(utc(2026, 8, 21, 19, 30), 60) is True
+    # A midweek horizon that crosses the daily metals rollover is also invalid.
+    assert academy.broker_market_open_through(utc(2026, 8, 19, 20, 30), 60) is False
 
 
 def test_hourly_historical_anchor_is_deliberately_independent() -> None:
