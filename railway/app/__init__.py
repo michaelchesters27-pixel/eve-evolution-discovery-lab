@@ -37,3 +37,7 @@ from app.services import live_trader_learning_visibility_v27 as _live_trader_lea
 from app.services import live_trader_trade_lock_v28 as _live_trader_trade_lock_v28  # noqa: F401
 # Preserve pure execution-engine semantics while the campaign lock remains runtime-only.
 from app.services import live_trader_trade_lock_compat_v29 as _live_trader_trade_lock_compat_v29  # noqa: F401
+# Keep forward learning broker-hours clean while learning continuously from six years of causal history.
+from app.services import live_trader_historical_learning_v29 as _live_trader_historical_learning_v29  # noqa: F401
+# Run Historical Academy alongside Live Trader and keep provider transport separate from tradability.
+from app.services import live_trader_historical_runtime_v30 as _live_trader_historical_runtime_v30  # noqa: F401
