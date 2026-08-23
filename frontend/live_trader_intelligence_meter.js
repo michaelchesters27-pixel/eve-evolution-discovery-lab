@@ -32,6 +32,7 @@
     .lt-iq-explain{font-size:10px;line-height:1.6;color:#b7cdbf;margin:13px 0 0}
     .lt-iq-milestones{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}.lt-iq-milestones h4{font-size:10px;letter-spacing:.08em;margin:0 0 9px;color:var(--green)}
     .lt-iq-milestone{display:grid;grid-template-columns:minmax(140px,1fr) 2fr auto;gap:10px;align-items:center;margin-top:8px}.lt-iq-milestone span{font-size:9px;color:var(--muted)}.lt-iq-milestone b{font-size:9px}.lt-iq-milestone .lt-iq-bar{margin:0}
+    .lt-iq-milestone-empty{font-size:9px;color:var(--muted);line-height:1.5;padding:4px 0}
     .lt-iq-disclaimer{font-size:9px;color:var(--muted);margin:12px 0 0;line-height:1.5}
     @media(max-width:760px){.lt-iq-main{grid-template-columns:1fr}.lt-iq-components{grid-template-columns:1fr}.lt-iq-trend{grid-template-columns:1fr 1fr}.lt-iq-evidence{grid-template-columns:1fr 1fr}.lt-iq-milestone{grid-template-columns:1fr auto}.lt-iq-milestone .lt-iq-bar{grid-column:1/-1;grid-row:2}.lt-iq-head{align-items:flex-start}.lt-iq-ring{width:142px;height:142px}}
   `;
@@ -101,10 +102,14 @@
     ].map(([name,value]) => `<div><span>${safe(name)}</span><b>${safe(value)}</b></div>`).join('');
     document.getElementById('ltIqExplain').textContent = iq.explanation || '';
     document.getElementById('ltIqMeaning').textContent = iq.meaning || '';
-    document.getElementById('ltIqMilestones').innerHTML = (iq.milestones || []).slice(0,4).map(item => {
-      const progress = Math.max(0, Math.min(100, num(item.progress) * 100));
-      return `<div class="lt-iq-milestone"><span>${safe(item.label)}</span><div class="lt-iq-bar"><i style="width:${progress}%"></i></div><b>${safe(fmtInt(item.current))} / ${safe(fmtInt(item.target))}</b></div>`;
-    }).join('');
+
+    const pendingMilestones = (iq.milestones || []).filter(item => item.complete !== true).slice(0,4);
+    document.getElementById('ltIqMilestones').innerHTML = pendingMilestones.length
+      ? pendingMilestones.map(item => {
+          const progress = Math.max(0, Math.min(100, num(item.progress) * 100));
+          return `<div class="lt-iq-milestone"><span>${safe(item.label)}</span><div class="lt-iq-bar"><i style="width:${progress}%"></i></div><b>${safe(fmtInt(item.current))} / ${safe(fmtInt(item.target))}</b></div>`;
+        }).join('')
+      : '<div class="lt-iq-milestone-empty">All current intelligence milestones are complete. EVE will wait for the next evidence-based milestone set rather than inventing progress.</div>';
   }
 
   async function refresh() {

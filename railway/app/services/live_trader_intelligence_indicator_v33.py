@@ -272,10 +272,62 @@ async def _current_intelligence(self: core.LiveTrader) -> dict[str, Any]:
     return intelligence
 
 
+def _academy_runtime(self: core.LiveTrader) -> dict[str, Any]:
+    learner = getattr(self, "_historical_academy_v30", None)
+    if learner is None:
+        return {}
+    try:
+        return dict(learner.runtime_status())
+    except Exception:
+        return {}
+
+
+def _explain_with_academy_status(intelligence: dict[str, Any], caught_up: bool) -> dict[str, Any]:
+    result = dict(intelligence)
+    result["historical_academy_caught_up"] = bool(caught_up)
+    if not caught_up:
+        return result
+
+    mature_forward = int(_number((result.get("metrics") or {}).get("mature_forward_families")))
+    applied = _number(result.get("applied_learning"))
+    if mature_forward == 0:
+        result["explanation"] = (
+            "EVE's architecture is strong and Historical Academy has completed the available causal archive. "
+            "Her next major intelligence gains now depend on newly completed market data and independent forward-live experience; "
+            "no setup family has enough forward-live days to count as mature yet."
+        )
+    elif applied < 6.0:
+        result["explanation"] = (
+            "Historical Academy has completed the available causal archive and remains on watch for new completed data. "
+            "EVE has begun applying mature forward evidence, but more independent live families are still needed before adaptive learning carries broad authority."
+        )
+    else:
+        result["explanation"] = (
+            "Historical Academy is caught up with the available causal archive and continuously monitors for new completed data. "
+            "EVE also has multiple mature forward-live families influencing current decisions."
+        )
+    return result
+
+
 async def _learning_summary_v33(self: core.LiveTrader) -> dict[str, Any]:
     summary = dict(await _current_learning_summary(self))
+    academy_runtime = _academy_runtime(self)
+    historical = dict(summary.get("historical_learning") or {})
+    caught_up = bool(academy_runtime.get("caught_up"))
+    if academy_runtime:
+        historical.update(
+            {
+                "caught_up": caught_up,
+                "running": bool(academy_runtime.get("running", True)),
+                "runtime_last_cycle_at": academy_runtime.get("last_cycle_at"),
+                "runtime_last_error": academy_runtime.get("last_error"),
+                "status": "caught_up" if caught_up else "replaying",
+            }
+        )
+        summary["historical_learning"] = historical
     try:
-        summary["intelligence"] = await _current_intelligence(self)
+        intelligence = await _current_intelligence(self)
+        summary["intelligence"] = _explain_with_academy_status(intelligence, caught_up)
     except Exception as exc:
         summary["intelligence"] = {
             "version": SCORE_VERSION,
