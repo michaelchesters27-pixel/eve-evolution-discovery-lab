@@ -2,7 +2,7 @@
   const view = document.getElementById('view-live-trader');
   if (!view || document.getElementById('ltHistoricalAcademy')) return;
 
-  const safe = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+  const safe = value => String(value ?? '').replace(/[&<>'\"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[ch]));
   const number = value => Number.isFinite(Number(value)) ? Number(value) : 0;
   const dateText = value => {
     if (!value) return '—';
@@ -22,10 +22,22 @@
     .lt-academy-grid span{font-size:8px;color:var(--muted)}
     .lt-academy-grid strong{font-size:17px;margin-top:4px}
     .lt-academy-note{font-size:10px;color:#a9c4b6;line-height:1.55;margin:10px 0 0}
+    .lt-regrade{margin-top:13px;border:1px solid #38664c;background:#06100b;border-radius:12px;padding:12px}
+    .lt-regrade.attention{border-color:#a34141;background:#180a0a}
+    .lt-regrade.complete{border-color:#4b9a68;background:#07150d}
+    .lt-regrade-head{display:flex;justify-content:space-between;gap:12px;align-items:center}
+    .lt-regrade-head b{font-size:10px;letter-spacing:.08em;color:var(--green)}
+    .lt-regrade-pill{font-size:8px;font-weight:900;letter-spacing:.06em;border:1px solid #38664c;border-radius:999px;padding:5px 8px;color:var(--green);white-space:nowrap}
+    .lt-regrade.attention .lt-regrade-pill{border-color:#a34141;color:#ff9292}.lt-regrade.complete .lt-regrade-pill{border-color:#4b9a68;color:#82efaa}
+    .lt-regrade-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:10px}
+    .lt-regrade-grid>div{border:1px solid var(--line);border-radius:9px;padding:9px;background:#050d09}
+    .lt-regrade-grid span,.lt-regrade-grid strong{display:block}.lt-regrade-grid span{font-size:8px;color:var(--muted)}.lt-regrade-grid strong{font-size:13px;margin-top:3px}
+    .lt-regrade-progress{margin-top:10px;height:7px;border-radius:999px;background:#0b1c12;overflow:hidden}.lt-regrade-progress>i{display:block;height:100%;background:var(--green);width:0;transition:width .4s ease}
+    .lt-regrade-note{font-size:9px;line-height:1.5;color:#a9c4b6;margin:8px 0 0}
     .lt-market-closed-banner{display:none;margin:0 0 14px;border:1px solid #725b22;background:#171307;border-radius:12px;padding:12px 14px;color:#e8d99d;font-size:11px;line-height:1.55}
     .lt-market-closed-banner.show{display:block}
     .lt-feed.market-closed{border-color:#725b22!important;color:#e8d99d!important}
-    @media(max-width:760px){.lt-academy-grid{grid-template-columns:1fr 1fr}}
+    @media(max-width:760px){.lt-academy-grid,.lt-regrade-grid{grid-template-columns:1fr 1fr}}
   `;
   document.head.appendChild(style);
 
@@ -43,6 +55,12 @@
     <div class="lt-academy-head"><b>HISTORICAL ACADEMY</b><span id="ltAcademyStatus">Starting</span></div>
     <div class="lt-academy-grid" id="ltAcademyGrid"></div>
     <p class="lt-academy-note" id="ltAcademyNote">EVE is preparing causal replay of the six-year archive.</p>
+    <div class="lt-regrade" id="ltExecutionRegrade">
+      <div class="lt-regrade-head"><b>EXECUTION REVALIDATION</b><span class="lt-regrade-pill" id="ltExecutionRegradeStatus">STARTING</span></div>
+      <div class="lt-regrade-grid" id="ltExecutionRegradeGrid"></div>
+      <div class="lt-regrade-progress"><i id="ltExecutionRegradeBar"></i></div>
+      <p class="lt-regrade-note" id="ltExecutionRegradeNote">EVE is loading the corrected execution-evidence audit.</p>
+    </div>
   `;
   if (policy) policy.insertAdjacentElement('beforebegin', academy);
 
@@ -111,6 +129,46 @@
     }
   }
 
+  function renderExecutionRegrade(summary, historicalEpisodes) {
+    const regrade = summary?.execution_integrity || {};
+    const box = document.getElementById('ltExecutionRegrade');
+    const pill = document.getElementById('ltExecutionRegradeStatus');
+    const grid = document.getElementById('ltExecutionRegradeGrid');
+    const note = document.getElementById('ltExecutionRegradeNote');
+    const bar = document.getElementById('ltExecutionRegradeBar');
+    if (!box || !pill || !grid || !note || !bar) return;
+
+    const checked = number(regrade.rows_checked);
+    const regraded = number(regrade.rows_regraded);
+    const outcomeChanges = number(regrade.outcome_changes);
+    const challengerChanges = number(regrade.challenger_changes);
+    const total = Math.max(number(historicalEpisodes), checked, 1);
+    const progress = Math.min(100, Math.max(0, (checked / total) * 100));
+    const completed = regrade.completed === true || regrade.ready === true;
+    const error = String(regrade.last_error || '').trim();
+
+    box.classList.toggle('attention', Boolean(error));
+    box.classList.toggle('complete', completed && !error);
+    pill.textContent = error ? 'ATTENTION' : completed ? 'COMPLETE — VERIFIED' : 'RUNNING — CLOSED-SAFE';
+    grid.innerHTML = [
+      ['Episodes checked', `${checked.toLocaleString('en-GB')} / ${total.toLocaleString('en-GB')}`],
+      ['Paths regraded', regraded.toLocaleString('en-GB')],
+      ['EVE outcomes corrected', outcomeChanges.toLocaleString('en-GB')],
+      ['Challenger corrections', challengerChanges.toLocaleString('en-GB')],
+    ].map(([name,value]) => `<div><span>${safe(name)}</span><strong>${safe(value)}</strong></div>`).join('');
+    bar.style.width = `${completed ? 100 : progress.toFixed(1)}%`;
+
+    if (error) {
+      note.textContent = `Execution revalidation hit an error and remains closed-safe: ${error}`;
+    } else if (completed) {
+      note.textContent = `COMPLETE — EXECUTION EVIDENCE VERIFIED. The corrected execution rules have been applied through the historical ledger. Final cursor: ${dateText(regrade.cursor_time)}.`;
+    } else if (!checked) {
+      note.textContent = 'EVE is starting the corrected six-year execution revalidation. New replacement trades remain closed-safe until this verification completes.';
+    } else {
+      note.textContent = `Revalidation has reached ${dateText(regrade.cursor_time)} (${progress.toFixed(1)}%). EVE is checking original executions and challengers against the corrected causal M1 rules. New replacement trades remain closed-safe until complete.`;
+    }
+  }
+
   function renderAcademy(summary) {
     const hist = summary?.historical_learning || {};
     const rows = number(hist.rows_scanned);
@@ -139,6 +197,7 @@
     } else {
       note.textContent = `Replay has reached ${dateText(hist.cursor_time)}. Each historical family is down-weighted versus genuine forward-live experience, while market, confirmation-stop and pullback-limit challengers are scored on the exact same causal M1 future path.`;
     }
+    renderExecutionRegrade(summary, episodes);
   }
 
   async function refresh() {
