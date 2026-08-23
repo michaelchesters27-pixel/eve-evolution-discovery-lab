@@ -55,3 +55,5 @@ from app.services import live_trader_red_folder_news_v35 as _live_trader_red_fol
 from app.services import live_trader_red_folder_news_confirmation_v36 as _live_trader_red_folder_news_confirmation_v36  # noqa: F401
 # Support Forex Factory ALL/Tentative red-folder macro-risk events without inventing a release time.
 from app.services import live_trader_red_folder_all_day_v37 as _live_trader_red_folder_all_day_v37  # noqa: F401
+# Count real locked-campaign outcomes by week and persist one post-trade execution review per finished campaign.
+from app.services import live_trader_trade_outcomes_v38 as _live_trader_trade_outcomes_v38  # noqa: F401

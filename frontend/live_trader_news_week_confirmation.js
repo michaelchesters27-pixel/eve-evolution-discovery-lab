@@ -90,5 +90,14 @@
     });
   }
 
+  function loadTradeOutcomes() {
+    if (document.getElementById('ltTradeOutcomeScript')) return;
+    const script = document.createElement('script');
+    script.id = 'ltTradeOutcomeScript';
+    script.src = 'live_trader_trade_outcomes.js';
+    document.body.appendChild(script);
+  }
+
   boot();
+  loadTradeOutcomes();
 })();
