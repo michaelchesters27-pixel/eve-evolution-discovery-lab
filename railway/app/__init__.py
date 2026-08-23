@@ -57,3 +57,7 @@ from app.services import live_trader_red_folder_news_confirmation_v36 as _live_t
 from app.services import live_trader_red_folder_all_day_v37 as _live_trader_red_folder_all_day_v37  # noqa: F401
 # Count real locked-campaign outcomes by week and persist one post-trade execution review per finished campaign.
 from app.services import live_trader_trade_outcomes_v38 as _live_trader_trade_outcomes_v38  # noqa: F401
+# Enforce pre-entry invalidation in causal scoring and revalidate the historical execution ledger.
+from app.services import live_trader_execution_integrity_v39 as _live_trader_execution_integrity_v39  # noqa: F401
+# Keep v39's revalidation gates live-runtime-only for deterministic research/unit helpers.
+from app.services import live_trader_execution_integrity_compat_v40 as _live_trader_execution_integrity_compat_v40  # noqa: F401
