@@ -147,6 +147,7 @@
       const [state, summary] = await Promise.all([api('/live-trader'), api('/live-trader/learning')]);
       renderMarket(state);
       renderAcademy(summary);
+      window.eveLiveNewsRender?.(state, summary);
     } catch (_) {
       // A failed refresh must never leave a prior OPEN state authoritative.
       window.eveLiveMarketTradable = null;
