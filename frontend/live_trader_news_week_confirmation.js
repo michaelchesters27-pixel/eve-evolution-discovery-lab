@@ -43,8 +43,8 @@
       const end = prettyDate(news?.week_end);
       row.className = `lt-news-week ${confirmed ? 'confirmed' : ''}`;
       row.innerHTML = confirmed
-        ? `<div><b>WEEKLY FOREX FACTORY CHECK CONFIRMED</b><span>${safe(start)} → ${safe(end)} · USD RED calendar checked. EVE's weekly news guard is armed.</span></div><button class="lt-news-confirm" type="button" disabled>CONFIRMED</button>`
-        : `<div><b>WEEK NOT CONFIRMED — CLOSED-SAFE</b><span>${safe(start)} → ${safe(end)} · Add every USD RED event from Forex Factory, then confirm the weekly check. EVE will not publish a new gold trade until you confirm.</span></div><button class="lt-news-confirm" id="ltNewsConfirmButton" type="button">Confirm week checked</button>`;
+        ? `<div><b>WEEKLY FOREX FACTORY CHECK CONFIRMED</b><span>${safe(start)} → ${safe(end)} · Timed USD RED and relevant RED All/Tentative macro events checked. EVE's weekly news guard is armed.</span></div><button class="lt-news-confirm" type="button" disabled>CONFIRMED</button>`
+        : `<div><b>WEEK NOT CONFIRMED — CLOSED-SAFE</b><span>${safe(start)} → ${safe(end)} · Add every timed USD RED event plus any relevant RED All/Tentative macro event such as Jackson Hole, then confirm the weekly check. EVE will not publish a new gold trade until you confirm.</span></div><button class="lt-news-confirm" id="ltNewsConfirmButton" type="button">Confirm week checked</button>`;
 
       if (!confirmed) {
         const pill = document.getElementById('ltNewsStatus');
@@ -54,7 +54,7 @@
         }
         const nextBox = document.getElementById('ltNewsNext');
         if (nextBox) {
-          nextBox.innerHTML = `<div class="lt-news-next blackout"><div><span>WEEKLY SAFETY CHECK REQUIRED</span><strong>Forex Factory USD RED calendar not confirmed</strong><small>Enter all red-folder USD events for this week, then press Confirm week checked. Existing triggered campaigns remain locked, but EVE will not publish a new setup until this is complete.</small></div><div class="lt-news-countdown"><b>BLOCKED</b><small>until confirmed</small></div></div>`;
+          nextBox.innerHTML = `<div class="lt-news-next blackout"><div><span>WEEKLY SAFETY CHECK REQUIRED</span><strong>Forex Factory red-folder calendar not confirmed</strong><small>Enter all timed USD RED events and relevant RED All/Tentative macro events for this week, then press Confirm week checked. Existing triggered campaigns remain locked, but EVE will not publish a new setup until this is complete.</small></div><div class="lt-news-countdown"><b>BLOCKED</b><small>until confirmed</small></div></div>`;
         }
       }
     }
@@ -80,7 +80,6 @@
         });
         if (!result?.ok) throw new Error(result?.answer || 'EVE could not confirm the weekly check.');
         renderWeek(result.news_risk || {});
-        // Feed the confirmed result back through the standard panel renderer too.
         baseRender({news_risk:result.news_risk}, {news_risk:result.news_risk});
       } catch (exc) {
         if (error) error.textContent = `Could not confirm week: ${exc.message}`;
