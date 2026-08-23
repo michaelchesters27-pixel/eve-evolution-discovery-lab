@@ -95,8 +95,8 @@
       const campaign = state?.trade_campaign;
       banner.classList.add('show');
       banner.innerHTML = campaign
-        ? `<b>LIVE CAMPAIGN FROZEN:</b> ${safe(String(campaign.side || ''))} ${safe(String(campaign.order_type || '').replaceAll('_',' ').toUpperCase())} ${safe(campaign.entry ?? '')}. Weekend/closed-market quotes cannot trigger it, hit TP/SL, invalidate it or expire it. Historical Academy continues learning.`
-        : '<b>MARKET CLOSED:</b> Live trading and forward learning are paused. EVE is still learning from the six-year historical archive.';
+        ? `<b>LIVE CAMPAIGN FROZEN:</b> ${safe(String(campaign.side || ''))} ${safe(String(campaign.order_type || '').replaceAll('_',' ').toUpperCase())} ${safe(campaign.entry ?? '')}. Closed-market quotes cannot trigger it, hit TP/SL, invalidate it or expire it. Historical Academy remains active and monitors for newly completed causal data.`
+        : '<b>MARKET CLOSED:</b> Live trading and forward learning are paused. Historical Academy remains active and monitors for newly completed causal data.';
     } else {
       if (feed) feed.classList.remove('market-closed');
       banner.classList.remove('show');
@@ -117,7 +117,12 @@
     const episodes = number(hist.episodes_recorded);
     const scored = number(hist.scored_episodes);
     const challengers = number(hist.challenger_runs);
-    document.getElementById('ltAcademyStatus').textContent = hist.last_error ? 'Attention' : 'RUNNING 24/7';
+    const caughtUp = hist.caught_up === true;
+    document.getElementById('ltAcademyStatus').textContent = hist.last_error
+      ? 'ATTENTION'
+      : caughtUp
+        ? 'CAUGHT UP — MONITORING'
+        : 'RUNNING 24/7';
     document.getElementById('ltAcademyGrid').innerHTML = [
       ['M5 rows scanned', rows.toLocaleString('en-GB')],
       ['Historical episodes', episodes.toLocaleString('en-GB')],
@@ -129,6 +134,8 @@
       note.textContent = `Historical Academy hit an error and will retry automatically: ${hist.last_error}`;
     } else if (!episodes) {
       note.textContent = 'Historical Academy is starting at the beginning of EVE’s six-year every-M5 fabric. Future data is hidden until each historical decision is made.';
+    } else if (caughtUp) {
+      note.textContent = `Archive replay is caught up through ${dateText(hist.cursor_time)}. EVE keeps checking for newly completed causal rows and will score them automatically. Historical evidence remains deliberately down-weighted versus genuine forward-live experience.`;
     } else {
       note.textContent = `Replay has reached ${dateText(hist.cursor_time)}. Each historical family is down-weighted versus genuine forward-live experience, while market, confirmation-stop and pullback-limit challengers are scored on the exact same causal M1 future path.`;
     }
