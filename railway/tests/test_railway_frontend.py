@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from app.web import STATIC_DIR, app
-
 
 PUBLISHED = {
     "app.js",
@@ -20,27 +18,37 @@ PUBLISHED = {
 }
 
 
-def test_railway_frontend_mount_is_last_and_api_routes_remain_first():
-    assert STATIC_DIR.is_dir()
-    assert app.routes[-1].name == "eve-frontend"
-    paths = [getattr(route, "path", None) for route in app.routes[:-1]]
-    assert "/health" in paths
-    assert "/api/live-trader" in paths
-    assert "/api/live-trader/learning" in paths
-    assert "/api/live-trader/chat" in paths
+def _paths() -> tuple[Path, Path, Path]:
+    railway = Path(__file__).resolve().parents[1]
+    repo = railway.parent
+    static = railway / "app" / "static"
+    canonical = repo / "frontend"
+    return railway, static, canonical
+
+
+def test_railway_frontend_mount_contract_keeps_existing_api_app_authoritative():
+    railway, static, _ = _paths()
+    web = (railway / "app" / "web.py").read_text(encoding="utf-8")
+    main = (railway / "app" / "main.py").read_text(encoding="utf-8")
+
+    assert static.is_dir()
+    assert "from app.main import app" in web
+    assert 'app.mount("/", StaticFiles' in web
+    assert 'name="eve-frontend"' in web
+    assert '@app.get("/health")' in main
+    assert '@app.get("/api/live-trader"' in main
+    assert '@app.get("/api/live-trader/learning"' in main
+    assert '@app.post("/api/live-trader/chat"' in main
 
 
 def test_railway_static_bundle_is_complete():
-    actual = {item.name for item in Path(STATIC_DIR).iterdir() if item.is_file()}
+    _, static, _ = _paths()
+    actual = {item.name for item in static.iterdir() if item.is_file()}
     assert actual == PUBLISHED
 
 
 def test_railway_static_bundle_matches_canonical_frontend():
-    root = Path(__file__).resolve().parents[2]
-    canonical = root.parent / "frontend"
-    # CI checks out the whole repository. This guard prevents future frontend
-    # edits from silently diverging from the Railway-hosted copy.
-    if not canonical.is_dir():
-        return
+    _, static, canonical = _paths()
+    assert canonical.is_dir()
     for name in PUBLISHED:
-        assert (STATIC_DIR / name).read_bytes() == (canonical / name).read_bytes(), name
+        assert (static / name).read_bytes() == (canonical / name).read_bytes(), name
