@@ -1,4 +1,7 @@
-from app.services.live_trader_intelligence_indicator_v33 import score_intelligence
+from app.services.live_trader_intelligence_indicator_v33 import (
+    _explain_with_academy_status,
+    score_intelligence,
+)
 
 
 def test_intelligence_index_stays_conservative_without_evidence() -> None:
@@ -66,3 +69,30 @@ def test_milestones_are_exposed_for_visible_progress() -> None:
     milestones = {item["label"]: item for item in result["milestones"]}
     assert milestones["Forward scored outcomes"]["target"] == 50
     assert milestones["Historical scored episodes"]["target"] == 500
+
+
+def test_caught_up_academy_explanation_points_to_forward_learning() -> None:
+    result = score_intelligence(
+        {
+            "forward_scored": 30,
+            "forward_days": 1,
+            "historical_scored": 28670,
+            "challenger_runs": 63122,
+            "combined_families": 309,
+            "mature_forward_families": 0,
+            "historical_seed_families": 130,
+            "historically_deep_families": 190,
+            "execution_discoveries": 186,
+        }
+    )
+    enriched = _explain_with_academy_status(result, True)
+    assert enriched["historical_academy_caught_up"] is True
+    assert "completed the available causal archive" in enriched["explanation"]
+    assert "forward-live experience" in enriched["explanation"]
+
+
+def test_replaying_academy_keeps_original_explanation() -> None:
+    result = score_intelligence({"mature_forward_families": 0})
+    enriched = _explain_with_academy_status(result, False)
+    assert enriched["historical_academy_caught_up"] is False
+    assert enriched["explanation"] == result["explanation"]
