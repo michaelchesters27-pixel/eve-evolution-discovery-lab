@@ -49,3 +49,5 @@ from app.services import live_trader_historical_m1_coverage_v32 as _live_trader_
 from app.services import live_trader_intelligence_indicator_v33 as _live_trader_intelligence_indicator_v33  # noqa: F401
 # Freeze XAU/USD across IC Markets' daily metals rollover/maintenance window as well as weekends.
 from app.services import live_trader_metals_hours_v34 as _live_trader_metals_hours_v34  # noqa: F401
+# Add manually-entered USD red-folder economic-news protection for Live Trader.
+from app.services import live_trader_red_folder_news_v35 as _live_trader_red_folder_news_v35  # noqa: F401

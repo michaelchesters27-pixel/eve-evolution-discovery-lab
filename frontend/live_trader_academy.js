@@ -147,6 +147,7 @@
       const [state, summary] = await Promise.all([api('/live-trader'), api('/live-trader/learning')]);
       renderMarket(state);
       renderAcademy(summary);
+      window.eveLiveNewsRender?.(state, summary);
     } catch (_) {
       // A failed refresh must never leave a prior OPEN state authoritative.
       window.eveLiveMarketTradable = null;
@@ -167,4 +168,13 @@
 
   document.querySelector('[data-view="live-trader"]')?.addEventListener('click', start);
   if (view.classList.contains('active')) start();
+
+  // Load the weekly news UI from this already-loaded extension rather than adding
+  // another permanent HTML dependency. The panel itself adds no extra polling loop.
+  if (!document.getElementById('ltNewsScript')) {
+    const newsScript = document.createElement('script');
+    newsScript.id = 'ltNewsScript';
+    newsScript.src = 'live_trader_news.js';
+    document.body.appendChild(newsScript);
+  }
 })();
