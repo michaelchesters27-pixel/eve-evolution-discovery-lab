@@ -61,11 +61,13 @@ def test_limit_order_crossing_entry_then_stop_is_a_loss_not_preentry_cancel() ->
     assert result["realised_r"] == -1.0
 
 
-def test_limit_order_gap_beyond_stop_is_preentry_invalidation() -> None:
+def test_limit_order_gap_through_entry_and_stop_matches_live_campaign_loss() -> None:
     trade = {"side": "BUY", "order_type": "buy_limit", "entry": 100, "stop": 98, "target": 104, "risk_reward": 2}
     result = integrity._trade_path_result_v39(trade, [bar(97, 98, 96, 97)], 97)
-    assert result["entry_triggered"] is False
-    assert result["trade_outcome"] == "invalidated_before_entry"
+    assert result["entry_triggered"] is True
+    assert result["trade_outcome"] == "stop"
+    assert result["realised_r"] == -1.0
+    assert result["learning_success"] is False
 
 
 def test_market_order_semantics_remain_stop_first() -> None:
