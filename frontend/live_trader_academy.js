@@ -169,12 +169,23 @@
   document.querySelector('[data-view="live-trader"]')?.addEventListener('click', start);
   if (view.classList.contains('active')) start();
 
+  function loadWeekConfirmation() {
+    if (document.getElementById('ltNewsWeekScript')) return;
+    const script = document.createElement('script');
+    script.id = 'ltNewsWeekScript';
+    script.src = 'live_trader_news_week_confirmation.js';
+    document.body.appendChild(script);
+  }
+
   // Load the weekly news UI from this already-loaded extension rather than adding
   // another permanent HTML dependency. The panel itself adds no extra polling loop.
   if (!document.getElementById('ltNewsScript')) {
     const newsScript = document.createElement('script');
     newsScript.id = 'ltNewsScript';
     newsScript.src = 'live_trader_news.js';
+    newsScript.addEventListener('load', loadWeekConfirmation, {once:true});
     document.body.appendChild(newsScript);
+  } else {
+    loadWeekConfirmation();
   }
 })();

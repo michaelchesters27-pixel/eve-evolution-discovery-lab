@@ -51,3 +51,5 @@ from app.services import live_trader_intelligence_indicator_v33 as _live_trader_
 from app.services import live_trader_metals_hours_v34 as _live_trader_metals_hours_v34  # noqa: F401
 # Add manually-entered USD red-folder economic-news protection for Live Trader.
 from app.services import live_trader_red_folder_news_v35 as _live_trader_red_folder_news_v35  # noqa: F401
+# Fail closed until the operator explicitly confirms each Sunday-Saturday news calendar was checked.
+from app.services import live_trader_red_folder_news_confirmation_v36 as _live_trader_red_folder_news_confirmation_v36  # noqa: F401
