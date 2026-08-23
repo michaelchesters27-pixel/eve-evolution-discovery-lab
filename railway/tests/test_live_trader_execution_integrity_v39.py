@@ -95,7 +95,7 @@ def test_old_active_campaign_followthrough_is_not_recorded(monkeypatch) -> None:
 
     monkeypatch.setattr(integrity, "_current_record", fake_record)
     monkeypatch.setattr(integrity, "_campaign_publication_is_current", lambda _campaign, _state: False)
-    trader = SimpleNamespace(_execution_regrade_ready_v39=True, _live_campaign={"status": "active"})
+    trader = SimpleNamespace(_live_campaign_loaded_v28=True, _execution_regrade_ready_v39=True, _live_campaign={"status": "active"})
     asyncio.run(integrity._record_v39(trader, {"trade_campaign": {"status": "active"}}))
     assert calls == []
 
@@ -107,7 +107,7 @@ def test_terminal_campaign_display_is_not_recorded(monkeypatch) -> None:
         calls.append(state)
 
     monkeypatch.setattr(integrity, "_current_record", fake_record)
-    trader = SimpleNamespace(_execution_regrade_ready_v39=True, _live_campaign={"status": "invalidated"})
+    trader = SimpleNamespace(_live_campaign_loaded_v28=True, _execution_regrade_ready_v39=True, _live_campaign={"status": "invalidated"})
     asyncio.run(integrity._record_v39(trader, {"trade_campaign": {"status": "invalidated"}}))
     assert calls == []
 
@@ -119,7 +119,7 @@ def test_no_campaign_still_records_normal_forward_decision(monkeypatch) -> None:
         calls.append(state)
 
     monkeypatch.setattr(integrity, "_current_record", fake_record)
-    trader = SimpleNamespace(_execution_regrade_ready_v39=True, _live_campaign=None)
+    trader = SimpleNamespace(_live_campaign_loaded_v28=True, _execution_regrade_ready_v39=True, _live_campaign=None)
     state = {"trade": {"action": "WAIT", "order_type": "none"}}
     asyncio.run(integrity._record_v39(trader, state))
     assert calls == [state]
@@ -127,7 +127,7 @@ def test_no_campaign_still_records_normal_forward_decision(monkeypatch) -> None:
 
 def test_new_trade_is_blocked_until_execution_regrade_is_ready(monkeypatch) -> None:
     monkeypatch.setattr(academy, "broker_market_open", lambda _at: True)
-    trader = SimpleNamespace(_execution_regrade_ready_v39=False, _live_campaign=None)
+    trader = SimpleNamespace(_live_campaign_loaded_v28=True, _execution_regrade_ready_v39=False, _live_campaign=None)
     setup, trade = integrity._trade_idea_v39(trader, 100, 1, {}, {}, {})
     assert "REVALIDATION" in setup["status"]
     assert trade["action"] == "WAIT"
@@ -137,7 +137,7 @@ def test_new_trade_is_blocked_until_execution_regrade_is_ready(monkeypatch) -> N
 def test_open_campaign_management_continues_during_regrade(monkeypatch) -> None:
     monkeypatch.setattr(academy, "broker_market_open", lambda _at: True)
     monkeypatch.setattr(integrity, "_current_trade_idea", lambda *_args: ({"status": "TRADE ACTIVE"}, {"action": "SELL ACTIVE"}))
-    trader = SimpleNamespace(_execution_regrade_ready_v39=False, _live_campaign={"status": "active"})
+    trader = SimpleNamespace(_live_campaign_loaded_v28=True, _execution_regrade_ready_v39=False, _live_campaign={"status": "active"})
     setup, trade = integrity._trade_idea_v39(trader, 100, 1, {}, {}, {})
     assert setup["status"] == "TRADE ACTIVE"
     assert trade["action"] == "SELL ACTIVE"
