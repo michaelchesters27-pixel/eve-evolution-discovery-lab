@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07110d">
+  <title>EVE Evolution Discovery Lab</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">E</div><div><strong>EVE</strong><span>Evolution Discovery Lab</span></div></div>
+      <nav id="nav">
+        <button class="nav-item active" data-view="overview"><span>01</span><b>Overview</b><small>Research operating state</small></button>
+        <button class="nav-item" data-view="intelligence"><span>02</span><b>EVE Intelligence</b><small>Scientist + M5 fabric</small></button>
+        <button class="nav-item" data-view="candidates"><span>03</span><b>Research Experiments</b><small>New strategy hypotheses</small></button>
+        <button class="nav-item" data-view="evolution"><span>04</span><b>Evolution</b><small>Lineages and mutations</small></button>
+        <button class="nav-item" data-view="mt5"><span>05</span><b>MT5 Packages</b><small>Documented survivors</small></button>
+        <button class="nav-item" data-view="data"><span>06</span><b>Data Health</b><small>Research evidence quality</small></button>
+      </nav>
+      <div class="sidebar-foot"><span class="dot" id="healthDot"></span><div><strong id="healthText">Connecting</strong><small id="workerText">Railway worker</small></div></div>
+    </aside>
+
+    <main>
+      <header class="topbar"><div><p class="eyebrow">AUTONOMOUS QUANTITATIVE RESEARCH</p><h1 id="pageTitle">Overview</h1></div><div class="clock"><span>UTC</span><strong id="clock">--:--:--</strong></div></header>
+
+      <section class="view active" id="view-overview">
+        <div class="hero">
+          <div><p class="eyebrow">CURRENT MISSION</p><h2>Discover, disprove and evolve trading strategies without risking production.</h2><p>Discovery Lab researches historical market states, breeds only on selection data, opens confirmation and final holdout once, validates execution on M1 and generates a documented MT5 package only for survivors.</p></div>
+          <div class="worker-card"><span class="status-pill" id="workerStatus">CONNECTING</span><strong id="lastAction">Waiting for runtime status</strong><small id="lastCycle">No completed cycle reported</small><small class="error" id="lastError"></small></div>
+        </div>
+        <div class="integrity-strip" id="integrityStrip"></div>
+        <div class="metrics" id="metrics"></div>
+        <div class="grid two">
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">RESEARCH PIPELINE</p><h3>How a survivor is created</h3></div></div><div class="pipeline"><div><b>1</b><span>Compose</span><small>Rules and hypothesis</small></div><i>→</i><div><b>2</b><span>Select</span><small>Development + validation</small></div><i>→</i><div><b>3</b><span>Evolve</span><small>One-gene descendants</small></div><i>→</i><div><b>4</b><span>Final test</span><small>One-time holdout + M1</small></div><i>→</i><div><b>5</b><span>Profile</span><small>When and where to use it</small></div><i>→</i><div><b>6</b><span>Package</span><small>Complete passport + MQ5</small></div></div></article>
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">CURRENT CHAMPION</p><h3>Strongest lineage</h3></div></div><div id="topLineage" class="feature-card empty">No lineage has survived selection yet.</div></article>
+        </div>
+        <article class="panel"><div class="panel-head"><div><p class="eyebrow">RECENT ACTIVITY</p><h3>Scientific record</h3></div><button class="ghost" data-refresh>Refresh</button></div><div id="events" class="events"></div></article>
+      </section>
+
+      <section class="view" id="view-intelligence">
+        <div class="section-intro"><div><p class="eyebrow">EVE AUTONOMOUS SCIENTIST</p><h2>Intelligence & Multi-Timeframe Fabric</h2><p>This is EVE's multi-timeframe brain. The every-M5 fabric carries causal M1, M15, derived M30, H1, H4 and Daily context. A hard integrity audit controls dataset authority, and this screen shows whether Scientist v2 is actively researching the fabric.</p></div><button class="ghost" data-intelligence-refresh>Refresh now</button></div>
+        <div class="health-summary" id="fabricSummary"><div><span class="status-orb warn"></span><div><p class="eyebrow">FABRIC STATUS</p><h3>LOADING</h3><p>Reading EVE's multi-timeframe research fabric.</p></div></div></div>
+        <div class="metrics" id="fabricMetrics"></div>
+        <div class="grid two">
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">TIMEFRAME VISION</p><h3>What EVE can see at each M5 decision</h3></div></div><div id="timeframeFabric" class="checks"></div></article>
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">HARD DATASET AUTHORITY</p><h3>Every-M5 integrity & scientist authority</h3></div></div><div id="fabricGates" class="checks"></div></article>
+        </div>
+        <div class="grid two">
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">SCIENTIST RUNTIME</p><h3>Learning activity</h3></div></div><div id="scientistRuntime" class="feature-card empty">Loading scientist state.</div></article>
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">LIVE PATTERN RADAR</p><h3>Validated discoveries being watched</h3></div></div><div id="liveRadar" class="cards"></div></article>
+        </div>
+        <div class="grid two">
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">RESEARCH DIRECTOR</p><h3>Where EVE is spending research effort</h3></div></div><div id="researchDirector" class="feature-card empty">Waiting for the first directed science cycle.</div></article>
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">STRATEGY ABLATION</p><h3>Removing conditions that do not earn their place</h3></div></div><div id="ablationSummary" class="feature-card empty">Waiting for a qualified hypothesis to simplify.</div></article>
+        </div>
+        <article class="panel"><div class="panel-head"><div><p class="eyebrow">LATEST SCIENTIFIC HYPOTHESES</p><h3>What EVE has been investigating</h3></div></div><div id="scientistHypotheses" class="cards"></div></article>
+      </section>
+
+      <section class="view" id="view-candidates">
+        <div class="section-intro"><div><p class="eyebrow">HYPOTHESES UNDER TEST</p><h2>Research Experiments</h2><p>These are candidate ideas tested only on development and selection validation. Confirmation and final holdout stay sealed while strategies are being selected or mutated.</p></div></div>
+        <div class="filter-row"><button class="chip active" data-candidate-filter="all">All</button><button class="chip" data-candidate-filter="promising">Passed selection</button><button class="chip" data-candidate-filter="rejected">Rejected</button><button class="chip" data-candidate-filter="queued">Queued</button></div>
+        <div id="candidateList" class="cards"></div>
+      </section>
+
+      <section class="view" id="view-evolution">
+        <div class="section-intro"><div><p class="eyebrow">CONTROLLED EVOLUTION</p><h2>Evolution</h2><p>Children alter one gene and compete using selection validation only. Once a mature champion opens the final holdout, its lineage is retired so that evidence cannot be reused for breeding.</p></div></div>
+        <div id="lineageList" class="cards"></div>
+        <article class="panel mutation-panel"><div class="panel-head"><div><p class="eyebrow">PARENT VS CHILD</p><h3>Recent mutation decisions</h3></div></div><div id="mutationList" class="cards"></div></article>
+      </section>
+
+      <section class="view" id="view-mt5">
+        <div class="section-intro"><div><p class="eyebrow">FINAL SURVIVORS ONLY</p><h2>MT5 Packages</h2><p>Every download is locked until EVE has completed the strategy profile: exact market, timeframe, operating window, strongest conditions, weak conditions and evidence. Legacy survivors are automatically re-tested rather than filled with guessed information.</p></div></div>
+        <div class="warning"><b>Safety:</b> Trading is OFF by default. A complete Trading Passport and the Discovery admin token are both required before download.</div>
+        <div id="packageList" class="cards package-cards"></div>
+      </section>
+
+      <section class="view" id="view-data">
+        <div class="section-intro"><div><p class="eyebrow">IMMUTABLE RESEARCH INPUT</p><h2>Data Health</h2><p id="snapshotDefinition">A snapshot is one completed research market state, not a raw tick.</p></div></div>
+        <div class="health-summary" id="dataHealthSummary"></div>
+        <div class="metrics data-metrics" id="dataMetrics"></div>
+        <div class="grid two">
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">AVAILABLE DATASETS</p><h3>Market coverage</h3></div></div><div id="datasetList" class="dataset-list"></div></article>
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">PRODUCTION BOUNDARY</p><h3>Read-only source access</h3></div></div><div id="boundaryStatus" class="boundary"></div></article>
+        </div>
+        <article class="panel"><div class="panel-head"><div><p class="eyebrow">QUALITY CHECKS</p><h3>Evidence readiness</h3></div></div><div id="qualityChecks" class="checks"></div></article>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+  <script src="intelligence.js"></script>
+  <script src="evidence_panel.js"></script>
+  <script src="live_trader.js"></script>
+  <script src="live_trader_events.js"></script>
+  <script src="live_trader_academy.js"></script>
+  <script src="live_trader_intelligence_meter.js"></script>
+</body>
+</html>
