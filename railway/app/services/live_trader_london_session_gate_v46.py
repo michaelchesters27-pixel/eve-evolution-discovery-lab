@@ -119,6 +119,13 @@ def _trade_idea_v46(
     zones: dict[str, list[dict[str, Any]]],
     liquidity: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    # Historical research and deterministic regression helpers use compact bias
+    # dictionaries without the v43 structural-panel marker. Do not make those
+    # pure helpers depend on wall-clock time. Production Live Trader always has
+    # the structural marker and therefore always takes the real session gate.
+    if not clear_gate._is_modern_structural_bias(dict(bias or {})):
+        return _original_trade_idea(self, price, atr, bias, zones, liquidity)
+
     session = _session_status()
     campaign = getattr(self, "_live_campaign", None)
     status = str((campaign or {}).get("status") or "").lower() if isinstance(campaign, dict) else ""
@@ -174,4 +181,3 @@ core.LiveTrader.runtime_status = _runtime_status_v46  # type: ignore[method-assi
 # runtime wrapper. Keep those identity contracts intact for regression coverage.
 integrity._trade_idea_v39 = _trade_idea_v46
 lock._trade_idea_v28 = _trade_idea_v46
-clear_gate._trade_idea_v45 = _trade_idea_v46
