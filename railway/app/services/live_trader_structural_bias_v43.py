@@ -185,9 +185,17 @@ def _bias_v43(self: v2.LiveTrader, latest: dict[str, Any]) -> tuple[dict[str, An
             method = "stale"
             stale_timeframes.append(timeframe)
         elif len(history) < MIN_STRUCTURE_BARS:
-            direction = "unknown"
-            structure_score = 0.0
-            method = "insufficient_history"
+            # Unit/legacy callers can supply compact direction-only context with
+            # no timestamps or OHLC history. Preserve that compatibility without
+            # pretending it is the production structural method.
+            if not item.get("candle_time") and not item.get("completed_at"):
+                direction = str(legacy.get("direction") or "neutral")
+                structure_score = 0.0
+                method = "single_candle_compat"
+            else:
+                direction = "unknown"
+                structure_score = 0.0
+                method = "insufficient_history"
         else:
             structure_score = _structure_score(history)
             direction = _structure_direction(structure_score)
