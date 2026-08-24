@@ -15,6 +15,7 @@ PUBLISHED = {
     "live_trader_intelligence_meter_core.js",
     "live_trader_news.js",
     "live_trader_news_week_confirmation.js",
+    "live_trader_safe_stops_v48.js",
     "live_trader_trade_outcomes.js",
     "styles.css",
 }
