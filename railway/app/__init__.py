@@ -65,3 +65,5 @@ from app.services import live_trader_execution_integrity_compat_v40 as _live_tra
 from app.services import live_trader_execution_sequence_v41 as _live_trader_execution_sequence_v41  # noqa: F401
 # Prevent dashboard polling/multiple tabs from launching overlapping heavy intelligence aggregates.
 from app.services import live_trader_db_load_guard_v42 as _live_trader_db_load_guard_v42  # noqa: F401
+# Show true multi-candle closed-candle structure per timeframe and fail closed on provably stale HTF context.
+from app.services import live_trader_structural_bias_v43 as _live_trader_structural_bias_v43  # noqa: F401
