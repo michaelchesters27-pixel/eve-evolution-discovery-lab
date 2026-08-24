@@ -69,3 +69,5 @@ from app.services import live_trader_db_load_guard_v42 as _live_trader_db_load_g
 from app.services import live_trader_structural_bias_v43 as _live_trader_structural_bias_v43  # noqa: F401
 # Cancel stale-data pending ideas before entry while preserving already-triggered campaign risk controls.
 from app.services import live_trader_stale_campaign_guard_v44 as _live_trader_stale_campaign_guard_v44  # noqa: F401
+# Require genuinely clear multi-timeframe bias before any new trade idea can be published.
+from app.services import live_trader_clear_bias_gate_v45 as _live_trader_clear_bias_gate_v45  # noqa: F401
