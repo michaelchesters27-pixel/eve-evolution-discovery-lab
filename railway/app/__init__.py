@@ -10,6 +10,8 @@ from app.services import memory_guard_v1 as _memory_guard_v1  # noqa: F401
 # the six-year production fabric remains compact.
 from app.services import memory_guard_compat_v1 as _memory_guard_compat_v1  # noqa: F401
 
+# Prevent rich Scientist conditions from being misclassified as legacy parameter-mutable conditions.
+from app.services import composer_mutation_guard_v1 as _composer_mutation_guard_v1  # noqa: F401
 # Install the bounded fairness extension before app.main imports orchestrator_v3.
 from app.services import fair_lineage_scheduler as _fair_lineage_scheduler  # noqa: F401
 
