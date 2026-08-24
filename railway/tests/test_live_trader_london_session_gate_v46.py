@@ -134,6 +134,55 @@ def test_pending_order_is_cancelled_when_window_is_closed(monkeypatch) -> None:
     assert trade["campaign_locked"] is False
 
 
+def test_pending_idea_published_before_0820_is_cancelled_even_after_window_opens(monkeypatch) -> None:
+    trader = core.LiveTrader.__new__(core.LiveTrader)
+    trader._live_campaign = _campaign("pending")
+    trader._live_campaign_dirty = False
+    # Current session is open, but campaign created_at 06:52 UTC == 07:52 BST.
+    real_session_status = v46._session_status
+    monkeypatch.setattr(
+        v46,
+        "_session_status",
+        lambda now=None: real_session_status(now) if now is not None else _open_session(),
+    )
+
+    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, _modern_bias(), {}, {})
+
+    assert trader._live_campaign["status"] == "invalidated"
+    assert trader._live_campaign["session_invalidation"]["reason"] == "published_outside_london_trade_window"
+    assert trader._live_campaign["triggered_at"] is None
+    assert setup["status"] == "IDEA CANCELLED"
+    assert trade["action"] == "CANCEL — SESSION CLOSED"
+    assert "originally published outside" in trade["reason"]
+
+
+def test_valid_pending_idea_remains_managed_inside_window(monkeypatch) -> None:
+    trader = core.LiveTrader.__new__(core.LiveTrader)
+    trader._live_campaign = _campaign("pending")
+    trader._live_campaign["created_at"] = "2026-08-24T07:30:00+00:00"  # 08:30 BST.
+    real_session_status = v46._session_status
+    monkeypatch.setattr(
+        v46,
+        "_session_status",
+        lambda now=None: real_session_status(now) if now is not None else _open_session(),
+    )
+    monkeypatch.setattr(
+        v46,
+        "_original_trade_idea",
+        lambda self, price, atr, bias, zones, liquidity: (
+            {"status": "IDEA LOCKED", "reason": "still pending"},
+            {"action": "BUY LIMIT", "order_type": "buy_limit"},
+        ),
+    )
+
+    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, _modern_bias(), {}, {})
+
+    assert trader._live_campaign["status"] == "pending"
+    assert setup["status"] == "IDEA LOCKED"
+    assert trade["action"] == "BUY LIMIT"
+    assert trade["london_session_gate"]["open"] is True
+
+
 def test_active_trade_keeps_original_risk_after_1700(monkeypatch) -> None:
     trader = core.LiveTrader.__new__(core.LiveTrader)
     trader._live_campaign = _campaign("active")
