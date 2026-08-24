@@ -6,5 +6,9 @@
     script.onerror = done;
     document.body.appendChild(script);
   };
-  load('live_trader_intelligence_meter_core.js', () => load('live_trader_execution_intelligence.js', () => {}));
+  load('live_trader_intelligence_meter_core.js', () =>
+    load('live_trader_execution_intelligence.js', () =>
+      load('live_trader_safe_stops_v48.js', () => {})
+    )
+  );
 })();
