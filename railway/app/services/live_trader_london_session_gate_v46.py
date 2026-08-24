@@ -37,13 +37,16 @@ def _parse_time(value: Any) -> datetime | None:
     return _utc(parsed)
 
 
+def _inside_london_window(value: datetime) -> bool:
+    local = _utc(value).astimezone(LONDON_TZ)
+    local_clock = local.timetz().replace(tzinfo=None)
+    return bool(local.weekday() < 5 and SESSION_START <= local_clock < SESSION_END)
+
+
 def _session_status(now: datetime | None = None) -> dict[str, Any]:
     utc_now = _utc(now)
     local = utc_now.astimezone(LONDON_TZ)
-    local_clock = local.timetz().replace(tzinfo=None)
-    weekday_open = local.weekday() < 5
-    within_clock = SESSION_START <= local_clock < SESSION_END
-    is_open = weekday_open and within_clock
+    is_open = _inside_london_window(utc_now)
     return {
         "version": SESSION_GATE_VERSION,
         "timezone": "Europe/London",
@@ -66,7 +69,7 @@ def _campaign_created_inside_session(campaign: dict[str, Any]) -> bool | None:
     created_at = _parse_time(campaign.get("created_at"))
     if created_at is None:
         return None
-    return bool(_session_status(created_at).get("open"))
+    return _inside_london_window(created_at)
 
 
 def _wait_response(session: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
