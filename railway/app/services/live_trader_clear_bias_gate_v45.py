@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.services import live_trader as core
+from app.services import live_trader_execution_integrity_v39 as integrity
+from app.services import live_trader_trade_lock_v28 as lock
 
 GATE_VERSION = "eve-live-clear-bias-gate-v1"
 MIN_CLEAR_CONFIDENCE = 65
@@ -174,3 +176,9 @@ def _runtime_status_v45(self: core.LiveTrader) -> dict[str, Any]:
 
 core.LiveTrader._trade_idea = _trade_idea_v45  # type: ignore[method-assign]
 core.LiveTrader.runtime_status = _runtime_status_v45  # type: ignore[method-assign]
+
+# Preserve the established exported-alias identity contracts used throughout
+# earlier safety wrappers and regression tests. They intentionally point at the
+# newest audited runtime trade-idea wrapper.
+integrity._trade_idea_v39 = _trade_idea_v45
+lock._trade_idea_v28 = _trade_idea_v45
