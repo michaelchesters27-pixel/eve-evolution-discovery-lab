@@ -67,3 +67,5 @@ from app.services import live_trader_execution_sequence_v41 as _live_trader_exec
 from app.services import live_trader_db_load_guard_v42 as _live_trader_db_load_guard_v42  # noqa: F401
 # Show true multi-candle closed-candle structure per timeframe and fail closed on provably stale HTF context.
 from app.services import live_trader_structural_bias_v43 as _live_trader_structural_bias_v43  # noqa: F401
+# Cancel stale-data pending ideas before entry while preserving already-triggered campaign risk controls.
+from app.services import live_trader_stale_campaign_guard_v44 as _live_trader_stale_campaign_guard_v44  # noqa: F401
