@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services import live_trader as core
+from app.services import live_trader_execution_integrity_v39 as integrity
 from app.services import live_trader_trade_lock_v28 as v28
 
 GUARD_VERSION = "eve-live-stale-campaign-guard-v1"
@@ -151,3 +152,8 @@ def _runtime_status_v44(self: core.LiveTrader) -> dict[str, Any]:
 
 core.LiveTrader._trade_idea = _trade_idea_v44  # type: ignore[method-assign]
 core.LiveTrader.runtime_status = _runtime_status_v44  # type: ignore[method-assign]
+
+# Preserve the established exported-alias identity contracts: earlier modules
+# intentionally point their public wrapper names at the newest audited runtime.
+integrity._trade_idea_v39 = _trade_idea_v44
+v28._trade_idea_v28 = _trade_idea_v44
