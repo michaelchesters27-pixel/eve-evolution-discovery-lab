@@ -75,3 +75,5 @@ from app.services import live_trader_stale_campaign_guard_v44 as _live_trader_st
 from app.services import live_trader_clear_bias_gate_v45 as _live_trader_clear_bias_gate_v45  # noqa: F401
 # Publish/arm trades only during the defined Europe/London execution window.
 from app.services import live_trader_london_session_gate_v46 as _live_trader_london_session_gate_v46  # noqa: F401
+# Diagnose each completed locked campaign without granting forensic evidence live execution authority.
+from app.services import live_trader_execution_forensics_v47 as _live_trader_execution_forensics_v47  # noqa: F401
