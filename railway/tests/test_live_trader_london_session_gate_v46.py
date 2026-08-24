@@ -4,6 +4,18 @@ from app.services import live_trader as core
 from app.services import live_trader_london_session_gate_v46 as v46
 
 
+def _modern_bias() -> dict:
+    return {
+        "overall": "bullish",
+        "confidence": 70,
+        "panel_bias_version": "eve-live-bias-v2.5-structural-panel",
+        "timeframes": {
+            tf: {"direction": "bullish", "method": "multi_candle_structure"}
+            for tf in ("D1", "H4", "H1", "M30", "M15", "M5")
+        },
+    }
+
+
 def _closed_session() -> dict:
     return {
         "version": v46.SESSION_GATE_VERSION,
@@ -95,7 +107,7 @@ def test_no_new_trade_generator_runs_before_0820(monkeypatch) -> None:
         raise AssertionError("downstream trade generator must not run outside the London window")
 
     monkeypatch.setattr(v46, "_original_trade_idea", should_not_run)
-    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, {}, {}, {})
+    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, _modern_bias(), {}, {})
 
     assert setup["status"] == "SESSION WAIT"
     assert trade["action"] == "WAIT"
@@ -109,7 +121,7 @@ def test_pending_order_is_cancelled_when_window_is_closed(monkeypatch) -> None:
     trader._live_campaign_dirty = False
     monkeypatch.setattr(v46, "_session_status", _closed_session)
 
-    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, {}, {}, {})
+    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, _modern_bias(), {}, {})
 
     assert trader._live_campaign["status"] == "invalidated"
     assert trader._live_campaign["result"] == v46.SESSION_CANCEL_RESULT
@@ -143,7 +155,7 @@ def test_active_trade_keeps_original_risk_after_1700(monkeypatch) -> None:
         ),
     )
 
-    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, {}, {}, {})
+    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, _modern_bias(), {}, {})
 
     assert trader._live_campaign["status"] == "active"
     assert trader._live_campaign["stop"] == 4632.965
@@ -169,19 +181,39 @@ def test_inside_window_passes_to_existing_clear_bias_chain(monkeypatch) -> None:
         ),
     )
 
-    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, {}, {}, {})
+    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, _modern_bias(), {}, {})
 
     assert setup["status"] == "ARMED"
     assert trade["action"] == "BUY STOP"
     assert trade["london_session_gate"]["open"] is True
 
 
+def test_legacy_deterministic_helpers_do_not_depend_on_wall_clock(monkeypatch) -> None:
+    trader = core.LiveTrader.__new__(core.LiveTrader)
+    trader._live_campaign = None
+
+    def should_not_check_clock(*args, **kwargs):
+        raise AssertionError("legacy deterministic helper must not read London wall clock")
+
+    monkeypatch.setattr(v46, "_session_status", should_not_check_clock)
+    monkeypatch.setattr(
+        v46,
+        "_original_trade_idea",
+        lambda self, price, atr, bias, zones, liquidity: (
+            {"status": "ARMED"},
+            {"action": "BUY LIMIT", "order_type": "buy_limit"},
+        ),
+    )
+
+    setup, trade = v46._trade_idea_v46(trader, 4640.0, 7.0, {"overall": "bullish", "confidence": 70}, {}, {})
+    assert setup["status"] == "ARMED"
+    assert trade["action"] == "BUY LIMIT"
+
+
 def test_latest_runtime_aliases_point_to_session_gate() -> None:
-    from app.services import live_trader_clear_bias_gate_v45 as clear_gate
     from app.services import live_trader_execution_integrity_v39 as integrity
     from app.services import live_trader_trade_lock_v28 as lock
 
     assert core.LiveTrader._trade_idea is v46._trade_idea_v46
     assert integrity._trade_idea_v39 is v46._trade_idea_v46
     assert lock._trade_idea_v28 is v46._trade_idea_v46
-    assert clear_gate._trade_idea_v45 is v46._trade_idea_v46
