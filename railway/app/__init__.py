@@ -71,3 +71,5 @@ from app.services import live_trader_structural_bias_v43 as _live_trader_structu
 from app.services import live_trader_stale_campaign_guard_v44 as _live_trader_stale_campaign_guard_v44  # noqa: F401
 # Require genuinely clear multi-timeframe bias before any new trade idea can be published.
 from app.services import live_trader_clear_bias_gate_v45 as _live_trader_clear_bias_gate_v45  # noqa: F401
+# Publish/arm trades only during the defined Europe/London execution window.
+from app.services import live_trader_london_session_gate_v46 as _live_trader_london_session_gate_v46  # noqa: F401
