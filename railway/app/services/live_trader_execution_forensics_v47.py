@@ -161,5 +161,6 @@ outcomes._context_snapshot = _context_snapshot_v47
 core.LiveTrader.learning_summary = _learning_summary_v47
 core.LiveTrader.runtime_status = _runtime_status_v47
 core.LiveTrader.run_forever = _run_forever_v47
+hardening._run_forever_v26 = _run_forever_v47
 integrity._run_forever_v39 = _run_forever_v47
 runtime._run_forever_v30 = _run_forever_v47
