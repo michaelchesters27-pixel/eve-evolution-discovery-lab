@@ -55,12 +55,17 @@ def test_management_replay_sell_side_is_symmetric() -> None:
         "completed_at": "2026-08-25T12:03:20+00:00",
     }
     bars = [
+        # +1R observed; BE becomes active from 12:02.
         {"candle_time": "2026-08-25T12:01:00+00:00", "low": 98.9, "high": 100.4},
+        # +1.5R observed; 0.5R lock becomes active from 12:03.
         {"candle_time": "2026-08-25T12:02:00+00:00", "low": 98.3, "high": 99.8},
-        {"candle_time": "2026-08-25T12:03:00+00:00", "low": 98.0, "high": 99.6},
+        # Price reaches +2R but also retraces through both protected stops.
+        {"candle_time": "2026-08-25T12:03:00+00:00", "low": 98.0, "high": 100.1},
     ]
 
     replay = v52.management_replay(campaign, bars)
 
+    assert replay["results"]["be_after_1R"]["trade_outcome"] == "protected_stop"
     assert replay["results"]["be_after_1R"]["realised_r"] == 0.0
+    assert replay["results"]["lock_0.5R_after_1.5R"]["trade_outcome"] == "protected_stop"
     assert replay["results"]["lock_0.5R_after_1.5R"]["realised_r"] == 0.5
