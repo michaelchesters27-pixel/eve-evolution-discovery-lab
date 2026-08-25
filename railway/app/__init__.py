@@ -79,3 +79,5 @@ from app.services import live_trader_london_session_gate_v46 as _live_trader_lon
 from app.services import live_trader_execution_forensics_v47 as _live_trader_execution_forensics_v47  # noqa: F401
 # Bind every zone-based campaign to current structure, revalidate pending ideas, cap targets, and replay shorter TPs diagnostically.
 from app.services import live_trader_zone_target_guard_v49 as _live_trader_zone_target_guard_v49  # noqa: F401
+# Preserve older runtime wrapper aliases as pointers to the newest audited v49 chain.
+from app.services import live_trader_zone_target_compat_v50 as _live_trader_zone_target_compat_v50  # noqa: F401
