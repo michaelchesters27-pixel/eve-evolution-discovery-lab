@@ -236,5 +236,6 @@ def test_event_sentence_uses_plain_trading_language():
     }
     sentence = events._event_sentence(state)
     assert "Micky" in sentence
-    assert "failed breakdown" in sentence.lower()
-    assert "bullish fake-out" in sentence.lower()
+    assert "failed bearish breakout" in sentence.lower()
+    assert "currently bullish" in sentence.lower()
+    assert "fake-out" not in sentence.lower()
