@@ -30,23 +30,33 @@
     return zone ? `${fmt(zone.low)} to ${fmt(zone.high)}` : 'none';
   }
 
-  function markOldZoneMessages(kind) {
+  function markHistoricalZoneMessages(kind, state) {
     const phrase = `best ${kind} zone`;
+    const zone = state?.zones?.[kind]?.[0];
+    const currentLow = zone ? fmt(zone.low) : null;
+    const currentHigh = zone ? fmt(zone.high) : null;
     document.querySelectorAll('#ltConversation .lt-msg.assistant').forEach(item => {
-      if (!item.textContent.toLowerCase().includes(phrase)) return;
+      const text = item.textContent || '';
+      if (!text.toLowerCase().includes(phrase)) return;
       const small = item.querySelector('small');
       if (!small || !small.textContent.toLowerCase().includes('live market update')) return;
+      const isCurrent = currentLow && currentHigh && text.includes(currentLow) && text.includes(currentHigh);
+      if (isCurrent) {
+        item.classList.remove('zone-replaced');
+        if (small.textContent.toLowerCase().includes('historical')) small.textContent = 'CURRENT ZONE · Live market update';
+        return;
+      }
       item.classList.add('zone-replaced');
       small.textContent = 'REPLACED · historical market update';
     });
   }
 
-  function appendReplacement(kind, previous, state) {
+  function appendReplacement(kind, hasCurrent, state) {
     const box = document.getElementById('ltConversation');
     if (!box) return;
     const item = document.createElement('div');
     item.className = 'lt-msg assistant';
-    const text = previous
+    const text = hasCurrent
       ? `Micky, the previous best ${kind} zone has been replaced. CURRENT best ${kind}: ${zoneLabel(state, kind)}.`
       : `Micky, EVE currently has no ranked ${kind} zone.`;
     item.innerHTML = `${safe(text)}<small>CURRENT ZONE · Live market update</small>`;
@@ -93,9 +103,10 @@
     showSourceZone(state);
     for (const kind of ['demand','supply']) {
       const current = zoneId(state, kind);
+      markHistoricalZoneMessages(kind, state);
       if (best[kind] !== null && current !== best[kind]) {
-        markOldZoneMessages(kind);
-        appendReplacement(kind, current, state);
+        appendReplacement(kind, Boolean(current), state);
+        markHistoricalZoneMessages(kind, state);
       }
       best[kind] = current;
     }
