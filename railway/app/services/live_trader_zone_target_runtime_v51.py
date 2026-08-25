@@ -76,3 +76,6 @@ from app.services import live_trader_management_learning_v52 as _management_lear
 # Use explicit directional breakout wording so EVE says what actually failed:
 # failed bullish breakout when an upside break fails; failed bearish breakout when a downside break fails.
 from app.services import live_trader_breakout_wording_v53 as _breakout_wording_v53  # noqa: E402,F401
+# Final user-language boundary: remove fakeout terminology from labels/explanations
+# while preserving internal event classes and learning confirmation codes.
+from app.services import live_trader_breakout_language_boundary_v54 as _breakout_language_boundary_v54  # noqa: E402,F401
