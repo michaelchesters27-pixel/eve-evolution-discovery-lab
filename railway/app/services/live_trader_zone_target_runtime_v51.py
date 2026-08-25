@@ -73,3 +73,6 @@ session_gate._trade_idea_v46 = _trade_idea_v51
 # Install diagnostic-only profit-protection replay after all live execution wrappers
 # are fixed in place. This changes stored learning evidence, not live stops.
 from app.services import live_trader_management_learning_v52 as _management_learning_v52  # noqa: E402,F401
+# Use explicit directional breakout wording so EVE says what actually failed:
+# failed bullish breakout when an upside break fails; failed bearish breakout when a downside break fails.
+from app.services import live_trader_breakout_wording_v53 as _breakout_wording_v53  # noqa: E402,F401
