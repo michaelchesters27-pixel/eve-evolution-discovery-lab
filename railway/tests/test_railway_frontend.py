@@ -17,6 +17,7 @@ PUBLISHED = {
     "live_trader_news_week_confirmation.js",
     "live_trader_safe_stops_v48.js",
     "live_trader_trade_outcomes.js",
+    "live_trader_zone_truth_v49.js",
     "styles.css",
 }
 
