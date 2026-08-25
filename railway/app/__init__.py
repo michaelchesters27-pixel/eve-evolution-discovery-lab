@@ -81,3 +81,5 @@ from app.services import live_trader_execution_forensics_v47 as _live_trader_exe
 from app.services import live_trader_zone_target_guard_v49 as _live_trader_zone_target_guard_v49  # noqa: F401
 # Preserve older runtime wrapper aliases as pointers to the newest audited v49 chain.
 from app.services import live_trader_zone_target_compat_v50 as _live_trader_zone_target_compat_v50  # noqa: F401
+# Preserve established session precedence and apply v49 checks only to v49-published campaigns.
+from app.services import live_trader_zone_target_runtime_v51 as _live_trader_zone_target_runtime_v51  # noqa: F401
