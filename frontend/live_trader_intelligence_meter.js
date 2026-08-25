@@ -8,7 +8,9 @@
   };
   load('live_trader_intelligence_meter_core.js', () =>
     load('live_trader_execution_intelligence.js', () =>
-      load('live_trader_safe_stops_v48.js', () => {})
+      load('live_trader_safe_stops_v48.js', () =>
+        load('live_trader_zone_truth_v49.js', () => {})
+      )
     )
   );
 })();
