@@ -69,3 +69,7 @@ core.LiveTrader.runtime_status = _runtime_status_v51  # type: ignore[method-assi
 integrity._trade_idea_v39 = _trade_idea_v51
 lock._trade_idea_v28 = _trade_idea_v51
 session_gate._trade_idea_v46 = _trade_idea_v51
+
+# Install diagnostic-only profit-protection replay after all live execution wrappers
+# are fixed in place. This changes stored learning evidence, not live stops.
+from app.services import live_trader_management_learning_v52 as _management_learning_v52  # noqa: E402,F401
