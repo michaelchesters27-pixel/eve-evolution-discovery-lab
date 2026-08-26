@@ -67,3 +67,4 @@ from app.services import live_trader_zone_ranking_v62 as _live_trader_zone_ranki
 from app.services import live_trader_mtf_zones_v63 as _live_trader_mtf_zones_v63  # noqa: E402,F401
 from app.services import live_trader_zone_retrace_integrity_v64 as _live_trader_zone_retrace_integrity_v64  # noqa: E402,F401
 from app.services import live_trader_state_integrity_v65 as _live_trader_state_integrity_v65  # noqa: E402,F401
+from app.services import live_trader_campaign_consensus_v66 as _live_trader_campaign_consensus_v66  # noqa: E402,F401
