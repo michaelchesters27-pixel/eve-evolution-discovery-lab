@@ -5,6 +5,7 @@ from typing import Any
 from app.services import live_trader as core
 
 ZONE_RANKING_VERSION = "eve-live-zone-ranking-v62"
+PRECONFLUENCE_POOL_SIZE = 8
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -17,9 +18,6 @@ def _rank_score(zone: dict[str, Any]) -> float:
     departure = min(max(_num(zone.get("departure_atr")), 0.0), 4.0)
     distance = min(max(_num(zone.get("distance_atr")), 0.0), 10.0)
     fresh_bonus = 5.0 if bool(zone.get("fresh")) else 0.0
-    # Quality remains dominant. Freshness, departure strength and retests refine it;
-    # distance is only a relevance penalty so the nearest mediocre zone cannot beat
-    # a materially cleaner institutional zone purely because it is closer.
     return quality + fresh_bonus + departure * 2.0 - retests * 2.5 - distance * 1.25
 
 
@@ -49,10 +47,13 @@ def _dedupe_zones_v62(
         if any(abs(midpoint - _num(other.get("mid"))) <= atr * 0.65 for other in kept):
             continue
         kept.append(zone)
-        if len(kept) >= 4:
+        # v63 must see a wider candidate pool before H1/M15 confluence is added;
+        # otherwise a lower standalone M5 rank can never be rescued by strong HTF backing.
+        if len(kept) >= PRECONFLUENCE_POOL_SIZE:
             break
 
     for index, zone in enumerate(kept, start=1):
+        zone["preconfluence_rank"] = index
         zone["rank"] = index
         zone["preferred"] = index == 1
     return kept
