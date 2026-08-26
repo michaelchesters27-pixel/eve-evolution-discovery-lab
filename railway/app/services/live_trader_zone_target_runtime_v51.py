@@ -79,3 +79,6 @@ from app.services import live_trader_breakout_wording_v53 as _breakout_wording_v
 # Final user-language boundary: remove fakeout terminology from labels/explanations
 # while preserving internal event classes and learning confirmation codes.
 from app.services import live_trader_breakout_language_boundary_v54 as _breakout_language_boundary_v54  # noqa: E402,F401
+# Keep a separate always-on directional opinion for the current session without
+# granting it authority over the hardened trade-entry gate.
+from app.services import live_trader_session_outlook_v55 as _live_trader_session_outlook_v55  # noqa: E402,F401
