@@ -1,98 +1,79 @@
 (() => {
-  const VERSION = 'eve-live-trader-audit-ui-v75';
-  if (window.__eveLiveTraderAuditUiV75) return;
-  window.__eveLiveTraderAuditUiV75 = true;
+  const VERSION = 'eve-live-trader-ui-integrity-v78';
+  if (window.__eveLiveTraderUiIntegrityV78) return;
+  window.__eveLiveTraderUiIntegrityV78 = true;
 
-  function repairSectionPlacement() {
-    const view = document.getElementById('view-live-trader');
-    if (!view) return;
-    const overview = view.querySelector('[data-lt-page="overview"]');
-    const structure = view.querySelector('[data-lt-page="structure"]');
-    const hero = overview?.querySelector('.lt-hero');
-    const liveMarketCard = document.getElementById('ltPrice')?.closest('.lt-card');
-    if (overview && hero && liveMarketCard && !hero.contains(liveMarketCard)) hero.insertBefore(liveMarketCard, hero.firstChild);
-    if (structure && liveMarketCard && structure.contains(liveMarketCard) && hero) hero.insertBefore(liveMarketCard, hero.firstChild);
-  }
+  const style = document.createElement('style');
+  style.textContent = `
+    #view-live-trader .lt-legacy-chat-note{margin:0 0 12px;padding:9px 11px;border:1px solid rgba(255,255,255,.08);border-radius:9px;color:#8fa19b;font-size:10px;line-height:1.4;background:rgba(255,255,255,.02)}
+    #view-live-trader .lt-zone{contain:layout paint}
+  `;
+  document.head.appendChild(style);
 
-  async function refreshSpecialistFromLearningApi() {
-    const panel = document.getElementById('ltZoneRetracePanel');
-    if (!panel || typeof api !== 'function') return;
-    try {
-      const learning = await api('/live-trader/learning');
-      const data = learning?.zone_retrace_specialist || {};
-      const academy = data.current_policy_academy || learning?.zone_retrace_current_policy_academy || {};
-      const body = document.getElementById('ltZrBody');
-      const health = document.getElementById('ltZrHealth');
-      if (!body || !health) return;
+  const legacyPatterns = [
+    /preferred execution is\s+(?:buy|sell)\s+(?:stop|limit)/i,
+    /\b(?:buy|sell)\s+(?:stop|limit)\s*:\s*entry/i,
+    /prove the breakout before getting (?:long|short)/i,
+  ];
 
-      const fmt = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString('en-GB') : '—';
-      const r = value => Number.isFinite(Number(value)) ? `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(3)}R` : '—';
-      const pct = value => Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : '—';
-      const time = value => value ? new Date(value).toLocaleString('en-GB', {dateStyle:'short', timeStyle:'medium'}) : '—';
-      const label = value => String(value || '—').replaceAll('_',' ').replace(/\b\w/g, c => c.toUpperCase());
-      const opportunities = Number(academy.opportunities_found || 0);
-      const scorable = Number(academy.scorable_opportunities || 0);
-      const coverage = opportunities > 0 ? scorable / opportunities : null;
-      const academyScanning = Boolean(academy.academy_version && !academy.caught_up);
-      const proxyVerified = data.historical_policy_proxy_verified === true || data.live_policy_expectancy_verified === true;
-      const proxyCandidate = data.historical_policy_proxy_candidate_execution || null;
-      const last = academy.last_cycle_at || data.last_cycle_at;
-      const lastMs = last ? new Date(last).getTime() : 0;
-      const fresh = Boolean(lastMs && Date.now() - lastMs <= 10 * 60 * 1000);
-      const status = data.status === 'error' ? 'ERROR'
-        : proxyCandidate ? 'HISTORICAL M1 CANDIDATE'
-        : proxyVerified ? 'M1 PROXY VERIFIED'
-        : academyScanning ? 'M1 PROXY SCANNING'
-        : fresh ? 'LEARNING ACTIVE'
-        : 'STALE';
-      health.textContent = status;
-      health.className = `badge ${['HISTORICAL M1 CANDIDATE','M1 PROXY VERIFIED','LEARNING ACTIVE'].includes(status) ? 'success' : status === 'ERROR' ? 'error' : 'warning'}`;
+  function cleanLegacyConversation() {
+    const box = document.getElementById('ltConversation');
+    if (!box) return;
+    let hidden = 0;
+    box.querySelectorAll('.lt-msg.assistant').forEach(item => {
+      if (item.dataset.legacyChecked === VERSION) {
+        if (item.hidden) hidden += 1;
+        return;
+      }
+      item.dataset.legacyChecked = VERSION;
+      const text = item.textContent || '';
+      if (legacyPatterns.some(pattern => pattern.test(text))) {
+        item.hidden = true;
+        item.dataset.legacyStrategyReply = 'true';
+        hidden += 1;
+      }
+    });
 
-      const researchEvidence = data.research_execution_evidence || data.execution_evidence || {};
-      const researchRow = (name, item = {}) => `<div class="lt-status"><span>${name}</span><strong>${r(item.expectancy_per_opportunity_r)}</strong><small>${fmt(item.triggered)} triggered / ${fmt(item.opportunities)} opportunities · ${pct(item.trigger_rate)} trigger rate</small></div>`;
-
-      body.innerHTML = `
-        <div><p class="eyebrow">CURRENT-POLICY HISTORICAL ACADEMY</p></div>
-        <div class="lt-status-row">
-          <div class="lt-status"><span>Archive rows scanned</span><strong>${fmt(academy.rows_scanned)}</strong><small>Cursor ${time(academy.cursor_time)}</small></div>
-          <div class="lt-status"><span>Current-policy opportunities</span><strong>${fmt(academy.opportunities_found)}</strong><small>Found after today's bias, session and ranked-zone gates</small></div>
-          <div class="lt-status"><span>Scorable opportunities</span><strong>${fmt(academy.scorable_opportunities)}</strong><small>${coverage == null ? 'Waiting for opportunities' : `${pct(coverage)} causal M1 coverage`}</small></div>
-          <div class="lt-status"><span>Confirmed entries</span><strong>${fmt(academy.triggered)}</strong><small>${pct(academy.trigger_rate)} trigger rate</small></div>
-          <div class="lt-status"><span>Causal M1 policy expectancy</span><strong>${r(academy.expectancy_per_opportunity_r)}</strong><small>${academy.caught_up ? 'Archive scan caught up' : 'Still scanning — not final evidence'}</small></div>
-          <div class="lt-status"><span>Historical candidate</span><strong>${proxyCandidate ? label(proxyCandidate) : 'NOT QUALIFIED'}</strong><small>${proxyVerified ? 'Historical proxy coverage verified' : 'Thresholds cannot be finalized until archive scan is complete'}</small></div>
-          <div class="lt-status"><span>Tick-exact historical proof</span><strong>NO</strong><small>M1 OHLC is the finest historical execution source</small></div>
-          <div class="lt-status"><span>Forward live validation</span><strong>REQUIRED</strong><small>No historical proxy can declare the live strategy proven</small></div>
-        </div>
-        <p class="muted" style="font-size:11px;margin-top:12px">Historical policy proxy: completed M5 structural state → London window → best ranked demand/supply → retracement → M5/M15 confirmation → causal M1 market-entry proxy → production stop geometry → ${Number(data.live_target_cap_r || 1.5).toFixed(1)}R target cap. M1 cannot reveal intraminute tick order, so ambiguous same-minute outcomes are scored conservatively stop-first. Historical red-folder news is not credited because a complete six-year calendar is unavailable; the live news gate still fails closed.</p>
-
-        <div style="margin-top:18px"><p class="eyebrow">OLDER RESEARCH BASELINE — NOT LIVE PROMOTION</p></div>
-        <div class="lt-status-row">
-          ${researchRow('Immediate market (research)', researchEvidence.market)}
-          ${researchRow('Pullback limit (research)', researchEvidence.pullback_limit)}
-          ${researchRow('Confirmation stop (research)', researchEvidence.confirmation_stop)}
-        </div>
-        <div class="lt-status-row" style="margin-top:12px">
-          <div class="lt-status"><span>Independent old pullbacks</span><strong>${fmt(data.relevant_episodes)}</strong><small>Compatibility/research sample only</small></div>
-          <div class="lt-status"><span>Research target</span><strong>${Number(data.research_target_r || 2.2).toFixed(1)}R</strong><small>Immediate decision-price model</small></div>
-          <div class="lt-status"><span>Research best</span><strong>${label(data.research_best_execution || data.best_execution)}</strong></div>
-          <div class="lt-status"><span>Historical candidate authority</span><strong>CURRENT-POLICY ACADEMY</strong><small>${data.current_policy_academy_version || 'v71'} · causal M1 proxy</small></div>
-        </div>
-        ${data.legacy_cycle_count != null ? `<p class="muted" style="font-size:11px;margin-top:12px">Pre-hardening cycle headline preserved for audit only: ${fmt(data.legacy_cycle_count)}. It is not included in the audited completed-cycle counter.</p>` : ''}`;
-    } catch (_) {
-      // Keep the previous visible values; stale state remains visibly stale.
+    let note = box.querySelector('.lt-legacy-chat-note');
+    if (hidden > 0 && !note) {
+      note = document.createElement('div');
+      note.className = 'lt-legacy-chat-note';
+      note.textContent = 'Older pre-retracement stop/limit trade replies are archived from this live view.';
+      box.prepend(note);
+    } else if (hidden === 0 && note) {
+      note.remove();
     }
   }
 
-  let attempts = 0;
-  const boot = setInterval(() => {
-    attempts += 1;
-    repairSectionPlacement();
-    if (document.getElementById('ltZoneRetracePanel')) refreshSpecialistFromLearningApi();
-    if (attempts >= 40) clearInterval(boot);
-  }, 500);
+  function tidyLearningZeroState() {
+    const entries = document.getElementById('ltZrEntries');
+    const expectancy = document.getElementById('ltZrExpectancy');
+    if (!entries || !expectancy) return;
+    const count = Number(String(entries.textContent || '').replace(/[^0-9.-]/g, ''));
+    const note = expectancy.parentElement?.querySelector('small');
+    if (Number.isFinite(count) && count === 0) {
+      expectancy.textContent = 'No entries yet';
+      if (note) note.textContent = 'Waiting for a confirmed entry';
+    }
+  }
 
-  setInterval(() => {
-    repairSectionPlacement();
-    refreshSpecialistFromLearningApi();
-  }, 30000);
+  function run() {
+    cleanLegacyConversation();
+    tidyLearningZeroState();
+  }
+
+  const view = document.getElementById('view-live-trader');
+  if (!view) return;
+  let queued = false;
+  const observer = new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      run();
+    });
+  });
+  observer.observe(view, {childList:true, subtree:true, characterData:true});
+  run();
+  setInterval(run, 5000);
 })();
