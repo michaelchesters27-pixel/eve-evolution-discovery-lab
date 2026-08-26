@@ -138,3 +138,7 @@ async def _learning_summary_v60(self: core.LiveTrader) -> dict[str, Any]:
 v58._historical_rows = _historical_rows_v60
 v58._score_execution_evidence = _score_retrace_only
 core.LiveTrader.learning_summary = _learning_summary_v60  # type: ignore[method-assign]
+
+# Preserve specialist identity on every future locked campaign so a published
+# retracement trade can be audited unambiguously after entry and completion.
+from app.services import live_trader_zone_retrace_campaign_audit_v61 as _live_trader_zone_retrace_campaign_audit_v61  # noqa: E402,F401
