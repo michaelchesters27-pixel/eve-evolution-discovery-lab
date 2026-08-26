@@ -70,3 +70,4 @@ from app.services import live_trader_state_integrity_v65 as _live_trader_state_i
 from app.services import live_trader_campaign_consensus_v66 as _live_trader_campaign_consensus_v66  # noqa: E402,F401
 from app.services import live_trader_zone_retrace_evidence_contract_v67 as _live_trader_zone_retrace_evidence_contract_v67  # noqa: E402,F401
 from app.services import live_trader_zone_retrace_live_policy_replay_v68 as _live_trader_zone_retrace_live_policy_replay_v68  # noqa: E402,F401
+from app.services import live_trader_zone_retrace_replay_path_fix_v69 as _live_trader_zone_retrace_replay_path_fix_v69  # noqa: E402,F401
