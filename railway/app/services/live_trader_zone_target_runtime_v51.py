@@ -88,3 +88,8 @@ from app.services import live_trader_session_outlook_compat_v56 as _live_trader_
 # Add completed-M5 BOS/CHoCH information to the Session Outlook display only.
 # This readout has no authority over trade generation or the session-outlook score.
 from app.services import live_trader_structure_readout_v57 as _live_trader_structure_readout_v57  # noqa: E402,F401
+# Specialise fresh campaign publication in directional retracements to a valid
+# supply/demand zone. Existing locked campaigns remain untouched. The companion
+# Historical Academy cycle compares market, pullback-limit and confirmation-stop
+# execution and writes a real cycle counter/evidence state for the UI.
+from app.services import live_trader_zone_retrace_specialist_v58 as _live_trader_zone_retrace_specialist_v58  # noqa: E402,F401
