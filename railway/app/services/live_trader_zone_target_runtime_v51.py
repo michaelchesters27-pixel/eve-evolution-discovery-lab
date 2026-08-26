@@ -73,3 +73,4 @@ from app.services import live_trader_zone_retrace_live_policy_replay_v68 as _liv
 from app.services import live_trader_zone_retrace_replay_path_fix_v69 as _live_trader_zone_retrace_replay_path_fix_v69  # noqa: E402,F401
 from app.services import live_trader_zone_retrace_replay_diagnostics_v70 as _live_trader_zone_retrace_replay_diagnostics_v70  # noqa: E402,F401
 from app.services import live_trader_zone_retrace_current_policy_academy_v71 as _live_trader_zone_retrace_current_policy_academy_v71  # noqa: E402,F401
+from app.services import live_trader_run_forever_compat_v72 as _live_trader_run_forever_compat_v72  # noqa: E402,F401
