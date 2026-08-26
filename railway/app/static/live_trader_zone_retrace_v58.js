@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = 'eve-live-zone-retrace-ui-v58';
+  const VERSION = 'eve-live-zone-retrace-ui-v67';
   const STALE_MS = 10 * 60 * 1000;
   let timer = null;
 
@@ -26,8 +26,8 @@
         <div><p class="eyebrow">ZONE RETRACEMENT SPECIALIST</p><h3>Real strategy learning activity</h3></div>
         <span class="badge" id="ltZrHealth">LOADING</span>
       </div>
-      <div id="ltZrBody" class="lt-learning"><div class="lt-empty">Waiting for the first real specialist evaluation cycle.</div></div>
-      <p class="muted" style="font-size:11px;margin-top:12px">Live entry rule: bias → retracement → supply/demand zone → M5/M15 confirmation → market execution. Breakout chasing and blind limit entries are blocked while EVE compares execution methods in the Historical Academy.</p>`;
+      <div id="ltZrBody" class="lt-learning"><div class="lt-empty">Waiting for specialist evidence.</div></div>
+      <p class="muted" style="font-size:11px;margin-top:12px">Live rule: bias → retracement → supply/demand zone → M5/M15 confirmation → market execution. Research baselines cannot promote the live rule unless the exact live entry and target contract has been causally replayed.</p>`;
     hostCard.parentElement?.insertBefore(panel, hostCard);
     return panel;
   }
@@ -45,29 +45,31 @@
     const health = document.getElementById('ltZrHealth');
     const body = document.getElementById('ltZrBody');
     const last = data.last_cycle_at ? new Date(data.last_cycle_at).getTime() : 0;
-    const fresh = last && (Date.now() - last <= STALE_MS);
-    const status = data.status === 'error' ? 'ERROR' : fresh ? 'LEARNING ACTIVE' : 'STALE';
+    const fresh = Boolean(last && Date.now() - last <= STALE_MS);
+    const needsRescore = data.live_policy_expectancy_verified === false && data.live_policy_rescore_status === 'required';
+    const status = data.status === 'error' ? 'ERROR' : needsRescore ? 'LIVE RESCORE REQUIRED' : fresh ? 'LEARNING ACTIVE' : 'STALE';
     health.textContent = status;
     health.className = `badge ${status === 'LEARNING ACTIVE' ? 'success' : status === 'ERROR' ? 'error' : 'warning'}`;
 
-    const evidence = data.execution_evidence || {};
+    const evidence = data.research_execution_evidence || data.execution_evidence || {};
     body.innerHTML = `
       <div class="lt-status-row">
-        <div class="lt-status"><span>Real evaluation cycles</span><strong>${esc(fmt(data.cycle_count))}</strong></div>
+        <div class="lt-status"><span>Audited cycles</span><strong>${esc(fmt(data.cycle_count))}</strong></div>
         <div class="lt-status"><span>Last specialist cycle</span><strong>${esc(time(data.last_cycle_at))}</strong></div>
-        <div class="lt-status"><span>Rows evaluated this cycle</span><strong>${esc(fmt(data.rows_evaluated))}</strong></div>
-        <div class="lt-status"><span>Relevant zone episodes</span><strong>${esc(fmt(data.relevant_episodes))}</strong></div>
+        <div class="lt-status"><span>Independent retracement episodes</span><strong>${esc(fmt(data.relevant_episodes))}</strong></div>
+        <div class="lt-status"><span>Live-policy evidence</span><strong>${data.live_policy_expectancy_verified ? 'VERIFIED' : 'NOT VERIFIED'}</strong></div>
       </div>
-      <div style="margin-top:14px"><p class="eyebrow">ENTRY METHOD COMPARISON</p></div>
+      <div style="margin-top:14px"><p class="eyebrow">RESEARCH BASELINE</p></div>
       <div class="lt-status-row">
-        ${executionCard('Market after confirmation', evidence.market)}
-        ${executionCard('Pullback limit', evidence.pullback_limit)}
-        ${executionCard('Confirmation stop', evidence.confirmation_stop)}
+        ${executionCard('Immediate market (research)', evidence.market)}
+        ${executionCard('Pullback limit (research)', evidence.pullback_limit)}
+        ${executionCard('Confirmation stop (research)', evidence.confirmation_stop)}
       </div>
       <div class="lt-status-row" style="margin-top:12px">
-        <div class="lt-status"><span>Best current execution</span><strong>${esc(label(data.best_execution))}</strong></div>
-        <div class="lt-status"><span>Evidence-qualified candidate</span><strong>${esc(label(data.promoted_execution))}</strong></div>
+        <div class="lt-status"><span>Research best</span><strong>${esc(label(data.research_best_execution || data.best_execution))}</strong><small>${Number(data.research_target_r || 2.2).toFixed(1)}R baseline</small></div>
+        <div class="lt-status"><span>Live promoted execution</span><strong>${esc(data.live_promoted_execution ? label(data.live_promoted_execution) : 'None — rescore required')}</strong><small>${Number(data.live_target_cap_r || 1.5).toFixed(1)}R live cap</small></div>
       </div>
+      ${needsRescore ? `<p class="lt-invalidation">Research enters immediately at the historical decision price. Live Trader waits for the zone and M5/M15 confirmation. The research winner is not live-policy proof.</p>` : ''}
       ${data.last_error ? `<p class="lt-invalidation">${esc(data.last_error)}</p>` : ''}`;
   }
 
