@@ -85,3 +85,6 @@ from app.services import live_trader_session_outlook_v55 as _live_trader_session
 # Preserve the older answer-wrapper alias identity contract while delegating red-folder
 # commands through the captured v37 path inside the new session-outlook wrapper.
 from app.services import live_trader_session_outlook_compat_v56 as _live_trader_session_outlook_compat_v56  # noqa: E402,F401
+# Add completed-M5 BOS/CHoCH information to the Session Outlook display only.
+# This readout has no authority over trade generation or the session-outlook score.
+from app.services import live_trader_structure_readout_v57 as _live_trader_structure_readout_v57  # noqa: E402,F401
