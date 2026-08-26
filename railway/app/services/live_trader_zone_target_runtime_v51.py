@@ -65,3 +65,4 @@ from app.services import live_trader_zone_retrace_specialist_v58 as _live_trader
 from app.services import live_trader_zone_retrace_audit_v60 as _live_trader_zone_retrace_audit_v60  # noqa: E402,F401
 from app.services import live_trader_zone_ranking_v62 as _live_trader_zone_ranking_v62  # noqa: E402,F401
 from app.services import live_trader_mtf_zones_v63 as _live_trader_mtf_zones_v63  # noqa: E402,F401
+from app.services import live_trader_zone_retrace_integrity_v64 as _live_trader_zone_retrace_integrity_v64  # noqa: E402,F401
