@@ -30,6 +30,30 @@
     normalizeNode(document.getElementById('view-live-trader'));
   }
 
+  function applyCleanLayout() {
+    const view = document.getElementById('view-live-trader');
+    if (!view) return false;
+
+    view.classList.add('lt-clean-layout');
+    view.querySelectorAll('.lt-manual-warning').forEach(warning => warning.remove());
+
+    const tradeCard = view.querySelector('.lt-trade-card');
+    const zoneGrid = [...view.querySelectorAll('.lt-grid')].find(grid =>
+      grid.querySelector('#ltDemand') && grid.querySelector('#ltSupply')
+    );
+    const eventCard = view.querySelector('#ltMarketEventCard');
+
+    if (zoneGrid) zoneGrid.classList.add('lt-zone-grid');
+    if (tradeCard && zoneGrid && tradeCard.nextElementSibling !== zoneGrid) {
+      tradeCard.insertAdjacentElement('afterend', zoneGrid);
+    }
+    if (zoneGrid && eventCard && zoneGrid.nextElementSibling !== eventCard) {
+      zoneGrid.insertAdjacentElement('afterend', eventCard);
+    }
+
+    return true;
+  }
+
   function installVoiceBoundary() {
     const voice = window.eveLiveVoice;
     if (!voice || typeof voice.say !== 'function' || voice.__breakoutLanguageV54) return false;
@@ -41,9 +65,13 @@
 
   const view = document.getElementById('view-live-trader');
   if (view) {
-    const observer = new MutationObserver(() => normalizeLiveTrader());
+    const observer = new MutationObserver(() => {
+      normalizeLiveTrader();
+      applyCleanLayout();
+    });
     observer.observe(view, {childList: true, subtree: true, characterData: true});
     normalizeLiveTrader();
+    applyCleanLayout();
   }
 
   installVoiceBoundary();
