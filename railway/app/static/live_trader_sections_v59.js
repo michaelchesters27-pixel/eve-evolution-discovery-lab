@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = 'eve-live-trader-sections-v59';
+  const VERSION = 'eve-live-trader-sections-v76';
   if (window.__eveLiveTraderSectionsV59) return;
   window.__eveLiveTraderSectionsV59 = true;
 
@@ -14,15 +14,14 @@
     #view-live-trader .lt-section-page>.lt-card,#view-live-trader .lt-section-page>.lt-grid,#view-live-trader .lt-section-page>.lt-hero{margin-bottom:16px}
     #view-live-trader .lt-section-title{margin:0 0 14px;padding:2px 2px 10px;border-bottom:1px solid rgba(255,255,255,.08)}
     #view-live-trader .lt-section-title h3{margin:3px 0 0;font-size:20px}
-    #view-live-trader #ltZoneRetracePanel{width:100%;box-sizing:border-box}
-    #view-live-trader #ltZoneRetracePanel .lt-status-row{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px!important}
-    #view-live-trader #ltZoneRetracePanel .lt-status{min-width:0!important;word-break:normal!important;overflow-wrap:break-word!important}
-    #view-live-trader #ltZoneRetracePanel .lt-status span,#view-live-trader #ltZoneRetracePanel .lt-status small{word-break:normal!important;overflow-wrap:break-word!important;white-space:normal!important}
-    #view-live-trader #ltZoneRetracePanel .lt-status strong{font-size:18px}
+    #view-live-trader .lt-section-fixed-grid{align-items:stretch}
+    #view-live-trader [data-lt-host="zones"]>.lt-card{min-width:0}
+    #view-live-trader [data-lt-host="zones"] .lt-zones{min-height:150px}
+    #view-live-trader [data-lt-host="zones"] .lt-zone{box-sizing:border-box;min-height:72px}
+    #view-live-trader #ltZoneRetracePanel,#view-live-trader #ltZoneRetraceResearchPanel{width:100%;box-sizing:border-box}
     @media(max-width:780px){
       #view-live-trader .lt-section-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
       #view-live-trader .lt-section-btn{width:100%;padding:10px 8px}
-      #view-live-trader #ltZoneRetracePanel .lt-status-row{grid-template-columns:1fr!important}
     }
   `;
   document.head.appendChild(style);
@@ -32,19 +31,68 @@
     {key:'trade', label:'Trade', eyebrow:'EXECUTION', title:'Current trade setup'},
     {key:'zones', label:'Zones', eyebrow:'LOCATION', title:'Supply and demand zones'},
     {key:'structure', label:'Structure', eyebrow:'MARKET MAP', title:'Bias structure and liquidity'},
-    {key:'learning', label:'Learning', eyebrow:'SPECIALIST', title:'Zone retracement learning'},
-    {key:'academy', label:'Academy / Performance', eyebrow:'EVIDENCE', title:'Historical and measured learning'},
+    {key:'learning', label:'Learning', eyebrow:'SPECIALIST', title:'What EVE is learning now'},
+    {key:'academy', label:'Academy / Performance', eyebrow:'EVIDENCE', title:'Research and measured performance'},
     {key:'chat', label:'Talk to EVE', eyebrow:'EVE', title:'Live trading conversation'},
   ];
 
   function closestCard(id){return document.getElementById(id)?.closest('.lt-card') || null;}
-  function closestGrid(id){return document.getElementById(id)?.closest('.lt-grid') || null;}
-  function moveUnique(page, nodes, seen){
-    nodes.filter(Boolean).forEach(node => {
-      if (seen.has(node)) return;
-      seen.add(node);
-      page.appendChild(node);
-    });
+  function pageFor(view, key){return view.querySelector(`.lt-section-page[data-lt-page="${key}"]`);}
+
+  function ensureHost(page, key, className = '') {
+    if (!page) return null;
+    let host = page.querySelector(`[data-lt-host="${key}"]`);
+    if (host) return host;
+    host = document.createElement('div');
+    host.dataset.ltHost = key;
+    host.className = className;
+    page.appendChild(host);
+    return host;
+  }
+
+  function place(node, parent) {
+    if (!node || !parent || node.parentElement === parent) return false;
+    parent.appendChild(node);
+    return true;
+  }
+
+  function reconcile(view) {
+    const overview = pageFor(view, 'overview');
+    const trade = pageFor(view, 'trade');
+    const zones = pageFor(view, 'zones');
+    const structure = pageFor(view, 'structure');
+    const learning = pageFor(view, 'learning');
+    const academy = pageFor(view, 'academy');
+    const chat = pageFor(view, 'chat');
+    if (!overview || !trade || !zones || !structure || !learning || !academy || !chat) return;
+
+    const zoneHost = ensureHost(zones, 'zones', 'lt-grid lt-section-fixed-grid');
+    const structureHost = ensureHost(structure, 'structure', 'lt-grid lt-section-fixed-grid');
+
+    // Overview keeps the whole hero intact. Never move a nested hero card into another section.
+    const hero = view.querySelector('.lt-hero');
+    if (hero) place(hero, overview);
+
+    // Trade means trade only.
+    place(closestCard('ltTradeAction'), trade);
+
+    // Zones owns the demand and supply cards regardless of later DOM updates.
+    place(closestCard('ltDemand'), zoneHost);
+    place(closestCard('ltSupply'), zoneHost);
+
+    // Structure owns timeframe bias and liquidity/levels. The live market card stays in Overview.
+    place(closestCard('ltTimeframes'), structureHost);
+    place(closestCard('ltLevels'), structureHost);
+
+    // Current specialist learning is kept simple; older research is deliberately separated.
+    place(document.getElementById('ltZoneRetracePanel'), learning);
+    place(document.getElementById('ltZoneRetraceResearchPanel'), academy);
+    place(closestCard('ltLearning'), academy);
+
+    place(closestCard('ltConversation'), chat);
+
+    // Remove empty legacy grid wrappers left behind after moving their cards.
+    view.querySelectorAll('.lt-section-page .lt-grid:empty,.live-trader-shell .lt-grid:empty').forEach(node => node.remove());
   }
 
   function build(){
@@ -60,7 +108,6 @@
 
     const pagesHost = document.createElement('div');
     pagesHost.className = 'lt-section-pages';
-    const pages = {};
 
     sectionDefs.forEach((def, index) => {
       const button = document.createElement('button');
@@ -78,26 +125,27 @@
       page.setAttribute('role','tabpanel');
       page.innerHTML = `<div class="lt-section-title"><p class="eyebrow">${def.eyebrow}</p><h3>${def.title}</h3></div>`;
       pagesHost.appendChild(page);
-      pages[def.key] = page;
     });
 
     shell.parentElement?.insertBefore(nav, shell);
     shell.parentElement?.insertBefore(pagesHost, shell);
 
-    const seen = new Set();
+    // First pass while all original cards still exist inside the shell.
+    reconcile(view);
 
-    moveUnique(pages.overview, [view.querySelector('.lt-hero')], seen);
-    moveUnique(pages.trade, [closestCard('ltTradeAction')], seen);
-    moveUnique(pages.zones, [closestGrid('ltDemand')], seen);
-    moveUnique(pages.structure, [closestGrid('ltTimeframes'), closestCard('ltMarketLine')], seen);
-    moveUnique(pages.learning, [document.getElementById('ltZoneRetracePanel')], seen);
-    moveUnique(pages.academy, [closestCard('ltLearning')], seen);
-    moveUnique(pages.chat, [closestCard('ltConversation')], seen);
-
+    // Any genuine leftover card belongs on Overview; empty wrappers are discarded.
+    const overview = pageFor(view, 'overview');
     [...shell.children].forEach(node => {
-      if (!seen.has(node)) pages.overview.appendChild(node);
+      if (node.classList?.contains('lt-grid') && !node.querySelector('.lt-card')) {
+        node.remove();
+        return;
+      }
+      if (node.querySelector?.('.lt-card') || node.classList?.contains('lt-card') || node.classList?.contains('lt-hero')) {
+        overview?.appendChild(node);
+      }
     });
     shell.remove();
+    reconcile(view);
 
     function activate(key){
       nav.querySelectorAll('.lt-section-btn').forEach(btn => {
@@ -114,12 +162,19 @@
       activate(button.dataset.ltSection || 'overview');
     });
 
+    let queued = false;
     const observer = new MutationObserver(() => {
-      const panel = document.getElementById('ltZoneRetracePanel');
-      if (panel && !pages.learning.contains(panel)) pages.learning.appendChild(panel);
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        reconcile(view);
+      });
     });
     observer.observe(view, {childList:true, subtree:true});
 
+    // A slow safety reconciliation catches late-loaded addon cards without visual thrashing.
+    setInterval(() => reconcile(view), 5000);
     return true;
   }
 
