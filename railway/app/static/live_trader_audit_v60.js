@@ -1,7 +1,7 @@
 (() => {
-  const VERSION = 'eve-live-trader-ui-integrity-v78';
-  if (window.__eveLiveTraderUiIntegrityV78) return;
-  window.__eveLiveTraderUiIntegrityV78 = true;
+  const VERSION = 'eve-live-trader-ui-integrity-v79';
+  if (window.__eveLiveTraderUiIntegrityV79) return;
+  window.__eveLiveTraderUiIntegrityV79 = true;
 
   const style = document.createElement('style');
   style.textContent = `
@@ -15,6 +15,82 @@
     /\b(?:buy|sell)\s+(?:stop|limit)\s*:\s*entry/i,
     /prove the breakout before getting (?:long|short)/i,
   ];
+
+  const ZONE_MIN_HOLD_MS = 20000;
+  const ZONE_ABSOLUTE_GAIN_ATR = 0.35;
+  const ZONE_RELATIVE_RATIO = 0.70;
+  const zoneSelection = {
+    demand:{key:null,switchedAt:0},
+    supply:{key:null,switchedAt:0},
+  };
+
+  const finite = (value, fallback = null) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const zoneKey = (kind, zone = {}) => String(zone.id || `${kind}|${zone.origin_time || ''}|${finite(zone.low, '')}|${finite(zone.high, '')}`);
+  const zoneInside = zone => String(zone?.status || '').toUpperCase() === 'IN ZONE';
+  const zoneDistance = zone => Math.max(0, finite(zone?.distance_atr, 999));
+
+  function stabilizeZoneList(kind, source) {
+    const zones = Array.isArray(source) ? source.filter(Boolean) : [];
+    const memory = zoneSelection[kind];
+    if (!memory || !zones.length) {
+      if (memory) {
+        memory.key = null;
+        memory.switchedAt = 0;
+      }
+      return zones;
+    }
+
+    const now = Date.now();
+    const candidate = zones[0];
+    const candidateKey = zoneKey(kind, candidate);
+    let current = memory.key ? zones.find(zone => zoneKey(kind, zone) === memory.key) : null;
+
+    if (!current) {
+      memory.key = candidateKey;
+      memory.switchedAt = now;
+      current = candidate;
+    } else if (candidateKey !== memory.key) {
+      const currentDistance = zoneDistance(current);
+      const candidateDistance = zoneDistance(candidate);
+      const absoluteGain = currentDistance - candidateDistance;
+      const relativeGain = currentDistance > 0 ? candidateDistance / currentDistance : 1;
+      const challengerEntered = zoneInside(candidate) && !zoneInside(current);
+      const holdElapsed = now - memory.switchedAt >= ZONE_MIN_HOLD_MS;
+      const meaningfullyCloser = absoluteGain >= ZONE_ABSOLUTE_GAIN_ATR || (currentDistance >= 0.5 && relativeGain <= ZONE_RELATIVE_RATIO);
+
+      if (challengerEntered || (holdElapsed && meaningfullyCloser)) {
+        memory.key = candidateKey;
+        memory.switchedAt = now;
+        current = candidate;
+      }
+    }
+
+    const heldKey = memory.key;
+    const held = zones.find(zone => zoneKey(kind, zone) === heldKey) || zones[0];
+    return [held, ...zones.filter(zone => zoneKey(kind, zone) !== zoneKey(kind, held))];
+  }
+
+  function stabilizeLiveTraderPayload(payload) {
+    if (!payload || typeof payload !== 'object' || !payload.zones || typeof payload.zones !== 'object') return payload;
+    payload.zones.demand = stabilizeZoneList('demand', payload.zones.demand);
+    payload.zones.supply = stabilizeZoneList('supply', payload.zones.supply);
+    return payload;
+  }
+
+  function installZoneStabilityBoundary() {
+    const original = window.api;
+    if (typeof original !== 'function' || original.__eveZoneStabilityV79) return false;
+    const wrapped = async function(path, options = {}) {
+      const payload = await original.call(this, path, options);
+      const method = String(options?.method || 'GET').toUpperCase();
+      if (String(path || '') === '/live-trader' && method === 'GET') stabilizeLiveTraderPayload(payload);
+      return payload;
+    };
+    wrapped.__eveZoneStabilityV79 = true;
+    wrapped.__eveZoneStabilityOriginal = original;
+    window.api = wrapped;
+    return true;
+  }
 
   function cleanLegacyConversation() {
     const box = document.getElementById('ltConversation');
@@ -61,6 +137,12 @@
     cleanLegacyConversation();
     tidyLearningZeroState();
   }
+
+  installZoneStabilityBoundary();
+  const apiTimer = setInterval(() => {
+    if (installZoneStabilityBoundary()) clearInterval(apiTimer);
+  }, 250);
+  setTimeout(() => clearInterval(apiTimer), 10000);
 
   const view = document.getElementById('view-live-trader');
   if (!view) return;
