@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.services import live_trader as core
+from app.services import live_trader_historical_learning_v29 as academy
 from app.services import live_trader_london_session_gate_v46 as session_gate
 from app.services import live_trader_trade_lock_v28 as lock
 from app.services import live_trader_zone_retrace_specialist_v58 as v58
@@ -20,6 +21,16 @@ def trader() -> core.LiveTrader:
     engine._live_campaign_loaded_v28 = True
     engine._live_campaign = None
     engine._feed_is_fresh = lambda max_age_seconds=30.0: True
+    # The production chain is deliberately fail-closed when the calendar has not
+    # been loaded. These deterministic execution tests provide an explicit clear,
+    # confirmed synthetic calendar rather than weakening the real news guard.
+    engine._news_status_v35 = {
+        "available": True,
+        "new_trade_blocked": False,
+        "week_confirmed": True,
+        "active": False,
+        "active_events": [],
+    }
     return engine
 
 
@@ -53,6 +64,7 @@ def zones(direction: str) -> dict:
 
 
 def open_session(monkeypatch) -> None:
+    monkeypatch.setattr(academy, "broker_market_open", lambda at: True)
     monkeypatch.setattr(
         session_gate,
         "_session_status",
@@ -101,6 +113,7 @@ def test_production_chain_can_publish_bullish_retracement_market_campaign(monkey
         zones("bullish"),
         {"recent_high": 106.0, "recent_low": 96.0},
     )
+    assert setup["status"] in {"IDEA LOCKED", "TRADE ACTIVE"}
     assert trade["order_type"] == "market"
     assert trade["side"] == "BUY"
     assert trade["campaign_status"] == "active"
@@ -120,6 +133,7 @@ def test_production_chain_can_publish_bearish_retracement_market_campaign(monkey
         zones("bearish"),
         {"recent_high": 104.0, "recent_low": 94.0},
     )
+    assert setup["status"] in {"IDEA LOCKED", "TRADE ACTIVE"}
     assert trade["order_type"] == "market"
     assert trade["side"] == "SELL"
     assert trade["campaign_status"] == "active"
