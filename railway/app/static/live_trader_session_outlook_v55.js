@@ -13,6 +13,16 @@
     .lt-session-outlook-confidence{font-size:18px;font-weight:900;white-space:nowrap}
     .lt-session-outlook-meta{margin-top:7px;color:#a9c4b6;font-size:10px;text-transform:uppercase;letter-spacing:.05em}
     .lt-session-outlook-reasons{margin:10px 0 0;color:#c2d6cc;font-size:11px;line-height:1.5}
+    .lt-session-structure{margin-top:11px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .lt-session-structure-item{border:1px solid var(--line);border-radius:11px;padding:10px;background:#08140f}
+    .lt-session-structure-item span{display:block;font-size:8px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+    .lt-session-structure-item strong{display:block;margin-top:5px;font-size:13px}
+    .lt-session-structure-item strong.bullish{color:var(--green)}
+    .lt-session-structure-item strong.bearish{color:var(--red)}
+    .lt-session-structure-item strong.waiting{color:var(--amber)}
+    .lt-session-structure-item strong.none{color:var(--muted)}
+    .lt-session-structure-item small{display:block;margin-top:4px;font-size:8px;color:var(--muted)}
+    .lt-session-structure-summary{grid-column:1/-1;margin:0;padding:0 2px;color:#b8d1c4;font-size:9px;line-height:1.45}
     .lt-session-outlook-retrace{margin-top:11px;border:1px solid var(--line);border-radius:11px;padding:11px;background:#08140f}
     .lt-session-outlook-retrace-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
     .lt-session-outlook-retrace-head span{font-size:9px;font-weight:900;letter-spacing:.08em;color:#b8d1c4}
@@ -24,6 +34,7 @@
     .lt-session-outlook-retrace-note{margin:6px 0 0;font-size:10px;line-height:1.45;color:#c2d6cc}
     .lt-session-outlook-flip{margin:8px 0 0;color:var(--muted);font-size:10px;line-height:1.45}
     .lt-session-outlook-note{margin:8px 0 0;padding-top:8px;border-top:1px solid var(--line);color:var(--muted);font-size:9px}
+    @media(max-width:760px){.lt-session-structure{grid-template-columns:1fr}}
   `;
   document.head.appendChild(style);
 
@@ -90,6 +101,47 @@
     };
   }
 
+  function structurePlan(outlook) {
+    const structure = outlook?.structure || {};
+    const bosSupport = String(structure.bos_support || 'none').toLowerCase();
+    const waiting = Boolean(structure.bos_waiting_after_choch);
+    const bos = structure.bos || {};
+    const chochDirection = String(structure.choch_direction || 'none').toLowerCase();
+    const choch = structure.choch || {};
+
+    let bosText = 'NONE';
+    let bosClass = 'none';
+    let bosNote = 'No current-session BOS confirmation.';
+    if (waiting) {
+      bosText = 'WAITING CONFIRMATION';
+      bosClass = 'waiting';
+      bosNote = 'A CHoCH occurred after the previous BOS.';
+    } else if (bosSupport === 'bullish' || bosSupport === 'bearish') {
+      bosText = `SUPPORTS ${bosSupport.toUpperCase()}`;
+      bosClass = bosSupport;
+      bosNote = bos?.level == null ? 'Confirmed by completed M5 close.' : `Break level ${fmt(bos.level)} · completed M5 close`;
+    }
+
+    let chochText = 'NONE';
+    let chochClass = 'none';
+    let chochNote = 'No current-session change of character.';
+    if (chochDirection === 'bullish' || chochDirection === 'bearish') {
+      chochText = chochDirection.toUpperCase();
+      chochClass = chochDirection;
+      chochNote = choch?.level == null ? 'Change of character confirmed.' : `Break level ${fmt(choch.level)} · completed M5 close`;
+    }
+
+    return {
+      bosText,
+      bosClass,
+      bosNote,
+      chochText,
+      chochClass,
+      chochNote,
+      summary:String(structure.summary || 'Building current-session M5 structure readout…'),
+    };
+  }
+
   function ensurePanel() {
     const view = document.getElementById('view-live-trader');
     if (!view) return null;
@@ -121,7 +173,22 @@
     const reasons = Array.isArray(outlook.reasons) ? outlook.reasons.filter(Boolean).slice(0,2) : [];
     const flip = String(outlook.flip_text || '');
     const tradeBias = String(state?.bias?.overall || 'neutral').toUpperCase();
+    const structure = structurePlan(outlook);
     const retrace = retracePlan(state, direction);
+    const structureHtml = `
+      <div class="lt-session-structure">
+        <div class="lt-session-structure-item">
+          <span>BOS SUPPORT · M5</span>
+          <strong class="${safe(structure.bosClass)}">${safe(structure.bosText)}</strong>
+          <small>${safe(structure.bosNote)}</small>
+        </div>
+        <div class="lt-session-structure-item">
+          <span>CHoCH · M5</span>
+          <strong class="${safe(structure.chochClass)}">${safe(structure.chochText)}</strong>
+          <small>${safe(structure.chochNote)}</small>
+        </div>
+        <p class="lt-session-structure-summary">${safe(structure.summary)}</p>
+      </div>`;
     const retraceHtml = retrace ? `
       <div class="lt-session-outlook-retrace">
         <div class="lt-session-outlook-retrace-head"><span>${safe(retrace.title)}</span><small>LIVE · AUTO-UPDATING</small></div>
@@ -141,9 +208,10 @@
       </div>
       <div class="lt-session-outlook-meta">${safe(conviction)} lean · ${safe(session)} session</div>
       <p class="lt-session-outlook-reasons">${safe(reasons.join(' '))}</p>
+      ${structureHtml}
       ${retraceHtml}
       <p class="lt-session-outlook-flip">${safe(flip)}</p>
-      <p class="lt-session-outlook-note">Trade bias: ${safe(tradeBias)} · Retrace level is session guidance only until EVE's hardened trade gate allows an order.</p>`;
+      <p class="lt-session-outlook-note">Trade bias: ${safe(tradeBias)} · BOS/CHoCH and retrace information are display guidance only and do not create or modify EVE trades.</p>`;
   }
 
   async function refresh() {
