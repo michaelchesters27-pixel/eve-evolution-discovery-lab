@@ -93,3 +93,6 @@ from app.services import live_trader_structure_readout_v57 as _live_trader_struc
 # Historical Academy cycle compares market, pullback-limit and confirmation-stop
 # execution and writes a real cycle counter/evidence state for the UI.
 from app.services import live_trader_zone_retrace_specialist_v58 as _live_trader_zone_retrace_specialist_v58  # noqa: E402,F401
+# Audit hardening: historical specialist evidence is restricted to genuine pullback
+# episodes and the existing learning API exposes the specialist state directly.
+from app.services import live_trader_zone_retrace_audit_v60 as _live_trader_zone_retrace_audit_v60  # noqa: E402,F401
