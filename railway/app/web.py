@@ -11,7 +11,7 @@ from app.main import app
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 INDEX_FILE = STATIC_DIR / "index.html"
-UI_BUILD = "77"
+UI_BUILD = "78"
 
 
 @app.middleware("http")
