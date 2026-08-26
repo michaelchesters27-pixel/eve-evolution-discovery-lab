@@ -37,12 +37,14 @@ async def _read_authoritative_open_campaign(self: core.LiveTrader) -> dict[str, 
 
 
 async def _persist_campaign_v66(self: core.LiveTrader, campaign: dict[str, Any]) -> dict[str, Any]:
-    """Persist a campaign and converge to the database winner on open-row races.
+    """Persist a campaign and converge to the DB winner only on publication races.
 
     Railway deployments can briefly overlap old and new application processes.
     The database already has a partial UNIQUE index allowing only one pending or
-    active campaign per symbol. If two processes publish at the same instant, the
-    losing process must not keep following its rejected in-memory campaign.
+    active campaign per symbol. If two *new* campaigns are published at the same
+    instant, the losing process must adopt the different campaign ID already in
+    Supabase. A normal write failure on an existing campaign is deliberately not
+    reconciled backwards; its in-memory transition remains dirty and will retry.
     """
 
     fingerprint = lock._campaign_fingerprint(campaign)
@@ -52,6 +54,8 @@ async def _persist_campaign_v66(self: core.LiveTrader, campaign: dict[str, Any])
     ):
         return campaign
 
+    was_new_campaign = bool(getattr(self, "_live_campaign_new_v28", False))
+    attempted_id = str(campaign.get("id") or "")
     try:
         await self.repo.client.upsert(
             "live_trader_campaigns",
@@ -77,34 +81,36 @@ async def _persist_campaign_v66(self: core.LiveTrader, campaign: dict[str, Any])
             on_conflict="id",
         )
     except Exception as exc:
-        core.logger.warning("Live Trader campaign write failed; checking DB authority: %s", exc)
-        if str(campaign.get("status") or "").lower() in lock.OPEN_STATUSES:
+        core.logger.warning("Live Trader campaign write failed: %s", exc)
+        if was_new_campaign and str(campaign.get("status") or "").lower() in lock.OPEN_STATUSES:
             try:
                 authoritative = await _read_authoritative_open_campaign(self)
             except Exception as read_exc:
-                core.logger.warning("Live Trader could not reconcile campaign after write failure: %s", read_exc)
+                core.logger.warning("Live Trader could not check campaign consensus after write failure: %s", read_exc)
                 return campaign
             if isinstance(authoritative, dict):
-                attempted_id = str(campaign.get("id") or "")
                 authoritative_id = str(authoritative.get("id") or "")
-                self._live_campaign = authoritative
-                self._live_campaign_dirty = False
-                self._live_campaign_new_v28 = False
-                self._live_campaign_last_persisted_fingerprint = lock._campaign_fingerprint(authoritative)
-                self._campaign_consensus_last_v66 = {
-                    "version": CONSENSUS_VERSION,
-                    "reconciled": True,
-                    "attempted_campaign_id": attempted_id or None,
-                    "authoritative_campaign_id": authoritative_id or None,
-                    "reason": "database_open_campaign_won_concurrent_publication_race",
-                    "at": core.utc_now().isoformat(),
-                }
-                core.logger.warning(
-                    "Live Trader adopted authoritative DB campaign %s instead of rejected local campaign %s",
-                    authoritative_id,
-                    attempted_id,
-                )
-                return authoritative
+                if authoritative_id and authoritative_id != attempted_id:
+                    self._live_campaign = authoritative
+                    self._live_campaign_dirty = False
+                    self._live_campaign_new_v28 = False
+                    self._live_campaign_last_persisted_fingerprint = lock._campaign_fingerprint(authoritative)
+                    self._campaign_consensus_last_v66 = {
+                        "version": CONSENSUS_VERSION,
+                        "reconciled": True,
+                        "attempted_campaign_id": attempted_id or None,
+                        "authoritative_campaign_id": authoritative_id,
+                        "reason": "database_open_campaign_won_concurrent_publication_race",
+                        "at": core.utc_now().isoformat(),
+                    }
+                    core.logger.warning(
+                        "Live Trader adopted authoritative DB campaign %s instead of rejected new local campaign %s",
+                        authoritative_id,
+                        attempted_id,
+                    )
+                    return authoritative
+        # Keep the local campaign dirty. Existing campaign transitions must retry
+        # rather than being rolled back to an older DB representation.
         return campaign
 
     self._live_campaign_last_persisted_fingerprint = fingerprint
