@@ -44,7 +44,7 @@ def test_legacy_compatibility_replay_cannot_promote_current_live_policy() -> Non
     assert specialist["promotion_blocked"] is True
 
 
-def test_current_policy_academy_can_promote_only_when_caught_up_and_verified() -> None:
+def test_current_policy_academy_can_only_qualify_historical_m1_candidate() -> None:
     payload = {
         "execution_evidence": {"market": {"opportunities": 173}},
         "current_policy_academy": academy_state(caught_up=True, promoted=True),
@@ -53,14 +53,22 @@ def test_current_policy_academy_can_promote_only_when_caught_up_and_verified() -
     specialist = v71._current_policy_contract(payload)
 
     assert specialist["live_policy_expectancy_verified"] is True
-    assert specialist["live_promoted_execution"] == "market_after_zone_confirmation"
-    assert specialist["promoted_execution"] == "market_after_zone_confirmation"
-    assert specialist["promotion_blocked"] is False
-    assert specialist["live_entry_execution_edge_supported"] is True
+    assert specialist["historical_policy_proxy_verified"] is True
+    assert specialist["historical_policy_proxy_candidate_execution"] == "market_after_zone_confirmation"
+    assert specialist["historical_policy_proxy_entry_geometry_verified"] is True
+    assert specialist["historical_entry_execution_edge_supported"] is True
+    assert specialist["historical_tick_exact"] is False
+    assert specialist["forward_live_campaign_validation_required"] is True
+    assert specialist["live_promoted_execution"] is None
+    assert specialist["promoted_execution"] is None
+    assert specialist["promotion_blocked"] is True
+    assert specialist["promotion_scope"] == "historical_causal_m1_candidate"
+    assert specialist["phase"] == "HISTORICAL M1 ENTRY CANDIDATE"
+    assert specialist["live_entry_execution_edge_supported"] is False
     assert specialist["live_strategy_edge_proven"] is False
 
 
-def test_current_policy_academy_cannot_promote_before_archive_catchup() -> None:
+def test_current_policy_academy_cannot_qualify_candidate_before_archive_catchup() -> None:
     payload = {
         "execution_evidence": {"market": {"opportunities": 173}},
         "current_policy_academy": academy_state(caught_up=False, promoted=True),
@@ -69,9 +77,12 @@ def test_current_policy_academy_cannot_promote_before_archive_catchup() -> None:
     specialist = v71._current_policy_contract(payload)
 
     assert specialist["live_policy_expectancy_verified"] is False
+    assert specialist["historical_policy_proxy_verified"] is False
+    assert specialist["historical_policy_proxy_candidate_execution"] is None
     assert specialist["live_promoted_execution"] is None
     assert specialist["promotion_blocked"] is True
-    assert specialist["phase"] == "CURRENT-POLICY ACADEMY SCANNING"
+    assert specialist["promotion_scope"] == "none"
+    assert specialist["phase"] == "CURRENT-POLICY M1 PROXY SCANNING"
 
 
 def test_current_policy_academy_requires_95_percent_scorable_coverage() -> None:
@@ -82,5 +93,7 @@ def test_current_policy_academy_requires_95_percent_scorable_coverage() -> None:
     specialist = v71._current_policy_contract(payload)
 
     assert specialist["live_policy_expectancy_verified"] is False
+    assert specialist["historical_policy_proxy_verified"] is False
+    assert specialist["historical_policy_proxy_candidate_execution"] is None
     assert specialist["live_promoted_execution"] is None
     assert specialist["promotion_blocked"] is True
