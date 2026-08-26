@@ -48,7 +48,6 @@
       health.textContent = status;
       health.className = `badge ${['LIVE ENTRY QUALIFIED','LIVE POLICY VERIFIED','LEARNING ACTIVE'].includes(status) ? 'success' : status === 'ERROR' ? 'error' : 'warning'}`;
 
-      const liveEvidence = data.live_policy_execution_evidence?.market_after_zone_confirmation || {};
       const researchEvidence = data.research_execution_evidence || data.execution_evidence || {};
       const researchRow = (name, item = {}) => `<div class="lt-status"><span>${name}</span><strong>${r(item.expectancy_per_opportunity_r)}</strong><small>${fmt(item.triggered)} triggered / ${fmt(item.opportunities)} opportunities · ${pct(item.trigger_rate)} trigger rate</small></div>`;
 
