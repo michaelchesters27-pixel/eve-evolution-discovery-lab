@@ -9,6 +9,7 @@ PUBLISHED = {
     "live_trader.css",
     "live_trader.js",
     "live_trader_academy.js",
+    "live_trader_audit_v60.js",
     "live_trader_breakout_language_v54.js",
     "live_trader_events.js",
     "live_trader_execution_intelligence.js",
@@ -17,8 +18,10 @@ PUBLISHED = {
     "live_trader_news.js",
     "live_trader_news_week_confirmation.js",
     "live_trader_safe_stops_v48.js",
+    "live_trader_sections_v59.js",
     "live_trader_session_outlook_v55.js",
     "live_trader_trade_outcomes.js",
+    "live_trader_zone_retrace_v58.js",
     "live_trader_zone_truth_v49.js",
     "styles.css",
 }
