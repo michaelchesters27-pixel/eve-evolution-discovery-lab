@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -315,7 +316,18 @@ async def _run_specialist_cycle(self: core.LiveTrader) -> dict[str, Any]:
 async def _refresh_state_v58(self: core.LiveTrader, *, force_rows: bool = False) -> dict[str, Any]:
     last = getattr(self, "_zone_retrace_last_cycle_v58", None)
     if last is None or core.utc_now() - last >= timedelta(seconds=LEARNING_CYCLE_SECONDS):
-        await _run_specialist_cycle(self)
+        cycle_lock = getattr(self, "_zone_retrace_cycle_lock_v58", None)
+        if cycle_lock is None:
+            cycle_lock = asyncio.Lock()
+            self._zone_retrace_cycle_lock_v58 = cycle_lock
+        async with cycle_lock:
+            # Re-check after acquiring the lock because several API/tick refreshes
+            # can arrive together. Reserve the slot before I/O so one real cycle
+            # can never be counted multiple times.
+            last = getattr(self, "_zone_retrace_last_cycle_v58", None)
+            if last is None or core.utc_now() - last >= timedelta(seconds=LEARNING_CYCLE_SECONDS):
+                self._zone_retrace_last_cycle_v58 = core.utc_now()
+                await _run_specialist_cycle(self)
 
     state = dict(await _current_refresh_state(self, force_rows=force_rows))
     specialist = dict(getattr(self, "_zone_retrace_learning_v58", {}) or {})
