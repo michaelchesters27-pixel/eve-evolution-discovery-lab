@@ -46,7 +46,7 @@ def test_live_trader_integrity_guard_hides_legacy_execution_replies_and_zero_ent
     root = _repo_root()
     js = (root / "frontend" / "live_trader_audit_v60.js").read_text(encoding="utf-8")
 
-    assert "eve-live-trader-ui-integrity-v78" in js
+    assert "eve-live-trader-ui-integrity-v79" in js
     assert "preferred execution is" in js
     assert "legacyStrategyReply" in js
     assert "Older pre-retracement stop/limit trade replies are archived" in js
