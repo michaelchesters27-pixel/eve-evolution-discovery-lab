@@ -26,32 +26,19 @@
     }
   }
 
-  function normalizeLiveTrader() {
-    normalizeNode(document.getElementById('view-live-trader'));
-  }
-
-  function applyCleanLayout() {
+  function cleanPresentation() {
     const view = document.getElementById('view-live-trader');
-    if (!view) return false;
-
+    if (!view) return;
     view.classList.add('lt-clean-layout');
     view.querySelectorAll('.lt-manual-warning').forEach(warning => warning.remove());
+    normalizeNode(view);
 
-    const tradeCard = view.querySelector('.lt-trade-card');
+    // IMPORTANT: this language/presentation boundary must never move cards.
+    // Section ownership belongs exclusively to live_trader_sections_v59.js.
     const zoneGrid = [...view.querySelectorAll('.lt-grid')].find(grid =>
       grid.querySelector('#ltDemand') && grid.querySelector('#ltSupply')
     );
-    const eventCard = view.querySelector('#ltMarketEventCard');
-
     if (zoneGrid) zoneGrid.classList.add('lt-zone-grid');
-    if (tradeCard && zoneGrid && tradeCard.nextElementSibling !== zoneGrid) {
-      tradeCard.insertAdjacentElement('afterend', zoneGrid);
-    }
-    if (zoneGrid && eventCard && zoneGrid.nextElementSibling !== eventCard) {
-      zoneGrid.insertAdjacentElement('afterend', eventCard);
-    }
-
-    return true;
   }
 
   function installVoiceBoundary() {
@@ -65,13 +52,17 @@
 
   const view = document.getElementById('view-live-trader');
   if (view) {
+    let queued = false;
     const observer = new MutationObserver(() => {
-      normalizeLiveTrader();
-      applyCleanLayout();
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        cleanPresentation();
+      });
     });
-    observer.observe(view, {childList: true, subtree: true, characterData: true});
-    normalizeLiveTrader();
-    applyCleanLayout();
+    observer.observe(view, {childList:true, subtree:true, characterData:true});
+    cleanPresentation();
   }
 
   installVoiceBoundary();
