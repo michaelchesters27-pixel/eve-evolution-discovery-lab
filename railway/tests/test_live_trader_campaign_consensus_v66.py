@@ -16,7 +16,7 @@ class RaceClient:
     async def upsert(self, table, rows, *, on_conflict, return_rows=False):
         assert table == "live_trader_campaigns"
         self.upsert_calls += 1
-        raise RuntimeError("duplicate key value violates unique open-campaign index")
+        raise RuntimeError("simulated campaign write failure")
 
     async def get(self, table, *, params=None, range_start=None, range_end=None):
         assert table == "live_trader_campaigns"
@@ -27,11 +27,11 @@ class RaceClient:
 class Engine:
     symbol = "XAU/USD"
 
-    def __init__(self, client: RaceClient, local: dict) -> None:
+    def __init__(self, client: RaceClient, local: dict, *, new_campaign: bool = True) -> None:
         self.repo = SimpleNamespace(client=client)
         self._live_campaign = local
         self._live_campaign_dirty = True
-        self._live_campaign_new_v28 = True
+        self._live_campaign_new_v28 = new_campaign
         self._live_campaign_last_persisted_fingerprint = None
 
 
@@ -53,7 +53,7 @@ def campaign(campaign_id: str, *, status: str = "active", side: str = "BUY") -> 
         "invalidation_price": 98.0 if side == "BUY" else 102.0,
         "created_at": "2026-08-26T10:00:00+00:00",
         "expires_at": None,
-        "triggered_at": "2026-08-26T10:00:00+00:00",
+        "triggered_at": "2026-08-26T10:00:00+00:00" if status == "active" else None,
         "completed_at": None,
         "result": None,
         "last_price": 100.0,
@@ -69,11 +69,11 @@ def campaign(campaign_id: str, *, status: str = "active", side: str = "BUY") -> 
     }
 
 
-def test_losing_worker_adopts_database_open_campaign() -> None:
+def test_losing_new_worker_adopts_different_database_open_campaign() -> None:
     local = campaign("local-loser", side="BUY")
     authoritative = campaign("db-winner", side="SELL")
     client = RaceClient(authoritative)
-    engine = Engine(client, local)
+    engine = Engine(client, local, new_campaign=True)
 
     result = asyncio.run(v66._persist_campaign_v66(engine, local))
 
@@ -86,6 +86,38 @@ def test_losing_worker_adopts_database_open_campaign() -> None:
     assert engine._campaign_consensus_last_v66["attempted_campaign_id"] == "local-loser"
     assert engine._campaign_consensus_last_v66["authoritative_campaign_id"] == "db-winner"
     assert client.upsert_calls == 1
+    assert client.get_calls == 1
+
+
+def test_existing_campaign_write_failure_never_rolls_transition_back() -> None:
+    local = campaign("same-campaign", status="active", side="BUY")
+    stale_database_copy = campaign("same-campaign", status="pending", side="BUY")
+    client = RaceClient(stale_database_copy)
+    engine = Engine(client, local, new_campaign=False)
+
+    result = asyncio.run(v66._persist_campaign_v66(engine, local))
+
+    assert result["status"] == "active"
+    assert engine._live_campaign["status"] == "active"
+    assert engine._live_campaign_dirty is True
+    assert engine._live_campaign_new_v28 is False
+    assert client.upsert_calls == 1
+    # Existing campaign failures are retried; they do not consult an older DB
+    # copy and therefore cannot roll active execution back to pending.
+    assert client.get_calls == 0
+
+
+def test_new_campaign_same_id_does_not_overwrite_local_state_on_write_failure() -> None:
+    local = campaign("same-campaign", status="active", side="BUY")
+    database_copy = campaign("same-campaign", status="pending", side="BUY")
+    client = RaceClient(database_copy)
+    engine = Engine(client, local, new_campaign=True)
+
+    result = asyncio.run(v66._persist_campaign_v66(engine, local))
+
+    assert result["status"] == "active"
+    assert engine._live_campaign["status"] == "active"
+    assert engine._live_campaign_dirty is True
     assert client.get_calls == 1
 
 
