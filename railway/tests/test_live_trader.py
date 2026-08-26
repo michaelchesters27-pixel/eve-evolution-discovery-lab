@@ -65,17 +65,19 @@ def test_market_buy_requires_zone_and_short_term_confirmation() -> None:
         zones,
         {"recent_high": 102.0, "recent_low": 96.0},
     )
-    assert setup["status"] == "TRADE IDEA"
+    assert setup["status"] == "ZONE RETRACE CONFIRMED"
     assert trade["action"] == "BUY NOW"
     assert trade["order_type"] == "market"
     assert trade["entry"] == 100.0
     assert trade["stop"] < trade["entry"] < trade["target"]
     assert trade["risk_reward"] >= 1.35
+    assert trade["strategy_key"] == "zone_retrace_v1"
+    assert trade["execution_class"] == "zone_retrace_confirmation"
     assert trade["manual_only"] is True
     assert trade["automatic_order_placement"] is False
 
 
-def test_buy_limit_is_preferred_over_chasing_when_demand_is_nearby() -> None:
+def test_nearby_demand_waits_for_confirmation_instead_of_blind_limit() -> None:
     engine = trader()
     zones = {
         "demand": [{"low": 98.0, "high": 100.0, "quality": 80, "quality_label": "HIGH", "distance_atr": 0.75}],
@@ -88,10 +90,10 @@ def test_buy_limit_is_preferred_over_chasing_when_demand_is_nearby() -> None:
         zones,
         {"recent_high": 104.0, "recent_low": 97.0},
     )
-    assert setup["status"] == "ARMED"
-    assert trade["action"] == "BUY LIMIT"
-    assert trade["order_type"] == "buy_limit"
-    assert trade["entry"] == 100.0
+    assert setup["status"] == "ZONE RETRACE WAIT"
+    assert trade["action"] == "WAIT"
+    assert trade["order_type"] == "none"
+    assert trade["strategy_key"] == "zone_retrace_v1"
 
 
 def test_target_opinion_speaks_to_micky_without_claiming_certainty() -> None:
