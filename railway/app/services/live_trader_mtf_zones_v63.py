@@ -5,6 +5,9 @@ from typing import Any
 from app.services import live_trader as core
 
 MTF_ZONE_VERSION = "eve-live-mtf-zones-v63"
+MIN_NATIVE_QUALITY = 58
+MAX_NATIVE_RETESTS = 2
+FINAL_ZONE_COUNT = 4
 _BASE_ZONE_CANDIDATES = core.LiveTrader._zone_candidates
 
 
@@ -77,8 +80,15 @@ def _native_zones(rows: list[dict[str, Any]], timeframe: str, price: float) -> d
                     supply.append(_zone_payload("supply", timeframe, row, zone_low, zone_high, quality, retests, departure, price, atr))
 
     def rank(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        items.sort(key=lambda z: (-_num(z.get("quality")), int(z.get("retests") or 0), _num(z.get("distance_atr"))))
-        return items[:5]
+        # HTF confluence is only allowed to strengthen a genuinely clean native
+        # zone. Weak/overused HTF areas remain historical context, not a ranking boost.
+        eligible = [
+            item for item in items
+            if _num(item.get("quality")) >= MIN_NATIVE_QUALITY
+            and int(item.get("retests") or 0) <= MAX_NATIVE_RETESTS
+        ]
+        eligible.sort(key=lambda z: (-_num(z.get("quality")), int(z.get("retests") or 0), _num(z.get("distance_atr"))))
+        return eligible[:5]
 
     return {"demand": rank(demand), "supply": rank(supply)}
 
@@ -149,16 +159,17 @@ def _zone_candidates_v63(self: core.LiveTrader, rows: list[dict[str, Any]], pric
     for kind in ("demand", "supply"):
         annotated = [_confluence(zone, h1[kind], m15[kind], atr) for zone in list(base.get(kind) or [])]
         annotated.sort(key=lambda z: (-_num(z.get("rank_score")), -int(z.get("mtf_confluence_count") or 0), -_num(z.get("quality")), _num(z.get("distance_atr"))))
-        for index, zone in enumerate(annotated, start=1):
+        final = annotated[:FINAL_ZONE_COUNT]
+        for index, zone in enumerate(final, start=1):
             zone["rank"] = index
             zone["preferred"] = index == 1
-        result[kind] = annotated
+        result[kind] = final
 
     self._mtf_zone_map_v63 = {
         "version": MTF_ZONE_VERSION,
         "H1": h1,
         "M15": m15,
-        "policy": "H1 zone -> M15 refinement -> M5 execution; M5-only zones remain visible but receive no higher-timeframe confluence boost.",
+        "policy": "H1 zone -> M15 refinement -> M5 execution. A wider M5 pool is ranked first, HTF confluence is then applied, and only the final four execution zones are published. Weak/repeated HTF zones do not grant confluence boosts.",
     }
     return result
 
