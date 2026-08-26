@@ -28,16 +28,31 @@ def _bucket() -> dict[str, Any]:
     }
 
 
-def _score_retrace_only(rows: list[dict[str, Any]]) -> tuple[int, dict[str, Any]]:
-    """Score only genuine pullback/retracement episodes for this specialist.
+async def _historical_rows_v60(self: core.LiveTrader) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for page in range(v58.HISTORICAL_PAGES):
+        offset = page * v58.HISTORICAL_PAGE_SIZE
+        batch = await self.repo.client.get(
+            "live_trader_historical_learning",
+            params={
+                "select": "observed_at,independence_key,market_state,challenger_results,path_complete",
+                "path_complete": "eq.true",
+                "order": "observed_at.desc",
+                "limit": str(v58.HISTORICAL_PAGE_SIZE),
+                "offset": str(offset),
+            },
+        )
+        rows.extend(batch)
+        if len(batch) < v58.HISTORICAL_PAGE_SIZE:
+            break
+    return rows
 
-    v58 correctly required directional bias, preferred/at-zone location and good/high
-    zone quality, but it did not require the historical episode itself to be a pullback.
-    That allowed breakout episodes to contaminate the specialist evidence. v60 closes
-    that audit gap while leaving the live campaign gate untouched.
-    """
+
+def _score_retrace_only(rows: list[dict[str, Any]]) -> tuple[int, dict[str, Any]]:
+    """Score independent genuine pullback/retracement episodes only."""
     evidence = {key: _bucket() for key in v58.EXECUTIONS}
     relevant = 0
+    seen_independence: set[str] = set()
 
     for row in rows:
         market_state = dict(row.get("market_state") or {})
@@ -55,6 +70,12 @@ def _score_retrace_only(rows: list[dict[str, Any]]) -> tuple[int, dict[str, Any]
             continue
         if execution_class != "pullback":
             continue
+
+        independence_key = str(row.get("independence_key") or "").strip()
+        if independence_key:
+            if independence_key in seen_independence:
+                continue
+            seen_independence.add(independence_key)
 
         relevant += 1
         challengers = dict(row.get("challenger_results") or {})
@@ -102,20 +123,18 @@ async def _learning_summary_v60(self: core.LiveTrader) -> dict[str, Any]:
             )
             specialist = dict(rows[0] or {}) if rows else {}
         except Exception as exc:
-            specialist = {
-                "status": "error",
-                "last_error": str(exc)[:500],
-            }
+            specialist = {"status": "error", "last_error": str(exc)[:500]}
     specialist.setdefault("strategy_key", v58.STRATEGY_KEY)
     specialist.setdefault("version", v58.SPECIALIST_VERSION)
     specialist["audit_version"] = AUDIT_VERSION
-    specialist["evidence_scope"] = "pullback_only"
+    specialist["evidence_scope"] = "independent_pullback_only"
     specialist["breakout_examples_excluded"] = True
+    specialist["independence_deduplication"] = True
     summary["zone_retrace_specialist"] = specialist
     return summary
 
 
-# Replace only the historical evidence scorer. The live candidate gate from v58
-# remains in force, so already-published campaigns and execution safety are unchanged.
+# Audit hardening only: live campaign publication remains owned by v58.
+v58._historical_rows = _historical_rows_v60
 v58._score_execution_evidence = _score_retrace_only
 core.LiveTrader.learning_summary = _learning_summary_v60  # type: ignore[method-assign]
