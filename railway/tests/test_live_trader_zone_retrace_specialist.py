@@ -21,6 +21,10 @@ def trader() -> core.LiveTrader:
     engine._live_campaign_loaded_v28 = True
     engine._live_campaign = None
     engine._feed_is_fresh = lambda max_age_seconds=30.0: True
+    # These tests model the settled production runtime. The real execution ledger
+    # has completed the v2 historical regrade, so a synthetic production engine
+    # must explicitly satisfy that prerequisite rather than bypassing the gate.
+    engine._execution_regrade_ready_v39 = True
     # The production chain is deliberately fail-closed when the calendar has not
     # been loaded. These deterministic execution tests provide an explicit clear,
     # confirmed synthetic calendar rather than weakening the real news guard.
