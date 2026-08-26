@@ -1,11 +1,17 @@
 (() => {
+  const UI_BUILD = '77';
+  window.__eveLiveTraderUiBuild = `v${UI_BUILD}`;
+
   const load = (src, done) => {
     const script = document.createElement('script');
-    script.src = src;
+    const join = src.includes('?') ? '&' : '?';
+    script.src = `${src}${join}v=${UI_BUILD}`;
+    script.dataset.eveUiBuild = UI_BUILD;
     script.onload = done;
     script.onerror = done;
     document.body.appendChild(script);
   };
+
   load('live_trader_intelligence_meter_core.js', () =>
     load('live_trader_execution_intelligence.js', () =>
       load('live_trader_safe_stops_v48.js', () =>
