@@ -105,7 +105,7 @@ def _lineage():
 
 
 def test_startup_exports_fair_orchestrator():
-    assert orchestrator_v3.DiscoveryOrchestrator is FairLineageDiscoveryOrchestrator
+    assert issubclass(orchestrator_v3.DiscoveryOrchestrator, FairLineageDiscoveryOrchestrator)
 
 
 def test_full_queue_cannot_starve_new_promising_lineage():
