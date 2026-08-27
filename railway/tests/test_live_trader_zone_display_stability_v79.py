@@ -19,10 +19,21 @@ def test_live_trader_zone_display_has_hysteresis_without_changing_backend_logic(
     assert "window.api = wrapped" in js
 
 
+def test_zone_decision_uses_authenticated_live_state_and_visible_pulse() -> None:
+    root = _repo_root()
+    canonical = (root / "frontend" / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
+    static = (root / "railway" / "app" / "static" / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
+
+    assert "const state = await api('/live-trader')" in canonical
+    assert "fetch('/api/live-trader'" not in canonical
+    assert "eve-zone-tolerance-pulse" in canonical
+    assert canonical == static
+
+
 def test_zone_stability_is_frontend_only_and_build_is_cache_busted() -> None:
     root = _repo_root()
     canonical = (root / "frontend" / "live_trader_intelligence_meter.js").read_text(encoding="utf-8")
     static = (root / "railway" / "app" / "static" / "live_trader_intelligence_meter.js").read_text(encoding="utf-8")
 
-    assert "const UI_BUILD = '83'" in canonical
+    assert "const UI_BUILD = '84'" in canonical
     assert canonical == static
