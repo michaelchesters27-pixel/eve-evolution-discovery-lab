@@ -77,8 +77,6 @@ class ScientistPriorityDiscoveryOrchestrator(OriginalDiscoveryOrchestrator):
                     "limit": str(SCIENTIST_ATTEMPTS_PER_GENERATION + 20),
                 },
             )
-            # Do not manufacture duplicate concurrent work. Let the existing
-            # high-priority child finish before adding another one.
             if any(str(row.get("status") or "") in {"queued", "running"} for row in children):
                 continue
             if len(children) < SCIENTIST_ATTEMPTS_PER_GENERATION:
@@ -87,10 +85,6 @@ class ScientistPriorityDiscoveryOrchestrator(OriginalDiscoveryOrchestrator):
 
     async def ensure_mutation_queue(self) -> int:
         queued = await self.repo.count_by_status("mutation_candidates", "queued")
-
-        # A reserved Scientist child may temporarily take the queue one above the
-        # normal floor. Its priority is deliberately above legacy mutation work,
-        # so the atomic claim RPC takes it first on the next mutation claim.
         if queued <= self.settings.lineage_queue_floor:
             lineage, existing, generation = await self._scientist_lineage_needing_progression()
             if lineage is not None:
@@ -232,8 +226,8 @@ class ScientistPriorityDiscoveryOrchestrator(OriginalDiscoveryOrchestrator):
         return status
 
 
-# fair_lineage_scheduler has already replaced orchestrator_v3.DiscoveryOrchestrator
-# during app package initialisation. Replace that exported class once more with
-# this narrow Scientist-priority extension so app.main gets the final production
-# orchestrator without changing its import surface.
 orchestrator_v3.DiscoveryOrchestrator = ScientistPriorityDiscoveryOrchestrator
+
+# Install the mature-outcome repair before app.main imports FabricBuilder. This
+# preserves the 99.5% hard integrity gate and repairs the underlying labels.
+from app.services import fabric_outcome_backfill_v1 as _fabric_outcome_backfill_v1  # noqa: E402,F401
