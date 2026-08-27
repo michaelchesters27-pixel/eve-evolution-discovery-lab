@@ -6,7 +6,6 @@
   const HOLD_MS = 20 * 60 * 1000;
   const TOLERANCE_ATR = 0.35;
   const EARLY_REACTION_ATR = 0.20;
-  let timer = null;
   let active = null;
 
   const num = value => {
@@ -28,11 +27,10 @@
     return overlap || nearby;
   };
 
-  function zoneCandidates(state) {
+  function candidates(state) {
     const price = num(state?.price);
     const atr = Math.max(num(state?.market?.atr) || 0, 0.01);
     if (price == null) return [];
-
     const out = [];
     for (const kind of ['demand', 'supply']) {
       const zones = Array.isArray(state?.zones?.[kind]) ? state.zones[kind].slice(0, 3) : [];
@@ -42,22 +40,24 @@
         if (low == null || high == null || high < low) continue;
         const inZone = low <= price && price <= high;
         const distance = inZone ? 0 : price < low ? low - price : price - high;
-        const tolerance = Math.max(atr * TOLERANCE_ATR, 0.25);
-        out.push({kind, low, high, atr, price, inZone, distance, tolerance, quality:num(zone?.quality), zone});
+        out.push({
+          kind, low, high, atr, price, inZone,
+          distance,
+          tolerance: Math.max(atr * TOLERANCE_ATR, 0.25),
+          quality: num(zone?.quality),
+        });
       }
     }
     return out;
   }
 
   function armOrUpdate(state) {
-    const candidates = zoneCandidates(state);
     const now = Date.now();
+    const all = candidates(state);
 
     if (active) {
-      const current = candidates.find(candidate => sameZone(candidate, active));
-      if (!current || now >= active.until) {
-        active = null;
-      } else {
+      const current = all.find(item => sameZone(item, active));
+      if (current && now < active.until) {
         active.low = current.low;
         active.high = current.high;
         active.atr = current.atr;
@@ -70,10 +70,11 @@
           : Math.max(active.extreme, current.price);
         return active;
       }
+      active = null;
     }
 
-    const near = candidates
-      .filter(candidate => candidate.distance <= candidate.tolerance)
+    const near = all
+      .filter(item => item.distance <= item.tolerance)
       .sort((a, b) => (a.distance / a.atr) - (b.distance / b.atr))[0];
     if (!near) return null;
 
@@ -101,49 +102,40 @@
     const specialist = String(trade.strategy_key || '') === 'zone_retrace_v1' || String(trade.execution_class || '') === 'zone_retrace_confirmation';
     const actionable = !['', 'WAIT', 'NO TRADE'].includes(action);
     const confirmed = actionable && specialist && (tradeSide === side || action === side || action.startsWith(side));
-
     const reaction = test.kind === 'demand' ? test.price - test.extreme : test.extreme - test.price;
     const reactionAtr = Math.max(0, reaction) / Math.max(test.atr, 0.01);
 
-    if (confirmed) {
-      return {
-        tone: desired,
-        arrow: desiredArrow,
-        title: `${desired.toUpperCase()} REJECTION CONFIRMED`,
-        note: `EVE's existing live retracement strategy has confirmed the ${side}.`,
-        m5, m15,
-      };
-    }
+    if (confirmed) return {
+      tone: desired,
+      arrow: desiredArrow,
+      title: `${desired.toUpperCase()} REJECTION CONFIRMED`,
+      note: `EVE's existing live retracement strategy has confirmed the ${side}.`,
+      m5, m15,
+    };
 
-    if (m5 === opposite && m15 === opposite) {
-      return {
-        tone: opposite,
-        arrow: oppositeArrow,
-        title: `${opposite.toUpperCase()} BREAK BUILDING`,
-        note: `${test.kind.toUpperCase()} is under pressure. M5 and M15 are both ${opposite}. Do not take the ${side} while this remains.`,
-        m5, m15,
-      };
-    }
+    if (m5 === opposite && m15 === opposite) return {
+      tone: opposite,
+      arrow: oppositeArrow,
+      title: `${opposite.toUpperCase()} BREAK BUILDING`,
+      note: `${test.kind.toUpperCase()} is under pressure. M5 and M15 are both ${opposite}. Do not take the ${side} while this remains.`,
+      m5, m15,
+    };
 
-    if (m5 === desired && m15 !== opposite) {
-      return {
-        tone: desired,
-        arrow: desiredArrow,
-        title: 'REJECTION BUILDING',
-        note: `Price has tested ${test.kind} and M5 is turning ${desired}. EVE is watching for M15 confirmation before treating the ${side} as confirmed.`,
-        m5, m15,
-      };
-    }
+    if (m5 === desired && m15 !== opposite) return {
+      tone: desired,
+      arrow: desiredArrow,
+      title: 'REJECTION BUILDING',
+      note: `Price has tested ${test.kind} and M5 is turning ${desired}. EVE is watching for M15 confirmation before treating the ${side} as confirmed.`,
+      m5, m15,
+    };
 
-    if (reactionAtr >= EARLY_REACTION_ATR) {
-      return {
-        tone: 'undecided',
-        arrow: desiredArrow,
-        title: 'EARLY REJECTION — WAIT',
-        note: `Price has reacted about ${reactionAtr.toFixed(2)} ATR away from ${test.kind}. The reaction has started, but M5/M15 have not confirmed it yet.`,
-        m5, m15,
-      };
-    }
+    if (reactionAtr >= EARLY_REACTION_ATR) return {
+      tone: 'undecided',
+      arrow: desiredArrow,
+      title: 'EARLY REJECTION — WAIT',
+      note: `Price has reacted about ${reactionAtr.toFixed(2)} ATR away from ${test.kind}. The reaction has started, but M5/M15 have not confirmed it yet.`,
+      m5, m15,
+    };
 
     return {
       tone: 'undecided',
@@ -156,26 +148,23 @@
 
   function ensureCard(panel) {
     let card = document.getElementById('ltZoneDecisionTolerance');
-    if (card) return card;
-    card = document.createElement('div');
-    card.id = 'ltZoneDecisionTolerance';
-    card.className = 'lt-zone-decision undecided';
-    const retrace = panel.querySelector('.lt-session-outlook-retrace');
-    if (retrace?.parentNode === panel) panel.insertBefore(card, retrace);
-    else panel.appendChild(card);
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'ltZoneDecisionTolerance';
+      card.className = 'lt-zone-decision undecided';
+    }
+    if (panel.nextElementSibling !== card) panel.insertAdjacentElement('afterend', card);
     return card;
   }
 
-  function hideNativeDecision(hide) {
-    document.querySelectorAll('.lt-zone-decision:not(#ltZoneDecisionTolerance)').forEach(node => {
-      if (hide) {
-        if (!node.dataset.eveOriginalDisplay) node.dataset.eveOriginalDisplay = node.style.display || '';
-        node.style.display = 'none';
-      } else {
-        node.style.display = node.dataset.eveOriginalDisplay || '';
-        delete node.dataset.eveOriginalDisplay;
-      }
-    });
+  function nativeDecisionMode(panel, activeMode) {
+    panel.classList.toggle('eve-tolerant-zone-decision-active', activeMode);
+    if (!document.getElementById('eveZoneDecisionToleranceStyle')) {
+      const style = document.createElement('style');
+      style.id = 'eveZoneDecisionToleranceStyle';
+      style.textContent = '.eve-tolerant-zone-decision-active .lt-zone-decision{display:none!important}#ltZoneDecisionTolerance{margin-top:10px}';
+      document.head.appendChild(style);
+    }
   }
 
   function render(state) {
@@ -183,13 +172,14 @@
     if (!panel) return;
     const test = armOrUpdate(state);
     const existing = document.getElementById('ltZoneDecisionTolerance');
+
     if (!test) {
       if (existing) existing.remove();
-      hideNativeDecision(false);
+      nativeDecisionMode(panel, false);
       return;
     }
 
-    hideNativeDecision(true);
+    nativeDecisionMode(panel, true);
     const decision = decisionFor(state, test);
     const card = ensureCard(panel);
     card.className = `lt-zone-decision ${decision.tone}`;
@@ -215,6 +205,6 @@
     } catch (_) {}
   }
 
-  timer = setInterval(tick, POLL_MS);
+  setInterval(tick, POLL_MS);
   tick();
 })();
