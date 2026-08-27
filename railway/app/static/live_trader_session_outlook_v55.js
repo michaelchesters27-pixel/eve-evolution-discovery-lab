@@ -61,20 +61,20 @@
 
     const oneHour = Number(match[1]);
     const fourHour = Number(match[2]);
-    const labelFor = value => value > 0 ? 'Bullish' : value < 0 ? 'Bearish' : 'Neutral';
+    const movementFor = value => value > 0 ? 'Rising' : value < 0 ? 'Falling' : 'Flat';
     const arrowFor = value => value > 0 ? '↑' : value < 0 ? '↓' : '→';
     const pct = value => `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
-    const oneLabel = labelFor(oneHour);
-    const fourLabel = labelFor(fourHour);
-    const read = oneLabel === fourLabel && oneLabel !== 'Neutral'
-      ? `${oneLabel} on both 1H and 4H`
-      : oneLabel === 'Neutral' && fourLabel === 'Neutral'
-        ? 'Neutral on both 1H and 4H'
+    const oneMove = movementFor(oneHour);
+    const fourMove = movementFor(fourHour);
+    const read = oneMove === fourMove && oneMove !== 'Flat'
+      ? `${oneMove} on both 1H and 4H`
+      : oneMove === 'Flat' && fourMove === 'Flat'
+        ? 'Flat on both 1H and 4H'
         : 'Mixed';
     const rest = text.replace(match[0], '').trim();
 
-    return `1H: ${safe(pct(oneHour))} ${arrowFor(oneHour)} ${oneLabel}<br>` +
-      `4H: ${safe(pct(fourHour))} ${arrowFor(fourHour)} ${fourLabel}<br>` +
+    return `1H Momentum: ${oneMove} ${safe(pct(oneHour))} ${arrowFor(oneHour)}<br>` +
+      `4H Momentum: ${fourMove} ${safe(pct(fourHour))} ${arrowFor(fourHour)}<br>` +
       `Momentum read: ${safe(read)}` +
       (rest ? `<br>${safe(rest)}` : '');
   }
