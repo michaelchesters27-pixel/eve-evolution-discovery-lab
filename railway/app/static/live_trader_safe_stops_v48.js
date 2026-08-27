@@ -179,7 +179,7 @@
   function renderProtection(element, protection) {
     if (!element) return;
     element.classList.toggle('lt-no-extra', !protection.needed);
-    element.textContent = protection.needed ? formatPrice(protection.level) : 'NO EXTRA';
+    element.textContent = protection.needed ? formatPrice(protection.level) : 'ALREADY PROTECTED';
   }
 
   function render(state) {
@@ -200,10 +200,10 @@
     sell.title = refs.sell.sources.length ? `Structural reference beyond: ${refs.sell.sources.join(', ')}` : 'Informational structural stop reference';
     buySweep.title = buyProtection.needed
       ? `Extra sweep protection beyond nearby liquidity: ${buyProtection.sources.join(', ')}`
-      : 'No additional nearby liquidity target is currently sitting beyond the buy safe SL inside the sweep-protection band.';
+      : 'Buy Safe SL already protects against nearby sweep risk inside the sweep-protection band.';
     sellSweep.title = sellProtection.needed
       ? `Extra sweep protection beyond nearby liquidity: ${sellProtection.sources.join(', ')}`
-      : 'No additional nearby liquidity target is currently sitting beyond the sell safe SL inside the sweep-protection band.';
+      : 'Sell Safe SL already protects against nearby sweep risk inside the sweep-protection band.';
   }
 
   async function refresh() {
