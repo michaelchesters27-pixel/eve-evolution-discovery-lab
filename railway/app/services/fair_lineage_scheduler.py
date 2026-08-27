@@ -229,3 +229,7 @@ class FairLineageDiscoveryOrchestrator(OriginalDiscoveryOrchestrator):
 # the exported class here keeps the production import stable while installing the
 # fairness policy as a narrow, testable extension of the v3 integrity orchestrator.
 orchestrator_v3.DiscoveryOrchestrator = FairLineageDiscoveryOrchestrator
+
+# Upgrade the installed fairness class with Scientist-specific progression and
+# research-dataset-scoped final-exam budgets before app.main binds the class.
+from app.services import scientist_priority_scheduler_v3 as _scientist_priority_scheduler_v3  # noqa: E402,F401
