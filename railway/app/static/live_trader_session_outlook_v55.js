@@ -32,9 +32,23 @@
     .lt-session-outlook-retrace-range.bearish{color:var(--red)}
     .lt-session-outlook-retrace-meta{margin-top:5px;font-size:9px;color:#a9c4b6;text-transform:uppercase;letter-spacing:.04em}
     .lt-session-outlook-retrace-note{margin:6px 0 0;font-size:10px;line-height:1.45;color:#c2d6cc}
+    .lt-zone-decision{margin-top:10px;border:1px solid var(--line);border-radius:11px;padding:10px;display:grid;grid-template-columns:48px 1fr;gap:10px;align-items:center;background:#06100b}
+    .lt-zone-decision.bullish{border-color:rgba(75,240,150,.48)}
+    .lt-zone-decision.bearish{border-color:rgba(255,105,125,.48)}
+    .lt-zone-decision.undecided{border-color:rgba(255,195,90,.42)}
+    .lt-zone-decision-arrow{font-size:36px;font-weight:900;line-height:1;text-align:center;animation:eve-zone-pulse 1.1s ease-in-out infinite}
+    .lt-zone-decision.bullish .lt-zone-decision-arrow,.lt-zone-decision.bullish .lt-zone-decision-title{color:var(--green)}
+    .lt-zone-decision.bearish .lt-zone-decision-arrow,.lt-zone-decision.bearish .lt-zone-decision-title{color:var(--red)}
+    .lt-zone-decision.undecided .lt-zone-decision-arrow,.lt-zone-decision.undecided .lt-zone-decision-title{color:var(--amber)}
+    .lt-zone-decision-kicker{font-size:8px;color:var(--muted);font-weight:900;letter-spacing:.08em;text-transform:uppercase}
+    .lt-zone-decision-title{margin-top:3px;font-size:13px;font-weight:900;line-height:1.2}
+    .lt-zone-decision-note{margin:4px 0 0;font-size:9px;line-height:1.4;color:#c2d6cc}
+    .lt-zone-decision-tfs{margin-top:5px;font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+    @keyframes eve-zone-pulse{0%,100%{transform:scale(.9);opacity:.72}50%{transform:scale(1.14);opacity:1}}
     .lt-session-outlook-flip{margin:8px 0 0;color:var(--muted);font-size:10px;line-height:1.45}
     .lt-session-outlook-note{margin:8px 0 0;padding-top:8px;border-top:1px solid var(--line);color:var(--muted);font-size:9px}
     @media(max-width:760px){.lt-session-structure{grid-template-columns:1fr}}
+    @media(prefers-reduced-motion:reduce){.lt-zone-decision-arrow{animation:none}}
   `;
   document.head.appendChild(style);
 
@@ -118,12 +132,100 @@
       low:selected.low,
       high:selected.high,
       kind:kind.toUpperCase(),
+      kindLower:kind,
+      side,
       quality:selected.quality,
       inZone,
       note:inZone
-        ? `Price is already inside current ${kind}. Wait for ${action} before acting.`
+        ? `Price is inside current ${kind}. EVE is now judging whether the zone rejects or breaks.`
         : `Wait for price to retrace ${travel} into this current ${kind} area, then look for ${action}.`,
     };
+  }
+
+  function timeframeDirection(state, key) {
+    const item = state?.bias?.timeframes?.[key];
+    if (item && typeof item === 'object') return String(item.direction || '').toLowerCase();
+    return String(item || '').toLowerCase();
+  }
+
+  function zoneDecision(state, direction, retrace) {
+    if (!retrace?.inZone) return null;
+
+    const desired = direction;
+    const opposite = direction === 'bullish' ? 'bearish' : 'bullish';
+    const m5 = timeframeDirection(state, 'M5');
+    const m15 = timeframeDirection(state, 'M15');
+    const trade = state?.trade || {};
+    const action = String(trade.action || '').toUpperCase();
+    const tradeSide = String(trade.side || '').toUpperCase();
+    const strategyKey = String(trade.strategy_key || '');
+    const executionClass = String(trade.execution_class || '');
+    const actionable = !['', 'WAIT', 'NO TRADE'].includes(action);
+    const specialistTrade = strategyKey === 'zone_retrace_v1' || executionClass === 'zone_retrace_confirmation';
+    const confirmed = actionable && specialistTrade &&
+      (tradeSide === retrace.side || action === retrace.side || action.startsWith(retrace.side));
+
+    const desiredArrow = desired === 'bullish' ? '↑' : '↓';
+    const oppositeArrow = opposite === 'bullish' ? '↑' : '↓';
+    const zoneName = retrace.kindLower;
+    const side = retrace.side;
+
+    if (confirmed) {
+      return {
+        tone:desired,
+        arrow:desiredArrow,
+        title:`${desired.toUpperCase()} REJECTION CONFIRMED`,
+        note:`EVE's live zone-retracement strategy has confirmed the ${side}.`,
+        m5,
+        m15,
+      };
+    }
+
+    if (m5 === desired && m15 === desired) {
+      return {
+        tone:desired,
+        arrow:desiredArrow,
+        title:'REJECTION BUILDING',
+        note:`M5 and M15 are aligned ${desired} while price is in ${zoneName}. Evidence is building, but EVE has not confirmed the ${side} yet.`,
+        m5,
+        m15,
+      };
+    }
+
+    if (m5 === opposite && m15 === opposite) {
+      return {
+        tone:opposite,
+        arrow:oppositeArrow,
+        title:`${opposite.toUpperCase()} BREAK BUILDING`,
+        note:`M5 and M15 are aligned ${opposite} while price is in ${zoneName}. The zone may fail. Do not take the ${side} while this remains.`,
+        m5,
+        m15,
+      };
+    }
+
+    return {
+      tone:'undecided',
+      arrow:'↕',
+      title:'UNDECIDED — WAIT',
+      note:`M5 and M15 do not agree yet. EVE cannot tell whether ${zoneName} will reject or break. Wait.`,
+      m5,
+      m15,
+    };
+  }
+
+  function zoneDecisionHtml(decision, retrace) {
+    if (!decision) return '';
+    const tfLabel = value => ['bullish','bearish','neutral'].includes(value) ? value.toUpperCase() : 'UNKNOWN';
+    return `
+      <div class="lt-zone-decision ${safe(decision.tone)}">
+        <div class="lt-zone-decision-arrow" aria-hidden="true">${safe(decision.arrow)}</div>
+        <div>
+          <div class="lt-zone-decision-kicker">PRICE IS IN ${safe(retrace.kind)} · ZONE DECISION</div>
+          <div class="lt-zone-decision-title">${safe(decision.title)}</div>
+          <p class="lt-zone-decision-note">${safe(decision.note)}</p>
+          <div class="lt-zone-decision-tfs">M5 ${safe(tfLabel(decision.m5))} · M15 ${safe(tfLabel(decision.m15))}</div>
+        </div>
+      </div>`;
   }
 
   function structurePlan(outlook) {
@@ -200,6 +302,7 @@
     const tradeBias = String(state?.bias?.overall || 'neutral').toUpperCase();
     const structure = structurePlan(outlook);
     const retrace = retracePlan(state, direction);
+    const decision = zoneDecision(state, direction, retrace);
     const structureHtml = `
       <div class="lt-session-structure">
         <div class="lt-session-structure-item">
@@ -220,6 +323,7 @@
         <div class="lt-session-outlook-retrace-range ${safe(direction)}">${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
         <div class="lt-session-outlook-retrace-meta">CURRENT ${safe(retrace.kind)}${retrace.quality == null ? '' : ` · QUALITY ${safe(Math.round(retrace.quality))}/100`}</div>
         <p class="lt-session-outlook-retrace-note">${safe(retrace.note)}</p>
+        ${zoneDecisionHtml(decision, retrace)}
       </div>` : `
       <div class="lt-session-outlook-retrace">
         <div class="lt-session-outlook-retrace-head"><span>RETRACE BEFORE ${direction === 'bearish' ? 'SELL' : 'BUY'}</span><small>LIVE · AUTO-UPDATING</small></div>
@@ -236,7 +340,7 @@
       ${structureHtml}
       ${retraceHtml}
       <p class="lt-session-outlook-flip">${safe(flip)}</p>
-      <p class="lt-session-outlook-note">Trade bias: ${safe(tradeBias)} · BOS/CHoCH and retrace information are display guidance only and do not create or modify EVE trades.</p>`;
+      <p class="lt-session-outlook-note">Trade bias: ${safe(tradeBias)} · BOS/CHoCH, retrace and zone-decision information are display guidance only. Only EVE's existing live trade state can confirm a trade.</p>`;
   }
 
   async function refresh() {
