@@ -30,10 +30,25 @@ def test_zone_decision_uses_authenticated_live_state_and_visible_pulse() -> None
     assert canonical == static
 
 
+def test_safe_stop_panel_includes_display_only_sweep_protection() -> None:
+    root = _repo_root()
+    canonical = (root / "frontend" / "live_trader_safe_stops_v48.js").read_text(encoding="utf-8")
+    static = (root / "railway" / "app" / "static" / "live_trader_safe_stops_v48.js").read_text(encoding="utf-8")
+
+    assert 'id="ltBuySweepProtection"' in canonical
+    assert 'id="ltSellSweepProtection"' in canonical
+    assert "function sweepProtection" in canonical
+    assert "const huntBand = atr * 1.25" in canonical
+    assert "const buffer = Math.max(atr * 0.22, 0.01)" in canonical
+    assert "reclaimedLiquidityKeys" in canonical
+    assert "render(await api('/live-trader'))" in canonical
+    assert canonical == static
+
+
 def test_zone_stability_is_frontend_only_and_build_is_cache_busted() -> None:
     root = _repo_root()
     canonical = (root / "frontend" / "live_trader_intelligence_meter.js").read_text(encoding="utf-8")
     static = (root / "railway" / "app" / "static" / "live_trader_intelligence_meter.js").read_text(encoding="utf-8")
 
-    assert "const UI_BUILD = '84'" in canonical
+    assert "const UI_BUILD = '85'" in canonical
     assert canonical == static
