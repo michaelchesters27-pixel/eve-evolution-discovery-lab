@@ -54,6 +54,31 @@
     return parsed == null ? '—' : parsed.toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
   }
 
+  function momentumReasonsHtml(reasons) {
+    const text = reasons.join(' ');
+    const match = text.match(/Momentum:\s*12-bar\s*([+-]?\d+(?:\.\d+)?)%,\s*48-bar\s*([+-]?\d+(?:\.\d+)?)%\.?/i);
+    if (!match) return safe(text);
+
+    const oneHour = Number(match[1]);
+    const fourHour = Number(match[2]);
+    const labelFor = value => value > 0 ? 'Bullish' : value < 0 ? 'Bearish' : 'Neutral';
+    const arrowFor = value => value > 0 ? '↑' : value < 0 ? '↓' : '→';
+    const pct = value => `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
+    const oneLabel = labelFor(oneHour);
+    const fourLabel = labelFor(fourHour);
+    const read = oneLabel === fourLabel && oneLabel !== 'Neutral'
+      ? `${oneLabel} on both 1H and 4H`
+      : oneLabel === 'Neutral' && fourLabel === 'Neutral'
+        ? 'Neutral on both 1H and 4H'
+        : 'Mixed';
+    const rest = text.replace(match[0], '').trim();
+
+    return `1H: ${safe(pct(oneHour))} ${arrowFor(oneHour)} ${oneLabel}<br>` +
+      `4H: ${safe(pct(fourHour))} ${arrowFor(fourHour)} ${fourLabel}<br>` +
+      `Momentum read: ${safe(read)}` +
+      (rest ? `<br>${safe(rest)}` : '');
+  }
+
   function retracePlan(state, direction) {
     const price = number(state?.price);
     const zones = state?.zones || {};
@@ -207,7 +232,7 @@
         <div class="lt-session-outlook-confidence">${safe(confidence)}/100</div>
       </div>
       <div class="lt-session-outlook-meta">${safe(conviction)} lean · ${safe(session)} session</div>
-      <p class="lt-session-outlook-reasons">${safe(reasons.join(' '))}</p>
+      <p class="lt-session-outlook-reasons">${momentumReasonsHtml(reasons)}</p>
       ${structureHtml}
       ${retraceHtml}
       <p class="lt-session-outlook-flip">${safe(flip)}</p>
