@@ -18,7 +18,9 @@
         load('live_trader_zone_truth_v49.js', () =>
           load('live_trader_zone_retrace_v58.js', () =>
             load('live_trader_sections_v59.js', () =>
-              load('live_trader_audit_v60.js', () => {})
+              load('live_trader_audit_v60.js', () =>
+                load('live_trader_session_copy_v81.js', () => {})
+              )
             )
           )
         )
