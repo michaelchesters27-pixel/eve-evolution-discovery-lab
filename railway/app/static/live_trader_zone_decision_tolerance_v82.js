@@ -162,7 +162,16 @@
     if (!document.getElementById('eveZoneDecisionToleranceStyle')) {
       const style = document.createElement('style');
       style.id = 'eveZoneDecisionToleranceStyle';
-      style.textContent = '.eve-tolerant-zone-decision-active .lt-zone-decision{display:none!important}#ltZoneDecisionTolerance{margin-top:10px}';
+      style.textContent = `
+        .eve-tolerant-zone-decision-active .lt-zone-decision{display:none!important}
+        #ltZoneDecisionTolerance{margin-top:10px}
+        #ltZoneDecisionTolerance .lt-zone-decision-arrow{animation:eve-zone-tolerance-pulse .85s ease-in-out infinite;transform-origin:center}
+        #ltZoneDecisionTolerance.bullish .lt-zone-decision-arrow{filter:drop-shadow(0 0 8px rgba(75,240,150,.85))}
+        #ltZoneDecisionTolerance.bearish .lt-zone-decision-arrow{filter:drop-shadow(0 0 8px rgba(255,105,125,.85))}
+        #ltZoneDecisionTolerance.undecided .lt-zone-decision-arrow{filter:drop-shadow(0 0 8px rgba(255,195,90,.85))}
+        @keyframes eve-zone-tolerance-pulse{0%,100%{transform:scale(.72);opacity:.55}50%{transform:scale(1.32);opacity:1}}
+        @media(prefers-reduced-motion:reduce){#ltZoneDecisionTolerance .lt-zone-decision-arrow{animation:none}}
+      `;
       document.head.appendChild(style);
     }
   }
@@ -199,9 +208,8 @@
     const view = document.getElementById('view-live-trader');
     if (view && !view.classList.contains('active')) return;
     try {
-      const response = await fetch('/api/live-trader', {cache: 'no-store'});
-      if (!response.ok) return;
-      render(await response.json());
+      const state = await api('/live-trader');
+      render(state);
     } catch (_) {}
   }
 
