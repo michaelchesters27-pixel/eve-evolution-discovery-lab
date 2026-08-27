@@ -22,6 +22,7 @@ PUBLISHED = {
     "live_trader_session_copy_v81.js",
     "live_trader_session_outlook_v55.js",
     "live_trader_trade_outcomes.js",
+    "live_trader_zone_decision_tolerance_v82.js",
     "live_trader_zone_retrace_v58.js",
     "live_trader_zone_truth_v49.js",
     "styles.css",
