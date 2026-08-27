@@ -24,5 +24,5 @@ def test_zone_stability_is_frontend_only_and_build_is_cache_busted() -> None:
     canonical = (root / "frontend" / "live_trader_intelligence_meter.js").read_text(encoding="utf-8")
     static = (root / "railway" / "app" / "static" / "live_trader_intelligence_meter.js").read_text(encoding="utf-8")
 
-    assert "const UI_BUILD = '79'" in canonical
+    assert "const UI_BUILD = '82'" in canonical
     assert canonical == static
