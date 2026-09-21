@@ -15,7 +15,7 @@ def _state() -> dict:
             "panel_bias_version": "eve-live-bias-v2.5-structural-panel",
             "data_quality": {"critical_stale": [], "trade_bias_blocked": False},
             "timeframes": {
-                "D1": {"direction": "neutral", "method": "multi_candle_structure"},
+                "D1": {"direction": "bullish", "method": "multi_candle_structure"},
                 "H4": {"direction": "bullish", "method": "multi_candle_structure"},
                 "H1": {"direction": "bullish", "method": "multi_candle_structure"},
                 "M30": {"direction": "neutral", "method": "multi_candle_structure"},
