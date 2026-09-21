@@ -11,6 +11,7 @@ PUBLISHED = {
     "live_trader_academy.js",
     "live_trader_audit_v60.js",
     "live_trader_breakout_language_v54.js",
+    "live_trader_cost_guard.js",
     "live_trader_events.js",
     "live_trader_execution_intelligence.js",
     "live_trader_intelligence_meter.js",
