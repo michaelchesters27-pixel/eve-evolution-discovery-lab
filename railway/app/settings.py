@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     twelve_data_ws_url: str = "wss://ws.twelvedata.com/v1/quotes/price"
     live_trader_symbol: str = "XAU/USD"
     live_trader_learning_horizon_minutes: int = Field(default=60, ge=15, le=1440)
+    # Heavy six-year historical/replay workers are opt-in. Live Trader remains
+    # available without retaining/replaying the archive continuously in Railway RAM.
+    live_trader_historical_workers_enabled: bool = False
 
     minimum_locked_trades: int = Field(default=80, ge=30, le=5000)
     minimum_validation_trades: int = Field(default=60, ge=20, le=5000)
