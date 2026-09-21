@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -34,6 +35,57 @@ worker_task: asyncio.Task[Any] | None = None
 intelligence_task: asyncio.Task[Any] | None = None
 fabric_task: asyncio.Task[Any] | None = None
 live_trader_task: asyncio.Task[Any] | None = None
+bounded_research_task: asyncio.Task[Any] | None = None
+
+
+async def _bounded_research_loop() -> None:
+    """Run expensive autonomous research in a disposable child process.
+
+    The web/live process stays small. Each child performs one bounded research
+    cycle, persists its work to Supabase, exits, and returns its heap to the OS.
+    """
+    if settings.bounded_research_startup_seconds:
+        await asyncio.sleep(settings.bounded_research_startup_seconds)
+    while True:
+        process: asyncio.subprocess.Process | None = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "app.bounded_worker",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=settings.bounded_research_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Bounded research worker exceeded %ss; terminating it safely",
+                    settings.bounded_research_timeout_seconds,
+                )
+                process.kill()
+                stdout, _ = await process.communicate()
+            output = stdout.decode("utf-8", errors="replace") if stdout else ""
+            if process.returncode == 0:
+                logger.info("Bounded research worker finished successfully: %s", output[-6000:])
+            else:
+                logger.error(
+                    "Bounded research worker exited with code %s: %s",
+                    process.returncode,
+                    output[-6000:],
+                )
+        except asyncio.CancelledError:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            raise
+        except Exception:
+            logger.exception("Could not launch bounded research worker")
+
+        await asyncio.sleep(settings.bounded_research_interval_minutes * 60)
 
 
 class LiveTraderChatRequest(BaseModel):
@@ -42,12 +94,16 @@ class LiveTraderChatRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global worker_task, intelligence_task, fabric_task, live_trader_task
+    global worker_task, intelligence_task, fabric_task, live_trader_task, bounded_research_task
+    # Legacy continuous research remains available for development, but production
+    # uses the bounded child worker so historical heaps never live for 24/7.
     if settings.autonomous_enabled:
         worker_task = asyncio.create_task(orchestrator.run_forever(), name="eve-discovery-worker")
         intelligence_task = asyncio.create_task(intelligence.run_forever(), name="eve-autonomous-scientist")
     if settings.fabric_enabled:
         fabric_task = asyncio.create_task(fabric.run_forever(), name="eve-m5-observation-fabric")
+    if settings.bounded_research_enabled:
+        bounded_research_task = asyncio.create_task(_bounded_research_loop(), name="eve-bounded-research")
     if settings.live_trader_enabled:
         live_trader_task = asyncio.create_task(live_trader.run_forever(), name="eve-live-trader")
     try:
@@ -57,7 +113,7 @@ async def lifespan(_: FastAPI):
         await fabric.stop()
         await intelligence.stop()
         await orchestrator.stop()
-        for task in (live_trader_task, fabric_task, intelligence_task, worker_task):
+        for task in (live_trader_task, bounded_research_task, fabric_task, intelligence_task, worker_task):
             if task:
                 task.cancel()
                 try:
