@@ -722,6 +722,9 @@ class ZoneRetraceLivePolicyReplayer:
 
 
 async def _run_forever_v68(self: core.LiveTrader) -> None:
+    if not bool(getattr(self.settings, "live_trader_historical_workers_enabled", False)):
+        await _current_run_forever(self)
+        return
     replayer = getattr(self, "_zone_retrace_live_policy_replayer_v68", None)
     if replayer is None:
         replayer = ZoneRetraceLivePolicyReplayer(self)

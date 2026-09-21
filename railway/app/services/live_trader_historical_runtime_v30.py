@@ -28,6 +28,9 @@ async def _refresh_state_v30(self: core.LiveTrader, *, force_rows: bool = False)
 
 
 async def _run_forever_v30(self: core.LiveTrader) -> None:
+    if not bool(getattr(self.settings, "live_trader_historical_workers_enabled", False)):
+        await _current_run_forever(self)
+        return
     learner = getattr(self, "_historical_academy_v30", None)
     if learner is None:
         learner = academy.LiveTraderHistoricalLearner(
@@ -55,11 +58,12 @@ def _runtime_status_v30(self: core.LiveTrader) -> dict[str, Any]:
     status = dict(_current_runtime_status(self))
     learner = getattr(self, "_historical_academy_v30", None)
     status["historical_runtime_version"] = RUNTIME_VERSION
+    enabled = bool(getattr(self.settings, "live_trader_historical_workers_enabled", False))
     status["historical_academy"] = learner.runtime_status() if learner is not None else {
         "version": academy.ACADEMY_VERSION,
-        "enabled": True,
+        "enabled": enabled,
         "running": False,
-        "status": "starting",
+        "status": "starting" if enabled else "disabled_for_cost_control",
     }
     return status
 

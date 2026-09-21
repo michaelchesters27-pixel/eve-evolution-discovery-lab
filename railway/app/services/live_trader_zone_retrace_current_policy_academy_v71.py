@@ -614,6 +614,9 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
 
 
 async def _run_forever_v71(self: core.LiveTrader) -> None:
+    if not bool(getattr(self.settings, "live_trader_historical_workers_enabled", False)):
+        await _current_run_forever(self)
+        return
     worker = getattr(self, "_zone_retrace_current_policy_academy_v71", None)
     if worker is None:
         worker = CurrentPolicyZoneRetraceAcademy(self)
