@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     candidates_per_seed: int = Field(default=50, ge=5, le=500)
     row_cache_minutes: int = Field(default=45, ge=5, le=720)
 
+    # Cost-safe autonomous research runs in a short-lived child process. The
+    # child may use the full research dataset for exact semantics, but exits
+    # after one bounded cycle so its heap is returned to the OS.
+    bounded_research_enabled: bool = False
+    bounded_research_startup_seconds: int = Field(default=30, ge=0, le=3600)
+    bounded_research_interval_minutes: int = Field(default=360, ge=60, le=1440)
+    bounded_research_timeout_seconds: int = Field(default=2700, ge=300, le=7200)
+
     # Discovery-only every-M5 observation fabric.
     fabric_enabled: bool = True
     fabric_batch_days: int = Field(default=21, ge=2, le=60)
