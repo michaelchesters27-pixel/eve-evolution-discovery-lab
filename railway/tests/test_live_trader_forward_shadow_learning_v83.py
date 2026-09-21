@@ -97,3 +97,26 @@ def test_trade_skill_can_become_proven_with_forward_evidence() -> None:
     assert better_skill["published_triggered"] == 45
     assert better_skill["score"] >= 7.5
     assert better_skill["grade"] == "PROVEN"
+
+
+def test_shadow_research_does_not_copy_live_zone_distance_gate() -> None:
+    state = _bullish_state()
+    state["zones"]["demand"][0]["distance_atr"] = 5.5
+    candidates = v83._shadow_candidates(state)
+
+    variants = {item["shadow_variant"] for item in candidates}
+    assert "market_probe" in variants
+    assert "momentum_confirmation" in variants
+    assert all(item["shadow_only"] is True for item in candidates)
+    assert all(item["automatic_order_placement"] is False for item in candidates)
+
+
+def test_shadow_research_prefers_nearest_quality_matching_zone() -> None:
+    state = _bullish_state()
+    state["zones"]["demand"] = [
+        {"low": 4260.0, "high": 4270.0, "quality": 99, "distance_atr": 4.5},
+        {"low": 4282.0, "high": 4290.0, "quality": 74, "distance_atr": 1.0},
+    ]
+    zone = v83._matching_zone(state, "bullish")
+    assert zone is not None
+    assert zone["distance_atr"] == 1.0
