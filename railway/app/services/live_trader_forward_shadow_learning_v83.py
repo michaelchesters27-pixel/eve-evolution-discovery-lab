@@ -152,16 +152,32 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
 
 
 def _matching_zone(state: dict[str, Any], bias: str) -> dict[str, Any] | None:
+    """Return a quality matching zone for research without copying the live distance gate.
+
+    Shadow research exists to measure whether distance-to-zone actually adds value.
+    Requiring the shadow recorder to pass a distance gate before it can collect
+    evidence makes that question untestable and can starve forward research for
+    entire trading days. The user-facing/live policy remains unchanged.
+    """
     zones = dict(state.get("zones") or {})
-    items = list(zones.get("demand" if bias == "bullish" else "supply") or [])
-    if not items:
+    items = [
+        dict(item or {})
+        for item in list(zones.get("demand" if bias == "bullish" else "supply") or [])
+        if isinstance(item, dict)
+    ]
+    eligible = [item for item in items if _num(item.get("quality")) >= SHADOW_MIN_ZONE_QUALITY]
+    if not eligible:
         return None
-    zone = dict(items[0] or {})
-    if _num(zone.get("quality")) < SHADOW_MIN_ZONE_QUALITY:
-        return None
-    if _num(zone.get("distance_atr"), 999.0) > SHADOW_MAX_ZONE_DISTANCE_ATR:
-        return None
-    return zone
+
+    # Prefer the nearest quality zone for research. This is deliberately separate
+    # from the live policy, which keeps its existing ranked/preferred-zone rules.
+    eligible.sort(
+        key=lambda item: (
+            _num(item.get("distance_atr"), 999.0),
+            -_num(item.get("quality")),
+        )
+    )
+    return eligible[0]
 
 
 def _trade_geometry(
@@ -193,6 +209,7 @@ def _trade_geometry(
         "shadow_only": True,
         "shadow_variant": variant,
         "reason": "Research-only candidate. Never publish or execute this order from the Live Trader UI.",
+        "shadow_distance_gate_applied": False,
     }
 
 
