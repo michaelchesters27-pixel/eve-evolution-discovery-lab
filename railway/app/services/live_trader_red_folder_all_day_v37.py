@@ -8,7 +8,8 @@ from app.services import live_trader as core
 from app.services import live_trader_red_folder_news_confirmation_v36 as confirmation
 from app.services import live_trader_red_folder_news_v35 as news
 
-ALL_DAY_VERSION = "eve-live-red-folder-all-day-v1"
+ALL_DAY_VERSION = "eve-live-red-folder-all-day-v2-complete-window"
+BLACKOUT_WINDOW_VERSION = "eve-live-news-blackout-window-v98"
 ALL_DAY_POLICY = (
     "Forex Factory RED events shown as All/Tentative with no exact release time may be entered as all-day macro risk. "
     "EVE blocks new XAU/USD campaigns for the full Europe/London calendar day, suspends pending campaigns without "
@@ -57,6 +58,14 @@ def build_all_day_event(symbol: str, event_date: str, event_name: str) -> dict[s
     }
 
 
+def _rpc_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+        return dict(value[0])
+    return {}
+
+
 def _decorate_event_v37(row: dict[str, Any]) -> dict[str, Any] | None:
     if str(row.get("event_class") or "") != "all_day":
         return _current_decorate_event(row)
@@ -103,23 +112,43 @@ async def _load_calendar_with_all(self: core.LiveTrader, *, force: bool = False)
     start = now - timedelta(hours=news.CALENDAR_LOOKBACK_HOURS)
     end = now + timedelta(days=news.CALENDAR_LOOKAHEAD_DAYS)
     try:
-        rows = await self.repo.client.get(
-            "live_trader_news_events",
-            params={
-                "select": "event_id,currency,event_name,scheduled_at,event_class,pre_minutes,post_minutes,source",
-                "symbol": f"eq.{self.symbol}",
-                "currency": "in.(USD,ALL)",
-                "enabled": "eq.true",
-                "and": f"(scheduled_at.gte.{start.isoformat()},scheduled_at.lte.{end.isoformat()})",
-                "order": "scheduled_at.asc,event_name.asc",
-                "limit": "100",
+        raw = await self.repo.client.rpc(
+            "get_live_trader_news_window_v98",
+            {
+                "p_symbol": self.symbol,
+                "p_start": start.isoformat(),
+                "p_end": end.isoformat(),
             },
         )
-        self._news_calendar_rows_v37 = list(rows)
+        payload = _rpc_object(raw)
+        rows = payload.get("events")
+        if (
+            str(payload.get("version") or "") != BLACKOUT_WINDOW_VERSION
+            or payload.get("complete") is not True
+            or not isinstance(rows, list)
+        ):
+            raise RuntimeError("News blackout inventory did not prove a complete server-side window.")
+
+        reported_count = int(core.number(payload.get("event_count"), -1))
+        clean_rows = [dict(row) for row in rows if isinstance(row, dict)]
+        ids = [str(row.get("event_id") or "") for row in clean_rows]
+        if (
+            reported_count < 0
+            or reported_count != len(rows)
+            or len(clean_rows) != reported_count
+            or any(not event_id for event_id in ids)
+            or len(ids) != len(set(ids))
+        ):
+            raise RuntimeError("News blackout inventory is incomplete, malformed, or contains duplicate IDs.")
+
+        self._news_calendar_rows_v37 = clean_rows
         self._news_calendar_cache_at_v37 = now
-        result = news.news_status_from_rows(list(rows), now)
+        result = news.news_status_from_rows(clean_rows, now)
         result["all_day_version"] = ALL_DAY_VERSION
         result["all_day_policy"] = ALL_DAY_POLICY
+        result["blackout_inventory_version"] = BLACKOUT_WINDOW_VERSION
+        result["blackout_inventory_complete"] = True
+        result["blackout_inventory_count"] = reported_count
         return result
     except Exception as exc:
         core.logger.warning("Live Trader could not read timed + all-day red-folder calendar: %s", exc)
@@ -171,6 +200,8 @@ def _runtime_status_v37(self: core.LiveTrader) -> dict[str, Any]:
         {
             "red_folder_all_day_version": ALL_DAY_VERSION,
             "red_folder_all_day_policy": ALL_DAY_POLICY,
+            "red_folder_blackout_inventory_version": BLACKOUT_WINDOW_VERSION,
+            "red_folder_blackout_inventory_complete_required": True,
         }
     )
     return status
