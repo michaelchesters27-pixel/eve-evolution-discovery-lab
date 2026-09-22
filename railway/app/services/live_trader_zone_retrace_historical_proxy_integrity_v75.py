@@ -25,6 +25,7 @@ def _current_policy_contract_v75(payload: dict[str, Any]) -> dict[str, Any]:
     historical_screening_candidate = bool(
         specialist.get("historical_screening_candidate")
         or dict(academy.get("policy") or {}).get("historical_screening_candidate")
+        or specialist.get("live_promoted_execution")  # legacy pre-v92 candidate becomes screening-only
     )
     historical_candidate = "market_after_zone_confirmation" if historical_screening_candidate else None
 
