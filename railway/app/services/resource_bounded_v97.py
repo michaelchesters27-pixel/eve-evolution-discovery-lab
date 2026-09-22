@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-RESOURCE_VERSION = "eve-resource-bounded-workers-v97"
+RESOURCE_VERSION = "eve-resource-bounded-workers-v98"
 
 
 def parse_utc(value: Any) -> datetime | None:
