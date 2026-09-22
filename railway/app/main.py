@@ -4,8 +4,11 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sys
+import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Any
@@ -42,130 +45,386 @@ live_trader_task: asyncio.Task[Any] | None = None
 bounded_research_task: asyncio.Task[Any] | None = None
 
 
-def _bounded_child_summary(output: str) -> dict[str, Any] | None:
-    for line in reversed(output.splitlines()):
-        candidate = line.strip()
-        if not candidate.startswith("{"):
-            continue
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and payload.get("cycle_id"):
-            return payload
-    return None
+def _rpc_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        first = dict(value[0])
+        if len(first) == 1:
+            inner = next(iter(first.values()))
+            if isinstance(inner, dict):
+                return dict(inner)
+        return first
+    return {}
 
 
-async def _mark_bounded_supervisor_failure(cycle_id: str, reason: str) -> None:
+def _bounded_owner_id() -> str:
+    return ":".join(
+        [
+            str(os.environ.get("RAILWAY_SERVICE_ID") or "evolution"),
+            socket.gethostname(),
+            str(os.getpid()),
+        ]
+    )
+
+
+async def _claim_bounded_supervisor(owner_id: str) -> dict[str, Any]:
+    result = await discovery_repo.client.rpc(
+        "claim_bounded_research_supervisor_v96",
+        {
+            "p_owner_id": owner_id,
+            "p_lease_seconds": min(7200, max(600, settings.bounded_research_timeout_seconds + 300)),
+        },
+    )
+    return _rpc_object(result)
+
+
+async def _renew_bounded_supervisor(owner_id: str, token: str) -> bool:
+    result = await discovery_repo.client.rpc(
+        "renew_bounded_research_supervisor_v96",
+        {
+            "p_owner_id": owner_id,
+            "p_lease_token": token,
+            "p_lease_seconds": min(7200, max(600, settings.bounded_research_timeout_seconds + 300)),
+        },
+    )
+    return bool(_rpc_object(result).get("renewed"))
+
+
+async def _release_bounded_supervisor(owner_id: str, token: str) -> None:
+    try:
+        await discovery_repo.client.rpc(
+            "release_bounded_research_supervisor_v96",
+            {"p_owner_id": owner_id, "p_lease_token": token},
+        )
+    except Exception:
+        logger.exception("Could not release bounded research supervisor lease")
+
+
+async def _record_supervisor_stage_failure(
+    cycle_id: str,
+    stage_name: str,
+    ordinal: int,
+    reason: str,
+    *,
+    elapsed_ms: float = 0.0,
+) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "cycle_id": cycle_id,
+        "stage_name": stage_name,
+        "ordinal": ordinal,
+        "outcome": "failed",
+        "operation_ok": False,
+        "started_at": now,
+        "finished_at": now,
+        "elapsed_ms": round(elapsed_ms, 3),
+        "cpu_user_ms": None,
+        "cpu_system_ms": None,
+        "process_max_rss_mb": None,
+        "result_summary": {
+            "resource_version": "eve-resource-bounded-workers-v96",
+            "memory_ceiling_mb": settings.bounded_research_memory_mb,
+            "supervisor_failure": reason[:1000],
+        },
+        "error": reason[:2000],
+    }
+    try:
+        await discovery_repo.client.insert("bounded_research_stage_runs", payload, return_rows=False)
+    except Exception:
+        logger.exception("Could not persist supervisor-generated stage failure")
+    return {
+        "ok": False,
+        "cycle_id": cycle_id,
+        "stage": stage_name,
+        "ordinal": ordinal,
+        "outcome": "failed",
+        "error": reason[:2000],
+        "elapsed_ms": round(elapsed_ms, 3),
+        "memory_ceiling_mb": settings.bounded_research_memory_mb,
+        "resource_version": "eve-resource-bounded-workers-v96",
+    }
+
+
+async def _read_bounded_child(
+    process: asyncio.subprocess.Process,
+    *,
+    cycle_id: str,
+    stage_name: str,
+) -> tuple[dict[str, Any] | None, str]:
+    tail: deque[str] = deque(maxlen=80)
+    summary: dict[str, Any] | None = None
+    assert process.stdout is not None
+    while True:
+        line = await process.stdout.readline()
+        if not line:
+            break
+        decoded = line.decode("utf-8", errors="replace").rstrip()
+        if decoded:
+            tail.append(decoded[-2000:])
+        candidate = decoded.strip()
+        if candidate.startswith("{"):
+            try:
+                payload = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(payload, dict)
+                and str(payload.get("cycle_id") or "") == cycle_id
+                and str(payload.get("stage") or "") == stage_name
+            ):
+                summary = payload
+    await process.wait()
+    return summary, "\n".join(tail)
+
+
+async def _run_bounded_stage(
+    cycle_id: str,
+    stage_name: str,
+    ordinal: int,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    env = dict(os.environ)
+    env.update(
+        {
+            "EVE_BOUNDED_CYCLE_ID": cycle_id,
+            "EVE_BOUNDED_STAGE": stage_name,
+            "EVE_BOUNDED_STAGE_ORDINAL": str(ordinal),
+            "EVE_BOUNDED_MEMORY_MB": str(settings.bounded_research_memory_mb),
+        }
+    )
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "app.bounded_worker",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        env=env,
+    )
+    try:
+        summary, tail = await asyncio.wait_for(
+            _read_bounded_child(process, cycle_id=cycle_id, stage_name=stage_name),
+            timeout=max(1.0, timeout_seconds),
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            pass
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        return await _record_supervisor_stage_failure(
+            cycle_id,
+            stage_name,
+            ordinal,
+            f"stage_timeout_after_{round(timeout_seconds,1)}s",
+            elapsed_ms=elapsed_ms,
+        )
+
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    if process.returncode == 0 and isinstance(summary, dict):
+        return summary
+    if isinstance(summary, dict):
+        return summary
+    reason = f"child_exit_code_{process.returncode}_without_structured_summary"
+    if tail:
+        reason += ":" + tail[-3000:]
+    return await _record_supervisor_stage_failure(
+        cycle_id,
+        stage_name,
+        ordinal,
+        reason,
+        elapsed_ms=elapsed_ms,
+    )
+
+
+async def _finalise_bounded_cycle(cycle_id: str, results: dict[str, dict[str, Any]], started_perf: float) -> dict[str, Any]:
+    progressed = sum(1 for item in results.values() if item.get("outcome") == "progressed")
+    no_op = sum(1 for item in results.values() if item.get("outcome") == "no_op")
+    completed = sum(1 for item in results.values() if item.get("outcome") == "completed")
+    failed = sum(1 for item in results.values() if item.get("outcome") == "failed")
+    outcome = (
+        "failed"
+        if failed
+        else "completed_with_progress"
+        if progressed
+        else "completed_without_measured_progress"
+        if completed
+        else "completed_no_op"
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
+    summary = {
+        "telemetry_version": "eve-bounded-stage-telemetry-v1",
+        "resource_version": "eve-resource-bounded-workers-v96",
+        "execution_mode": "isolated_stage_processes",
+        "memory_ceiling_mb": settings.bounded_research_memory_mb,
+        "stage_timeout_seconds": settings.bounded_research_stage_timeout_seconds,
+        "stage_outcomes": {name: item.get("outcome") for name, item in results.items()},
+    }
     try:
         await discovery_repo.client.patch(
             "bounded_research_cycles",
             {
                 "finished_at": now,
-                "outcome": "failed",
-                "stages_failed": 1,
-                "result_summary": {
-                    "telemetry_version": "eve-bounded-stage-telemetry-v1",
-                    "supervisor_failure": reason[:1000],
-                },
+                "outcome": outcome,
+                "stages_total": len(results),
+                "stages_progressed": progressed,
+                "stages_no_op": no_op,
+                "stages_completed": completed,
+                "stages_failed": failed,
+                "elapsed_ms": round(elapsed_ms, 3),
+                "result_summary": summary,
                 "updated_at": now,
             },
             filters={"cycle_id": f"eq.{cycle_id}"},
         )
-    except Exception:
-        logger.exception("Could not persist bounded supervisor failure telemetry")
-    try:
         await discovery_repo.event(
-            "error",
+            "error" if failed else "info",
             "bounded_research_supervisor",
-            "Bounded research child did not complete normally.",
-            {"cycle_id": cycle_id, "reason": reason[:2000]},
+            (
+                f"Isolated bounded cycle {outcome}: {progressed} progressed, "
+                f"{no_op} no-op, {completed} completed without measured progress, {failed} failed."
+            ),
+            {"cycle_id": cycle_id, **summary},
         )
     except Exception:
-        logger.exception("Could not persist bounded supervisor failure event")
+        logger.exception("Could not persist isolated bounded-cycle completion")
+    return {
+        "ok": failed == 0,
+        "cycle_id": cycle_id,
+        "outcome": outcome,
+        "progressed": progressed,
+        "no_op": no_op,
+        "completed": completed,
+        "failed": failed,
+        "elapsed_ms": round(elapsed_ms, 3),
+        "stages": results,
+    }
 
 
 async def _bounded_research_loop() -> None:
-    """Run expensive autonomous research in a disposable child process.
-
-    The web/live process stays small. Each child performs one bounded research
-    cycle, persists stage-level work telemetry to Supabase, exits, and returns
-    its heap to the OS.
-    """
+    """Run each expensive research stage in its own capped disposable process."""
     if settings.bounded_research_startup_seconds:
         await asyncio.sleep(settings.bounded_research_startup_seconds)
-    while True:
-        process: asyncio.subprocess.Process | None = None
-        cycle_id = str(uuid.uuid4())
-        timed_out = False
-        try:
-            env = dict(os.environ)
-            env["EVE_BOUNDED_CYCLE_ID"] = cycle_id
-            process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "app.bounded_worker",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                env=env,
-            )
-            try:
-                stdout, _ = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=settings.bounded_research_timeout_seconds,
-                )
-            except asyncio.TimeoutError:
-                timed_out = True
-                logger.error(
-                    "Bounded research cycle %s exceeded %ss; terminating it safely",
-                    cycle_id,
-                    settings.bounded_research_timeout_seconds,
-                )
-                process.kill()
-                stdout, _ = await process.communicate()
 
-            output = stdout.decode("utf-8", errors="replace") if stdout else ""
-            summary = _bounded_child_summary(output)
-            if timed_out:
-                await _mark_bounded_supervisor_failure(
-                    cycle_id,
-                    f"timeout_after_{settings.bounded_research_timeout_seconds}s",
-                )
-            elif process.returncode == 0 and summary is not None:
+    owner_id = _bounded_owner_id()
+    stages = (
+        ("fabric", 1),
+        ("discovery", 2),
+        ("scientist", 3),
+        ("historical_academy", 4),
+        ("zone_replay", 5),
+        ("current_policy", 6),
+    )
+
+    while True:
+        lease_token: str | None = None
+        try:
+            claim = await _claim_bounded_supervisor(owner_id)
+            if not bool(claim.get("acquired")):
                 logger.info(
-                    "Bounded research cycle %s finished with outcome=%s progressed=%s no_op=%s completed=%s failed=%s",
-                    cycle_id,
-                    summary.get("outcome"),
-                    summary.get("progressed"),
-                    summary.get("no_op"),
-                    summary.get("completed"),
-                    summary.get("failed"),
+                    "Bounded research skipped because durable lease is held by %s until %s",
+                    claim.get("owner_id"),
+                    claim.get("expires_at"),
                 )
-            elif process.returncode == 0:
-                logger.warning(
-                    "Bounded research cycle %s exited cleanly but emitted no structured completion summary: %s",
-                    cycle_id,
-                    output[-6000:],
+                await asyncio.sleep(settings.bounded_research_overlap_retry_seconds)
+                continue
+
+            lease_token = str(claim.get("lease_token") or "")
+            cycle_id = str(uuid.uuid4())
+            cycle_started = datetime.now(timezone.utc)
+            cycle_perf = time.perf_counter()
+
+            # Any old 'running' cycle can only be stale once this supervisor has
+            # acquired the singleton lease.
+            try:
+                await discovery_repo.client.patch(
+                    "bounded_research_cycles",
+                    {
+                        "finished_at": cycle_started.isoformat(),
+                        "outcome": "failed",
+                        "stages_failed": 1,
+                        "result_summary": {
+                            "resource_version": "eve-resource-bounded-workers-v96",
+                            "recovered_by_new_supervisor": owner_id,
+                            "reason": "previous_supervisor_lease_expired_or_released_without_finalising",
+                        },
+                        "updated_at": cycle_started.isoformat(),
+                    },
+                    filters={"outcome": "eq.running"},
                 )
-            else:
-                reason = f"child_exit_code_{process.returncode}"
-                await _mark_bounded_supervisor_failure(cycle_id, reason)
-                logger.error(
-                    "Bounded research cycle %s exited with code %s: %s",
-                    cycle_id,
-                    process.returncode,
-                    output[-6000:],
-                )
+            except Exception:
+                logger.exception("Could not mark stale bounded cycles during restart recovery")
+
+            await discovery_repo.client.insert(
+                "bounded_research_cycles",
+                {
+                    "cycle_id": cycle_id,
+                    "worker_pid": os.getpid(),
+                    "started_at": cycle_started.isoformat(),
+                    "outcome": "running",
+                    "result_summary": {
+                        "telemetry_version": "eve-bounded-stage-telemetry-v1",
+                        "resource_version": "eve-resource-bounded-workers-v96",
+                        "execution_mode": "isolated_stage_processes",
+                        "memory_ceiling_mb": settings.bounded_research_memory_mb,
+                        "supervisor_owner": owner_id,
+                    },
+                },
+                return_rows=False,
+            )
+
+            results: dict[str, dict[str, Any]] = {}
+            deadline = cycle_perf + settings.bounded_research_timeout_seconds
+
+            for stage_name, ordinal in stages:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0:
+                    results[stage_name] = await _record_supervisor_stage_failure(
+                        cycle_id,
+                        stage_name,
+                        ordinal,
+                        "cycle_time_budget_exhausted_before_stage_start",
+                    )
+                    break
+
+                if not await _renew_bounded_supervisor(owner_id, lease_token):
+                    results[stage_name] = await _record_supervisor_stage_failure(
+                        cycle_id,
+                        stage_name,
+                        ordinal,
+                        "durable_supervisor_lease_lost_before_stage",
+                    )
+                    break
+
+                timeout = min(float(settings.bounded_research_stage_timeout_seconds), remaining)
+                results[stage_name] = await _run_bounded_stage(cycle_id, stage_name, ordinal, timeout)
+
+            final = await _finalise_bounded_cycle(cycle_id, results, cycle_perf)
+            logger.info(
+                "Bounded research cycle %s finished outcome=%s max_stage_memory_ceiling=%sMB",
+                cycle_id,
+                final.get("outcome"),
+                settings.bounded_research_memory_mb,
+            )
         except asyncio.CancelledError:
-            if process is not None and process.returncode is None:
-                process.kill()
-                await process.wait()
-                await _mark_bounded_supervisor_failure(cycle_id, "supervisor_cancelled_during_child")
             raise
         except Exception as exc:
-            logger.exception("Could not launch bounded research worker")
-            await _mark_bounded_supervisor_failure(cycle_id, f"launch_or_supervisor_exception:{exc}")
+            logger.exception("Bounded research supervisor failed safely")
+            try:
+                await discovery_repo.event(
+                    "error",
+                    "bounded_research_supervisor",
+                    "Bounded research supervisor failed safely.",
+                    {"owner_id": owner_id, "error": str(exc)[:2000]},
+                )
+            except Exception:
+                pass
+        finally:
+            if lease_token:
+                await _release_bounded_supervisor(owner_id, lease_token)
 
         await asyncio.sleep(settings.bounded_research_interval_minutes * 60)
 
