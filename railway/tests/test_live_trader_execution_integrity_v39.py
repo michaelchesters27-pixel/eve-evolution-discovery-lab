@@ -24,12 +24,14 @@ def test_buy_stop_cancels_when_invalidation_trades_before_later_entry() -> None:
         [bar(103, 104, 99, 101), bar(101, 106, 101, 105)],
         106,
     )
-    assert result == {
-        "entry_triggered": False,
-        "trade_outcome": "invalidated_before_entry",
-        "realised_r": 0.0,
-        "learning_success": None,
-    }
+    assert result["entry_triggered"] is False
+    assert result["trade_outcome"] == "invalidated_before_entry"
+    assert result["realised_r"] == 0.0
+    assert result["gross_realised_r"] == 0.0
+    assert result["estimated_cost_r"] == 0.0
+    assert result["net_realised_r"] == 0.0
+    assert result["learning_success"] is None
+    assert result["net_learning_success"] is None
 
 
 def test_sell_stop_cancels_when_invalidation_trades_before_later_entry() -> None:
