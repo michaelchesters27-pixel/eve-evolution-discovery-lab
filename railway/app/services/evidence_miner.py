@@ -265,7 +265,19 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
     years, year_baselines = _year_context(ordered, returns_by_horizon)
     specs = feature_specs()
 
-    matches: dict[str, list[int]] = {}
+    # Resource-bounded exact-semantics scan.
+    #
+    # The previous implementation retained every matched index for every one of
+    # ~85 feature specs simultaneously. On the six-year M5 development archive
+    # those repeated Python-int lists became the dominant Scientist heap. They
+    # are not needed after each single-feature test. Screen one feature at a
+    # time, retain only the statistical result, then recompute matches for the
+    # final TOP_PAIR_FEATURES. This preserves feature matchers, sample counts,
+    # test ordering, BH correction and pair intersections exactly while making
+    # the working set proportional to one feature plus the top pair family.
+    spec_by_key = {spec.key: spec for spec in specs}
+    features_screened = 0
+    singles: list[dict[str, Any]] = []
     for spec in specs:
         matched: list[int] = []
         for index, row in enumerate(ordered):
@@ -274,15 +286,13 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
                     matched.append(index)
             except Exception:
                 continue
-        if len(matched) >= MIN_SINGLE_SAMPLES:
-            matches[spec.key] = matched
-
-    singles: list[dict[str, Any]] = []
-    for feature_key, indices in matches.items():
+        if len(matched) < MIN_SINGLE_SAMPLES:
+            continue
+        features_screened += 1
         for horizon in HORIZONS:
             tested = _test_indices(
-                [feature_key],
-                indices,
+                [spec.key],
+                matched,
                 returns_by_horizon,
                 years,
                 year_baselines,
@@ -292,6 +302,8 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
             if tested:
                 tested["kind"] = "single"
                 singles.append(tested)
+        # matched deliberately falls out of scope here. Do not accumulate all
+        # feature index vectors; pair candidates are recomputed after FDR ranking.
     _bh_adjust(singles)
 
     ranked_single_features: list[str] = []
@@ -309,8 +321,24 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if len(ranked_single_features) >= TOP_PAIR_FEATURES:
             break
 
+    # Recompute only the selected pair-feature masks. At most twelve sets are
+    # retained rather than every screened feature's full index list.
+    match_sets: dict[str, set[int]] = {}
+    for feature_key in ranked_single_features:
+        spec = spec_by_key.get(feature_key)
+        if spec is None:
+            continue
+        indices: set[int] = set()
+        for index, row in enumerate(ordered):
+            try:
+                if spec.matcher(row):
+                    indices.add(index)
+            except Exception:
+                continue
+        if len(indices) >= MIN_SINGLE_SAMPLES:
+            match_sets[feature_key] = indices
+
     pairs: list[dict[str, Any]] = []
-    match_sets = {key: set(indices) for key, indices in matches.items() if key in ranked_single_features}
     for left_index, left in enumerate(ranked_single_features):
         left_set = match_sets.get(left, set())
         for right in ranked_single_features[left_index + 1 :]:
@@ -364,7 +392,7 @@ def mine_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "version": EVIDENCE_MINER_VERSION,
         "development_rows": len(ordered),
-        "features_screened": len(matches),
+        "features_screened": features_screened,
         "single_tests": len(singles),
         "pair_tests": len(pairs),
         "signals": len(signals),
