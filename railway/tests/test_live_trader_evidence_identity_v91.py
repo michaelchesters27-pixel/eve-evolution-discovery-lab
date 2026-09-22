@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.services import live_trader_evidence_identity as identity
+from app.services import live_trader_evidence_quality_v92 as quality
 from app.services import live_trader_policy_lab_v85 as v85
 from app.services import live_trader_zone_retrace_current_policy_academy_v71 as v71
 
@@ -146,3 +147,43 @@ def test_current_policy_opportunity_key_is_cohort_specific() -> None:
     old = v71._opportunity_key("XAU/USD", observed, "BUY", "coh_old")
     new = v71._opportunity_key("XAU/USD", observed, "BUY", "coh_new")
     assert old != new
+
+
+
+def test_published_quality_v2_starts_new_cohort_without_relabelling_execution_scorer() -> None:
+    current = identity.published_campaign_identity(
+        settings(),
+        learning_version="eve-live-published-paper-campaign-v1",
+    )
+    legacy_protocol = {
+        "version": "eve-live-published-paper-evidence-quality-v1",
+        "parent_version": quality.PROTOCOL_VERSION,
+        "purpose": "Assess one frozen published paper policy without treating a raw trade count as proof.",
+        "primary_metric": "cost_verified_net_realised_r_per_triggered_trade",
+        "independence_unit": "UTC calendar day cluster",
+        "minimum_triggered": quality.PUBLISHED_MIN_TRIGGERED,
+        "minimum_independent_days": quality.PUBLISHED_MIN_INDEPENDENT_DAYS,
+        "minimum_independent_weeks": quality.PUBLISHED_MIN_INDEPENDENT_WEEKS,
+        "maximum_single_day_trigger_share": quality.PUBLISHED_MAX_SINGLE_DAY_TRIGGER_SHARE,
+        "uncertainty_method": "deterministic UTC-day cluster bootstrap",
+        "bootstrap_draws": quality.BOOTSTRAP_DRAWS,
+        "one_sided_alpha": quality.FAMILY_ALPHA,
+        "required_lower_bound": 0.0,
+        "sample_count_alone_never_proves_edge": True,
+        "automatic_money_approval": False,
+    }
+    legacy = identity.build_identity(
+        policy_kind="production_manual_paper",
+        policy_key=identity.PRODUCTION_POLICY_CONTRACT_VERSION,
+        policy_definition=identity.production_policy_definition(),
+        settings=settings(),
+        learning_version="eve-live-published-paper-campaign-v1",
+        evaluation_stage="published_paper_campaign",
+        scorer_definition=identity.published_campaign_scorer_definition(settings()),
+        evaluation_protocol=legacy_protocol,
+    )
+
+    assert current["evaluation_protocol_version"] == quality.PUBLISHED_PAPER_PROTOCOL_VERSION
+    assert current["policy_id"] == legacy["policy_id"]
+    assert current["scorer_id"] == legacy["scorer_id"]
+    assert current["cohort_id"] != legacy["cohort_id"]
