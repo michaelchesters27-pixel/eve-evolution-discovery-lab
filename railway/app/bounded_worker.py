@@ -274,6 +274,16 @@ async def _stage(
     repo: DiscoveryRepository,
 ) -> dict[str, Any]:
     started_at = _now()
+    durable_started_at = started_at
+    raw_durable_started = str(os.environ.get("EVE_BOUNDED_STAGE_ATTEMPT_STARTED_AT") or "").strip()
+    if raw_durable_started:
+        try:
+            parsed = datetime.fromisoformat(raw_durable_started.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            durable_started_at = parsed.astimezone(timezone.utc)
+        except ValueError:
+            durable_started_at = started_at
     started_perf = time.perf_counter()
     before = _usage()
     try:
@@ -316,15 +326,14 @@ async def _stage(
 
     finished_at = _now()
     after = _usage()
-    elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-    stage_run_id = await _write_stage_telemetry(
+    elapsed_ms = max(\n        (time.perf_counter() - started_perf) * 1000.0,\n        max(0.0, (finished_at - durable_started_at).total_seconds() * 1000.0),\n    )\n    stage_run_id = await _write_stage_telemetry(
         repo,
         cycle_id=cycle_id,
         stage_name=name,
         ordinal=ordinal,
         outcome=outcome,
         operation_ok=operation_ok,
-        started_at=started_at,
+        started_at=durable_started_at,
         finished_at=finished_at,
         elapsed_ms=elapsed_ms,
         cpu_user_ms=(after.ru_utime - before.ru_utime) * 1000.0,
