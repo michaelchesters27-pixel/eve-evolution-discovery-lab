@@ -28,6 +28,9 @@ class FakeClient:
                 return [dict(row)]
         return []
 
+    async def rpc(self, _name: str, _payload: dict):
+        return {"registered": True}
+
 
 class FakeRepo:
     def __init__(self) -> None:
