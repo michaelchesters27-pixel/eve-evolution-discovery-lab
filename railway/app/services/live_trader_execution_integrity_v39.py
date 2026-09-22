@@ -496,7 +496,11 @@ class HistoricalExecutionRegrader:
                 "execution_schema": EXECUTION_SCHEMA,
                 "regraded_at": core.utc_now().isoformat(),
                 "pre_entry_invalidation_enforced": True,
-                "same_bar_ambiguity_policy": "adverse_entry_then_stop",
+                "same_bar_ambiguity_policy": "adverse_entry_then_stop_and_no_prefill_target_credit",
+                "limit_entry_target_ordering": (
+                    "Same-M1 target credit is allowed only when exposure existed at the open or the candle close proves "
+                    "a post-fill traversal through target; otherwise exposure carries forward."
+                ),
             }
             await self.repo.client.patch(
                 "live_trader_historical_learning",
