@@ -161,6 +161,7 @@ def _current_policy_contract(payload: dict[str, Any]) -> dict[str, Any]:
     caught_up = bool(state.get("caught_up"))
     verified = bool(caught_up and opportunities > 0 and coverage >= MIN_SCORABLE_COVERAGE)
     promoted = bool(state.get("promoted")) and verified
+    screening_candidate = bool(dict(state.get("policy") or {}).get("historical_screening_candidate"))
     evidence = _live_policy_evidence(state)
 
     specialist.update(
@@ -175,27 +176,28 @@ def _current_policy_contract(payload: dict[str, Any]) -> dict[str, Any]:
             "promoted_execution": "market_after_zone_confirmation" if promoted else None,
             "promotion_blocked": not promoted,
             "promotion_block_reason": (
-                None
-                if promoted
-                else "Current-policy archive scan is complete, but the exact live entry has not met the promotion thresholds."
+                "Historical proxy evidence is screening-only. A fresh prospective forward confirmation cohort is required before any promotion claim."
                 if verified
                 else "Current-policy academy is still scanning the M1-covered archive or has not yet reached 95% scorable opportunity coverage."
             ),
             "phase": (
-                "LIVE ENTRY POLICY PROMOTED"
-                if promoted
+                "CURRENT-POLICY HISTORICAL SCREENING CANDIDATE"
+                if verified and screening_candidate
                 else "CURRENT-POLICY ACADEMY VERIFIED"
                 if verified
                 else "CURRENT-POLICY ACADEMY SCANNING"
             ),
             "status": (
-                "mature_candidate"
-                if promoted
+                "historical_screening_candidate_forward_confirmation_required"
+                if verified and screening_candidate
                 else "current_policy_verified_no_promotion"
                 if verified
                 else "current_policy_academy_scanning"
             ),
-            "live_entry_execution_edge_supported": promoted,
+            "live_entry_execution_edge_supported": False,
+            "historical_screening_candidate": screening_candidate,
+            "fresh_forward_confirmation_required": True,
+            "historical_proxy_may_auto_promote": False,
             "live_policy_historical_news_gate_replayed": False,
             "live_policy_historical_news_caveat": (
                 "The six-year archive does not contain a complete red-folder calendar. The production news gate remains an additional fail-closed filter and is not credited as historical edge."
