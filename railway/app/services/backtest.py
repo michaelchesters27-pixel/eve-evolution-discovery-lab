@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Literal
 
+from app.services import compact_research_rows_v96 as compact_rows
+
 ResearchStage = Literal["selection", "final"]
 RESEARCH_INTEGRITY_VERSION = "eve-research-integrity-v2.0"
 
@@ -61,9 +63,7 @@ def compression_band(value: Any) -> str:
 
 
 def outcome_for(row: dict[str, Any], horizon: int) -> dict[str, Any] | None:
-    outcomes = row.get("outcomes") or {}
-    result = outcomes.get(str(horizon)) if isinstance(outcomes, dict) else None
-    return dict(result) if isinstance(result, dict) else None
+    return compact_rows.research_outcome(row, horizon)
 
 
 def schedule_matches(row: dict[str, Any], schedule: dict[str, Any]) -> bool:
@@ -615,7 +615,7 @@ def dataset_fingerprint(rows: list[dict[str, Any]]) -> dict[str, Any]:
             row.get("direction"), row.get("body_price"), row.get("upper_wick"), row.get("lower_wick"),
             row.get("atr_14"), row.get("compression_ratio"), row.get("return_1_pct"), row.get("return_3_pct"),
             row.get("trend_12_atr"), row.get("trend_48_atr"), row.get("regime"), row.get("alignment_score"),
-            row.get("outcomes"), row.get("outcome_complete"), row.get("feature_version"),
+            compact_rows.fingerprint_outcomes(row), row.get("outcome_complete"), row.get("feature_version"),
         ]
         content.update(json.dumps(research_record, separators=(",", ":"), sort_keys=True, default=str).encode())
         content.update(b"\n")
