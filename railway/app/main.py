@@ -360,6 +360,7 @@ async def _run_bounded_stage(
             "EVE_BOUNDED_STAGE": stage_name,
             "EVE_BOUNDED_STAGE_ORDINAL": str(ordinal),
             "EVE_BOUNDED_STAGE_RUN_ID": str(stage_run_id),
+            "EVE_BOUNDED_STAGE_ATTEMPT_STARTED_AT": started_at.isoformat(),
             "EVE_BOUNDED_MEMORY_MB": str(settings.bounded_research_memory_mb),
         }
     )
