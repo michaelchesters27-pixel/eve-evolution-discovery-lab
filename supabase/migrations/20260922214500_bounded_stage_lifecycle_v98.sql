@@ -18,3 +18,7 @@ create index if not exists idx_bounded_research_stage_runs_cycle_id_desc
 
 comment on column public.bounded_research_stage_runs.heartbeat_at is
 'Fix 10: supervisor checkpoint time for an in-flight bounded stage attempt.';
+
+
+revoke update on table public.bounded_research_stage_runs from public, anon, authenticated;
+grant update on table public.bounded_research_stage_runs to service_role;
