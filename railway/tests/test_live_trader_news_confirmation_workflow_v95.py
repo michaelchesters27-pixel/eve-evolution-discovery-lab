@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -205,7 +205,7 @@ def _many_events(count: int) -> list[dict]:
             "event_id": f"evt-{index:04d}",
             "currency": "USD",
             "event_name": f"Event {index:04d}",
-            "scheduled_at": (start.replace(hour=(index % 24)) + __import__("datetime").timedelta(days=(index % 7))).isoformat(),
+            "scheduled_at": (start + timedelta(days=(index % 7), minutes=index)).isoformat(),
             "event_class": "high",
             "pre_minutes": 30,
             "post_minutes": 15,
@@ -224,7 +224,7 @@ def test_server_side_inventory_is_complete_beyond_old_200_row_cap() -> None:
     assert inventory["inventory_source"] == "server_side_sql_aggregation"
     assert inventory["event_count"] == 250
     assert len(inventory["event_ids"]) == 250
-    assert inventory["event_ids"][-1] == "evt-0237" or len(set(inventory["event_ids"])) == 250
+    assert len(set(inventory["event_ids"])) == 250
 
 
 def test_confirmation_allows_complete_inventory_above_200(monkeypatch) -> None:
