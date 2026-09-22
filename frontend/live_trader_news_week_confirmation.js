@@ -1,5 +1,6 @@
 (() => {
   let busy = false;
+  let latestWeekNews = {};
 
   function safe(value) {
     return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
@@ -24,6 +25,7 @@
       .lt-news-week{margin-top:10px;border:1px solid #6f472e;background:#100c08;border-radius:10px;padding:10px 12px;display:flex;justify-content:space-between;gap:12px;align-items:center}
       .lt-news-week.confirmed{border-color:#38664c;background:#07120c}.lt-news-week b,.lt-news-week span{display:block}.lt-news-week b{font-size:10px}.lt-news-week span{font-size:8px;color:var(--muted);margin-top:3px;line-height:1.45}
       .lt-news-confirm{border:1px solid #6f472e;background:#20130b;color:#f2bd8d;border-radius:8px;padding:8px 11px;font-size:9px;font-weight:800;cursor:pointer;white-space:nowrap}.lt-news-week.confirmed .lt-news-confirm{border-color:#38664c;background:#0a1a10;color:var(--green)}.lt-news-confirm:disabled{opacity:.45;cursor:wait}
+      .lt-news-attest{display:flex;gap:7px;align-items:flex-start;margin-top:7px;font-size:8px;color:#c8d8cf;line-height:1.45;max-width:760px}.lt-news-attest input{margin-top:2px}
       @media(max-width:760px){.lt-news-week{align-items:flex-start;flex-direction:column}.lt-news-confirm{width:100%}}
     `;
     document.head.appendChild(style);
@@ -38,23 +40,27 @@
     const baseRender = window.eveLiveNewsRender;
 
     function renderWeek(news) {
-      const confirmed = news?.week_confirmed === true;
-      const start = prettyDate(news?.week_start);
-      const end = prettyDate(news?.week_end);
+      latestWeekNews = news || {};
+      const confirmed = latestWeekNews?.week_confirmed === true;
+      const state = String(latestWeekNews?.week_confirmation_state || 'missing');
+      const stale = state === 'calendar_changed_since_confirmation';
+      const start = prettyDate(latestWeekNews?.week_start);
+      const end = prettyDate(latestWeekNews?.week_end);
+      const count = Number(latestWeekNews?.current_week_event_count ?? 0);
       row.className = `lt-news-week ${confirmed ? 'confirmed' : ''}`;
       row.innerHTML = confirmed
-        ? `<div><b>WEEKLY FOREX FACTORY CHECK CONFIRMED</b><span>${safe(start)} → ${safe(end)} · Timed USD RED and relevant RED All/Tentative macro events checked. EVE's weekly news guard is armed.</span></div><button class="lt-news-confirm" type="button" disabled>CONFIRMED</button>`
-        : `<div><b>WEEK NOT CONFIRMED — CLOSED-SAFE</b><span>${safe(start)} → ${safe(end)} · Add every timed USD RED event plus any relevant RED All/Tentative macro event such as Jackson Hole, then confirm the weekly check. EVE will not publish a new gold trade until you confirm.</span></div><button class="lt-news-confirm" id="ltNewsConfirmButton" type="button">Confirm week checked</button>`;
+        ? `<div><b>WEEKLY FOREX FACTORY CHECK CONFIRMED</b><span>${safe(start)} → ${safe(end)} · Exact inventory confirmed: ${count} enabled event${count === 1 ? '' : 's'}. If that inventory changes, EVE automatically blocks again until it is rechecked.</span></div><button class="lt-news-confirm" type="button" disabled>CONFIRMED</button>`
+        : `<div><b>${stale ? 'CALENDAR CHANGED — RECONFIRM REQUIRED' : 'WEEK NOT CONFIRMED — CLOSED-SAFE'}</b><span>${safe(start)} → ${safe(end)} · EVE currently has ${count} enabled event${count === 1 ? '' : 's'} for this week. Check the full Sunday–Saturday Forex Factory calendar, enter every timed USD RED event plus relevant RED All/Tentative macro events, then explicitly attest below.</span><label class="lt-news-attest"><input type="checkbox" id="ltNewsAttest">I have checked the full Forex Factory week and entered every relevant event. I confirm EVE's current count of ${count} event${count === 1 ? '' : 's'} is correct.</label></div><button class="lt-news-confirm" id="ltNewsConfirmButton" type="button" disabled>Confirm checked inventory</button>`;
 
       if (!confirmed) {
         const pill = document.getElementById('ltNewsStatus');
         if (pill) {
-          pill.textContent = 'WEEK NOT CONFIRMED';
+          pill.textContent = stale ? 'CALENDAR CHANGED' : 'WEEK NOT CONFIRMED';
           pill.className = 'lt-news-pill blackout';
         }
         const nextBox = document.getElementById('ltNewsNext');
         if (nextBox) {
-          nextBox.innerHTML = `<div class="lt-news-next blackout"><div><span>WEEKLY SAFETY CHECK REQUIRED</span><strong>Forex Factory red-folder calendar not confirmed</strong><small>Enter all timed USD RED events and relevant RED All/Tentative macro events for this week, then press Confirm week checked. Existing triggered campaigns remain locked, but EVE will not publish a new setup until this is complete.</small></div><div class="lt-news-countdown"><b>BLOCKED</b><small>until confirmed</small></div></div>`;
+          nextBox.innerHTML = `<div class="lt-news-next blackout"><div><span>WEEKLY SAFETY CHECK REQUIRED</span><strong>${stale ? 'News inventory changed after confirmation' : 'Forex Factory red-folder calendar not confirmed'}</strong><small>EVE remains closed-safe. A button press alone cannot confirm the week: you must check the source, enter the full event inventory, tick the attestation, and confirm the exact count.</small></div><div class="lt-news-countdown"><b>BLOCKED</b><small>until explicitly checked</small></div></div>`;
         }
       }
     }
@@ -65,18 +71,34 @@
       renderWeek(news);
     };
 
+    row.addEventListener('change', event => {
+      const checkbox = event.target.closest('#ltNewsAttest');
+      if (!checkbox) return;
+      const button = document.getElementById('ltNewsConfirmButton');
+      if (button) button.disabled = !checkbox.checked || busy;
+    });
+
     row.addEventListener('click', async event => {
       const button = event.target.closest('#ltNewsConfirmButton');
       if (!button || busy) return;
+      const checkbox = document.getElementById('ltNewsAttest');
+      if (!checkbox?.checked) return;
+      const expectedCount = Number(latestWeekNews?.current_week_event_count);
+      if (!Number.isInteger(expectedCount) || expectedCount < 0) {
+        const error = document.getElementById('ltNewsError');
+        if (error) error.textContent = 'Could not confirm week: EVE does not have a valid current-week event count.';
+        return;
+      }
       busy = true;
       button.disabled = true;
       const error = document.getElementById('ltNewsError');
       if (error) error.textContent = '';
       try {
+        const message = `__EVE_NEWS_CONFIRM_WEEK__|${expectedCount}|I_HAVE_CHECKED_FOREX_FACTORY|Forex Factory weekly calendar manually checked in EVE`;
         const result = await api('/live-trader/chat', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({message:'__EVE_NEWS_CONFIRM_WEEK__'}),
+          body:JSON.stringify({message}),
         });
         if (!result?.ok) throw new Error(result?.answer || 'EVE could not confirm the weekly check.');
         renderWeek(result.news_risk || {});
@@ -87,7 +109,7 @@
       } finally {
         busy = false;
       }
-    });
+    });;
   }
 
   function loadTradeOutcomes() {
