@@ -167,5 +167,7 @@ def test_policy_lab_legacy_unverified_rows_cannot_qualify() -> None:
         for index in range(40)
     ]
     stats = v85._policy_stats(rows)
-    assert stats["leader"] is None
     assert stats["legacy_unverified_resolved"] == 40
+    assert len(stats["leaderboard"]) == len(v85.POLICY_KEYS)
+    assert all(item["triggered"] == 0 for item in stats["leaderboard"])
+    assert all(item["forward_candidate"] is False for item in stats["leaderboard"])
