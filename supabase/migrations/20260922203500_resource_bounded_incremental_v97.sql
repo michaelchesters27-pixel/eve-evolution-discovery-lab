@@ -32,7 +32,23 @@ stable
 security invoker
 set search_path = public
 as $$
-with ranked as (
+with source_window as (
+  -- Preserve the exact v68 effective universe: the legacy worker examined the
+  -- newest HISTORICAL_PAGES(5) * HISTORICAL_PAGE_SIZE(1000) complete rows first,
+  -- then applied eligibility and newest-per-independence-key deduplication.
+  select
+    h.historical_episode_key,
+    h.observed_at,
+    h.independence_key,
+    h.market_state,
+    h.path_complete
+  from public.live_trader_historical_learning h
+  where h.symbol = p_symbol
+    and h.path_complete is true
+  order by h.observed_at desc
+  limit 5000
+),
+ranked as (
   select
     h.historical_episode_key,
     h.observed_at,
@@ -43,10 +59,8 @@ with ranked as (
       partition by h.independence_key
       order by h.observed_at desc, h.historical_episode_key desc
     ) as rn
-  from public.live_trader_historical_learning h
-  where h.symbol = p_symbol
-    and h.path_complete is true
-    and lower(coalesce(h.market_state #>> '{setup_family_descriptor,bias}', '')) in ('bullish','bearish')
+  from source_window h
+  where lower(coalesce(h.market_state #>> '{setup_family_descriptor,bias}', '')) in ('bullish','bearish')
     and lower(coalesce(h.market_state #>> '{setup_family_descriptor,location_relation}', '')) in ('preferred','at_zone')
     and lower(coalesce(h.market_state #>> '{setup_family_descriptor,zone_quality}', '')) in ('good','high')
     and lower(coalesce(h.market_state #>> '{setup_family_descriptor,execution_class}', '')) = 'pullback'
