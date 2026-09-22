@@ -115,6 +115,7 @@ def build_identity(
     settings: Any,
     learning_version: str,
     evaluation_stage: str,
+    scorer_definition: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     policy_payload = {
         "identity_version": IDENTITY_VERSION,
@@ -125,7 +126,7 @@ def build_identity(
     policy_hash = _hash(policy_payload)
     policy_id = f"pol_{policy_hash[:24]}"
 
-    scorer_definition = current_scorer_definition(settings)
+    scorer_definition = dict(scorer_definition or current_scorer_definition(settings))
     scorer_payload = {
         "identity_version": IDENTITY_VERSION,
         "definition": scorer_definition,
@@ -211,6 +212,45 @@ async def ensure_registered(repo: Any, identity: dict[str, Any]) -> None:
             "p_learning_version": identity["learning_version"],
             "p_evaluation_stage": identity["evaluation_stage"],
         },
+    )
+
+
+def published_campaign_scorer_definition(settings: Any) -> dict[str, Any]:
+    from app.services import live_trader_audit_hardening_v26 as hardening
+    from app.services import live_trader_execution_cost_model as cost_model
+    from app.services import live_trader_trade_lock_v28 as lock
+
+    return {
+        "scorer_contract_version": "eve-live-published-campaign-scorer-v1",
+        "campaign_version": lock.CAMPAIGN_VERSION,
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+        "path_source": "fresh_live_websocket_price_updates",
+        "pending_trigger_rule": "entry threshold observed after durable publication and manual-delay activation",
+        "active_exit_rule": "first sampled live price observed at or beyond published stop or target",
+        "intraminute_tick_complete": False,
+        "cost_model_version": cost_model.COST_MODEL_VERSION,
+        "cost_profile": cost_model.profile_from_settings(settings),
+        "gross_r_preserved": True,
+        "net_r_recorded": True,
+        "actual_mt5_fill": False,
+        "manual_fill_ledger_separate": True,
+    }
+
+
+def published_campaign_identity(
+    settings: Any,
+    *,
+    learning_version: str,
+    evaluation_stage: str = "published_paper_campaign",
+) -> dict[str, Any]:
+    return build_identity(
+        policy_kind="production_manual_paper",
+        policy_key=PRODUCTION_POLICY_CONTRACT_VERSION,
+        policy_definition=production_policy_definition(),
+        settings=settings,
+        learning_version=learning_version,
+        evaluation_stage=evaluation_stage,
+        scorer_definition=published_campaign_scorer_definition(settings),
     )
 
 
