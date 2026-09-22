@@ -79,3 +79,4 @@ from app.services import live_trader_zone_retrace_historical_proxy_integrity_v75
 from app.services import live_trader_forward_shadow_learning_v83 as _live_trader_forward_shadow_learning_v83  # noqa: E402,F401
 from app.services import live_trader_forward_shadow_compat_v84 as _live_trader_forward_shadow_compat_v84  # noqa: E402,F401
 from app.services import live_trader_policy_lab_v85 as _live_trader_policy_lab_v85  # noqa: E402,F401
+from app.services import live_trader_execution_timing_v89 as _live_trader_execution_timing_v89  # noqa: E402,F401
