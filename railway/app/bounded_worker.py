@@ -11,6 +11,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from app.services.resource_bounded_v97 import RESOURCE_VERSION
+
 
 def _apply_memory_ceiling_from_env() -> int | None:
     raw = str(os.environ.get("EVE_BOUNDED_MEMORY_MB") or "").strip()
@@ -25,10 +27,13 @@ def _apply_memory_ceiling_from_env() -> int | None:
         limit_bytes = limit_mb * 1024 * 1024
         try:
             resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
-        except (ValueError, OSError):
-            # Production is Linux; if a local platform cannot apply RLIMIT_AS,
-            # telemetry still exposes the lack of enforcement.
-            return None
+        except (ValueError, OSError) as exc:
+            # A configured production ceiling is a safety contract, not advisory.
+            # Never run a heavy stage unbounded because the OS refused RLIMIT_AS.
+            raise RuntimeError(f"could_not_enforce_bounded_memory_ceiling:{exc}") from exc
+    else:
+        # Windows development cannot enforce RLIMIT_AS. Production is Linux.
+        return None
     return limit_mb
 
 
@@ -50,7 +55,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEMETRY_VERSION = "eve-bounded-stage-telemetry-v1"
-RESOURCE_VERSION = "eve-resource-bounded-workers-v96"
 
 STAGES: tuple[tuple[str, int], ...] = (
     ("fabric", 1),
@@ -182,7 +186,7 @@ async def _write_stage_telemetry(
     process_max_rss_mb: float,
     result_summary: Any,
     error: str | None,
-) -> None:
+) -> int | None:
     try:
         summary = result_summary if isinstance(result_summary, dict) else {"value": result_summary}
         summary = {
@@ -191,7 +195,7 @@ async def _write_stage_telemetry(
             "memory_ceiling_mb": MEMORY_CEILING_MB,
             "pid": os.getpid(),
         }
-        await repo.client.insert(
+        inserted = await repo.client.insert(
             "bounded_research_stage_runs",
             {
                 "cycle_id": cycle_id,
@@ -208,10 +212,14 @@ async def _write_stage_telemetry(
                 "result_summary": summary,
                 "error": error,
             },
-            return_rows=False,
+            return_rows=True,
         )
+        if inserted and isinstance(inserted[0], dict) and inserted[0].get("id") is not None:
+            return int(inserted[0]["id"])
+        return None
     except Exception:
         logger.exception("Could not persist bounded-worker stage telemetry for %s", stage_name)
+        return None
 
 
 async def _stage(
@@ -265,7 +273,7 @@ async def _stage(
     finished_at = _now()
     after = _usage()
     elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-    await _write_stage_telemetry(
+    stage_run_id = await _write_stage_telemetry(
         repo,
         cycle_id=cycle_id,
         stage_name=name,
@@ -294,6 +302,8 @@ async def _stage(
         "process_max_rss_mb": round(_max_rss_mb(after), 3),
         "memory_ceiling_mb": MEMORY_CEILING_MB,
         "resource_version": RESOURCE_VERSION,
+        "stage_run_id": stage_run_id,
+        "memory_ceiling_enforced": MEMORY_CEILING_MB is not None,
     }
     if error:
         payload["error"] = error
