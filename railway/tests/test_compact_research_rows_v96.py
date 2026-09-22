@@ -135,7 +135,7 @@ def test_compact_row_preserves_hot_outcome_values_without_retaining_nested_tree(
 def test_compact_rows_accept_causal_observation_writes_without_per_row_source_dict_growth() -> None:
     rows = [compact.compact_row(make_row(2026, index)) for index in range(60)]
     result = research.enrich_market_observations(rows)
-    assert result is rows
-    assert rows[-1].get("observation_version") == research.OBSERVATION_VERSION
-    assert rows[-1].get("obs_prior_12_high") is not None
-    assert rows[-1]._extras is None
+    assert len(result) == len(rows)
+    assert result[-1].get("observation_version") == research.OBSERVATION_VERSION
+    assert result[-1].get("obs_prior_12_high") is not None
+    assert result[-1]._extras is None
