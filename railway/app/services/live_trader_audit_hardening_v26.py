@@ -8,6 +8,7 @@ from typing import Any
 import websockets
 
 from app.services import live_trader as core
+from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_learning_governor_v25 as governor
 from app.services import live_trader_learning_v2 as v2
 from app.services import live_trader_learning_v22 as v22
@@ -15,8 +16,8 @@ from app.services.repository import SourceRepository
 
 ENGINE_VERSION = "eve-live-learning-engine-v2.6"
 LEARNING_NAMESPACE = "eve-live-learning-family-v1"
-OUTCOME_SCHEMA = "causal-m1-path-v2-activation"
-TIMING_CONTRACT_VERSION = "eve-live-execution-timing-v1"
+OUTCOME_SCHEMA = "causal-m1-path-v3-activation-cost"
+TIMING_CONTRACT_VERSION = "eve-live-execution-timing-v2-cost-delay"
 OBSERVATION_POLICY = (
     "Market observation time identifies the data used by the decision, but executable outcome evidence starts only "
     "after the decision has been durably persisted. Receipt, decision, publication-request, publication-confirmation "
@@ -67,6 +68,8 @@ def _execution_timing_seed(
         "execution_start_at": None,
         "pre_activation_price_events_eligible": False,
         "partial_activation_minute_eligible": False,
+        "manual_delay_seconds": int(getattr(self.settings, "live_trader_manual_delay_seconds", 15)),
+        "manual_execution_eligible_at": None,
     }
 
 
@@ -90,6 +93,12 @@ async def _insert_timed_forward_opinion(
     seeded_state["execution_timing"] = dict(timing)
 
     row_payload = dict(payload)
+    trade_idea = dict(row_payload.get("trade_idea") or {})
+    execution_cost_profile = cost_model.profile_from_settings(self.settings)
+    if str(trade_idea.get("order_type") or "none").lower() != "none":
+        trade_idea["execution_cost_model"] = execution_cost_profile
+    row_payload["trade_idea"] = trade_idea
+    seeded_state["execution_cost_model"] = execution_cost_profile
     row_payload.update(
         {
             "market_observed_at": observed.isoformat(),
@@ -113,12 +122,15 @@ async def _insert_timed_forward_opinion(
         return row, timing
 
     confirmed = core.utc_now()
-    execution_start = _first_full_m1_at_or_after(confirmed)
+    execution_cost_profile = cost_model.profile_from_settings(self.settings)
+    activation, execution_start = cost_model.manual_execution_start(confirmed, execution_cost_profile)
     timing.update(
         {
             "publication_confirmed_at": confirmed.isoformat(),
-            "activation_at": confirmed.isoformat(),
+            "activation_at": activation.isoformat(),
             "execution_start_at": execution_start.isoformat(),
+            "manual_delay_seconds": int(execution_cost_profile.get("manual_delay_seconds") or 0),
+            "manual_execution_eligible_at": activation.isoformat(),
         }
     )
     final_state = dict(seeded_state)
@@ -127,7 +139,7 @@ async def _insert_timed_forward_opinion(
         "live_trader_opinions",
         {
             "publication_confirmed_at": confirmed.isoformat(),
-            "activation_at": confirmed.isoformat(),
+            "activation_at": activation.isoformat(),
             "execution_start_at": execution_start.isoformat(),
             "market_state": final_state,
         },
@@ -136,7 +148,7 @@ async def _insert_timed_forward_opinion(
     row.update(
         {
             "publication_confirmed_at": confirmed.isoformat(),
-            "activation_at": confirmed.isoformat(),
+            "activation_at": activation.isoformat(),
             "execution_start_at": execution_start.isoformat(),
             "market_state": final_state,
         }
@@ -451,6 +463,7 @@ async def _resolve_v26(self: core.LiveTrader, _live_price: float) -> None:
                 "gap_count": path.get("gap_count"),
                 "endpoint_lag_seconds": endpoint_lag,
                 "actionable_path_complete": path_complete,
+                "execution_costs": trade_result.get("execution_costs"),
                 **timing,
             }
             await self.repo.client.patch(
@@ -465,6 +478,12 @@ async def _resolve_v26(self: core.LiveTrader, _live_price: float) -> None:
                     "entry_triggered": trade_result.get("entry_triggered"),
                     "trade_outcome": trade_result.get("trade_outcome"),
                     "realised_r": trade_result.get("realised_r"),
+                    "gross_realised_r": trade_result.get("gross_realised_r"),
+                    "estimated_cost_r": trade_result.get("estimated_cost_r"),
+                    "net_realised_r": trade_result.get("net_realised_r"),
+                    "net_learning_success": trade_result.get("net_learning_success"),
+                    "cost_model_version": trade_result.get("cost_model_version"),
+                    "execution_costs": trade_result.get("execution_costs"),
                     "learning_success": learning_success,
                     "market_state": market_state,
                 },
@@ -609,6 +628,9 @@ def _runtime_status_v26(self: core.LiveTrader) -> dict[str, Any]:
             "execution_timing_contract_version": TIMING_CONTRACT_VERSION,
             "pre_publication_price_credit_allowed": False,
             "partial_activation_minute_credit_allowed": False,
+            "manual_execution_delay_seconds": int(getattr(self.settings, "live_trader_manual_delay_seconds", 15)),
+            "execution_cost_model_version": cost_model.COST_MODEL_VERSION,
+            "gross_and_net_r_separated": True,
             "socket_staleness_uses_feed_policy": True,
         }
     )

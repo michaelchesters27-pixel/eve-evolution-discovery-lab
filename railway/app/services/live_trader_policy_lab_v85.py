@@ -8,6 +8,7 @@ from typing import Any
 from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_clear_bias_gate_v45 as clear_gate
+from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_forward_shadow_learning_v83 as v83
 from app.services import live_trader_historical_runtime_v30 as historical_runtime
 from app.services import live_trader_learning_v2 as v2
@@ -438,6 +439,7 @@ async def _resolve_policy_outcomes(self: core.LiveTrader) -> dict[str, Any]:
                 "initial_gap_seconds": path.get("initial_gap_seconds"),
                 "gap_count": path.get("gap_count"),
                 "endpoint_lag_seconds": endpoint_lag,
+                "execution_costs": result.get("execution_costs"),
                 **timing,
             }
             await self.repo.client.patch(
@@ -449,6 +451,12 @@ async def _resolve_policy_outcomes(self: core.LiveTrader) -> dict[str, Any]:
                     "entry_triggered": result.get("entry_triggered"),
                     "trade_outcome": result.get("trade_outcome"),
                     "realised_r": result.get("realised_r"),
+                    "gross_realised_r": result.get("gross_realised_r"),
+                    "estimated_cost_r": result.get("estimated_cost_r"),
+                    "net_realised_r": result.get("net_realised_r"),
+                    "net_learning_success": result.get("net_learning_success"),
+                    "cost_model_version": result.get("cost_model_version"),
+                    "execution_costs": result.get("execution_costs"),
                     "learning_success": result.get("learning_success"),
                     "market_state": market_state,
                 },
@@ -481,6 +489,7 @@ def _policy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     verified_rows = [
         row for row in rows
         if str(row.get("timing_contract_version") or "") == hardening.TIMING_CONTRACT_VERSION
+        and str(row.get("cost_model_version") or "") == cost_model.COST_MODEL_VERSION
     ]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in verified_rows:
@@ -494,13 +503,19 @@ def _policy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         ordered = sorted(items, key=lambda row: str(row.get("observed_at") or ""))
         triggered = [
             row for row in ordered
-            if row.get("entry_triggered") is True and row.get("realised_r") is not None
+            if row.get("entry_triggered") is True and row.get("net_realised_r") is not None
         ]
-        values = [_num(row.get("realised_r")) for row in triggered]
-        wins = sum(1 for value in values if value > 0)
-        losses = sum(1 for value in values if value < 0)
-        total_r = sum(values)
-        expectancy = total_r / len(values) if values else None
+        net_values = [_num(row.get("net_realised_r")) for row in triggered]
+        gross_values = [
+            _num(row.get("gross_realised_r"), _num(row.get("realised_r")))
+            for row in triggered
+        ]
+        wins = sum(1 for value in net_values if value > 0)
+        losses = sum(1 for value in net_values if value < 0)
+        total_net_r = sum(net_values)
+        total_gross_r = sum(gross_values)
+        expectancy_net = total_net_r / len(net_values) if net_values else None
+        expectancy_gross = total_gross_r / len(gross_values) if gross_values else None
         days = {
             str(row.get("observed_at") or "")[:10]
             for row in triggered
@@ -508,24 +523,34 @@ def _policy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         }
         candidate = bool(
             len(triggered) >= MIN_CANDIDATE_TRIGGERED
-            and expectancy is not None
-            and expectancy >= MIN_CANDIDATE_EXPECTANCY_R
+            and expectancy_net is not None
+            and expectancy_net >= MIN_CANDIDATE_EXPECTANCY_R
         )
         leaderboard.append(
             {
                 "policy_key": key,
                 "resolved": len(items),
                 "triggered": len(triggered),
+                "wins_net": wins,
+                "losses_net": losses,
                 "wins": wins,
                 "losses": losses,
-                "total_r": round(total_r, 3),
-                "expectancy_r": round(expectancy, 3) if expectancy is not None else None,
+                "total_gross_r": round(total_gross_r, 3),
+                "total_net_r": round(total_net_r, 3),
+                "total_r": round(total_net_r, 3),
+                "gross_expectancy_r": round(expectancy_gross, 3) if expectancy_gross is not None else None,
+                "net_expectancy_r": round(expectancy_net, 3) if expectancy_net is not None else None,
+                "expectancy_r": round(expectancy_net, 3) if expectancy_net is not None else None,
+                "win_rate_net": round(wins / len(triggered), 3) if triggered else None,
                 "win_rate": round(wins / len(triggered), 3) if triggered else None,
-                "max_drawdown_r": _max_drawdown(values),
+                "max_drawdown_net_r": _max_drawdown(net_values),
+                "max_drawdown_r": _max_drawdown(net_values),
                 "independent_days": len(days),
                 "forward_candidate": candidate,
                 "minimum_triggered": MIN_CANDIDATE_TRIGGERED,
+                "minimum_net_expectancy_r": MIN_CANDIDATE_EXPECTANCY_R,
                 "minimum_expectancy_r": MIN_CANDIDATE_EXPECTANCY_R,
+                "cost_model_version": cost_model.COST_MODEL_VERSION,
                 "publication_authority": False,
             }
         )
@@ -533,7 +558,7 @@ def _policy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     leaderboard.sort(
         key=lambda item: (
             bool(item.get("forward_candidate")),
-            _num(item.get("expectancy_r"), -999.0),
+            _num(item.get("net_expectancy_r"), -999.0),
             int(item.get("triggered") or 0),
         ),
         reverse=True,
@@ -542,6 +567,7 @@ def _policy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "version": VERSION,
         "learning_version": LEARNING_VERSION,
         "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+        "cost_model_version": cost_model.COST_MODEL_VERSION,
         "legacy_unverified_resolved": max(0, len(rows) - len(verified_rows)),
         "leader": leaderboard[0] if leaderboard else None,
         "leaderboard": leaderboard,
@@ -549,7 +575,8 @@ def _policy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "automatic_promotion": False,
         "purpose": (
             "Research multiple execution/gating policies in parallel using causal M1 outcomes. "
-            "A policy can become a forward candidate, but this lab never publishes or executes it."
+            "Candidate screening uses cost-stress adjusted net R; gross R is retained separately. "
+            "This lab never publishes or executes a candidate automatically."
         ),
     }
 
@@ -565,7 +592,7 @@ async def _policy_lab_summary(self: core.LiveTrader) -> dict[str, Any]:
         rows = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "observed_at,entry_triggered,realised_r,trade_outcome,trade_idea,timing_contract_version",
+                "select": "observed_at,entry_triggered,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,trade_outcome,trade_idea,timing_contract_version",
                 "learning_version": f"eq.{LEARNING_VERSION}",
                 "status": "eq.resolved",
                 "order": "observed_at.asc",
@@ -609,6 +636,7 @@ def _runtime_status_v85(self: core.LiveTrader) -> dict[str, Any]:
         {
             "policy_lab_version": VERSION,
             "policy_lab_learning_version": LEARNING_VERSION,
+            "policy_lab_cost_model_version": cost_model.COST_MODEL_VERSION,
             "policy_lab_parallel_forward_research": True,
             "policy_lab_automatic_promotion": False,
             "policy_lab_publication_authority": False,

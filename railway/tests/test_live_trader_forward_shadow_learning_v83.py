@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_forward_shadow_learning_v83 as v83
 
 
@@ -57,21 +58,21 @@ def test_shadow_candidates_are_research_only_and_valid() -> None:
 
 def test_trade_skill_exposes_bad_forward_record() -> None:
     reviews = [
-        {"triggered": True, "realised_r": -1.0, "outcome": "LOSS"}
+        {"triggered": True, "realised_r": -1.0, "net_realised_r": -1.1, "cost_model_version": cost_model.COST_MODEL_VERSION, "outcome": "LOSS"}
         for _ in range(7)
     ]
     skill = v83._trade_skill_from_reviews(reviews)
     assert skill["published_triggered"] == 7
     assert skill["wins"] == 0
     assert skill["losses"] == 7
-    assert skill["total_r"] == -7.0
+    assert skill["total_r"] == -7.7
     assert skill["score"] < 1.0
     assert skill["grade"] == "UNPROVEN"
 
 
 def test_trade_skill_requires_sample_before_proven() -> None:
     reviews = [
-        {"triggered": True, "realised_r": 0.5, "outcome": "WIN"}
+        {"triggered": True, "realised_r": 0.5, "net_realised_r": 0.4, "cost_model_version": cost_model.COST_MODEL_VERSION, "outcome": "WIN"}
         for _ in range(8)
     ]
     skill = v83._trade_skill_from_reviews(reviews)
@@ -81,7 +82,13 @@ def test_trade_skill_requires_sample_before_proven() -> None:
 
 def test_trade_skill_can_become_proven_with_forward_evidence() -> None:
     reviews = [
-        {"triggered": True, "realised_r": 1.0 if index % 2 == 0 else -1.0, "outcome": "DONE"}
+        {
+            "triggered": True,
+            "realised_r": 1.0 if index % 2 == 0 else -1.0,
+            "net_realised_r": 0.9 if index % 2 == 0 else -1.1,
+            "cost_model_version": cost_model.COST_MODEL_VERSION,
+            "outcome": "DONE",
+        }
         for index in range(40)
     ]
     # 50% win rate at 1:1 is not good enough to be called proven.
@@ -90,7 +97,13 @@ def test_trade_skill_can_become_proven_with_forward_evidence() -> None:
     assert skill["score"] < 7.5
 
     better = [
-        {"triggered": True, "realised_r": 1.5 if index % 3 != 0 else -1.0, "outcome": "DONE"}
+        {
+            "triggered": True,
+            "realised_r": 1.5 if index % 3 != 0 else -1.0,
+            "net_realised_r": 1.4 if index % 3 != 0 else -1.1,
+            "cost_model_version": cost_model.COST_MODEL_VERSION,
+            "outcome": "DONE",
+        }
         for index in range(45)
     ]
     better_skill = v83._trade_skill_from_reviews(better)

@@ -36,6 +36,11 @@ class FakeRepo:
 
 class FakeSettings:
     live_trader_learning_horizon_minutes = 60
+    live_trader_manual_delay_seconds = 15
+    live_trader_cost_spread_price = 0.30
+    live_trader_cost_entry_slippage_price = 0.10
+    live_trader_cost_exit_slippage_price = 0.10
+    live_trader_cost_commission_price_equivalent = 0.07
 
 
 def state(*, connected: bool = True) -> dict:
@@ -90,12 +95,14 @@ def test_market_time_and_executable_time_are_separate(monkeypatch) -> None:
     assert payload["market_received_at"] == "2026-08-21T12:43:05+00:00"
     assert payload["decision_at"] == "2026-08-21T12:43:07+00:00"
     assert payload["publication_confirmed_at"] == "2026-08-21T12:43:07+00:00"
-    assert payload["activation_at"] == "2026-08-21T12:43:07+00:00"
+    assert payload["activation_at"] == "2026-08-21T12:43:22+00:00"
     assert payload["execution_start_at"] == "2026-08-21T12:44:00+00:00"
     assert payload["timing_contract_version"] == hardening.TIMING_CONTRACT_VERSION
     timing = payload["market_state"]["execution_timing"]
     assert timing["pre_activation_price_events_eligible"] is False
     assert timing["partial_activation_minute_eligible"] is False
+    assert timing["manual_delay_seconds"] == 15
+    assert payload["trade_idea"]["execution_cost_model"]["version"] == "eve-live-execution-cost-model-v1"
 
 
 def test_stale_or_disconnected_feed_cannot_create_learning_sample(monkeypatch) -> None:

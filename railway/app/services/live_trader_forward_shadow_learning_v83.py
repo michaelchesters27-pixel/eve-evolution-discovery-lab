@@ -6,6 +6,7 @@ from typing import Any
 
 from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
+from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_learning_v2 as v2
 from app.services import live_trader_learning_v22 as v22
 from app.services import live_trader_london_session_gate_v46 as session_gate
@@ -376,6 +377,7 @@ async def _record_shadow_variants(self: core.LiveTrader, state: dict[str, Any]) 
                     "variant": variant,
                     "publication_authority": False,
                     "visible_trade_gate_unchanged": True,
+            "shadow_net_cost_model_version": cost_model.COST_MODEL_VERSION,
                     "market_observed_at": observed.isoformat(),
                     "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
                 },
@@ -509,6 +511,7 @@ async def _resolve_shadow_outcomes(self: core.LiveTrader) -> dict[str, Any]:
                 "initial_gap_seconds": path.get("initial_gap_seconds"),
                 "gap_count": path.get("gap_count"),
                 "endpoint_lag_seconds": endpoint_lag,
+                "execution_costs": result.get("execution_costs"),
                 **timing,
             }
             await self.repo.client.patch(
@@ -520,6 +523,12 @@ async def _resolve_shadow_outcomes(self: core.LiveTrader) -> dict[str, Any]:
                     "entry_triggered": result.get("entry_triggered"),
                     "trade_outcome": result.get("trade_outcome"),
                     "realised_r": result.get("realised_r"),
+                    "gross_realised_r": result.get("gross_realised_r"),
+                    "estimated_cost_r": result.get("estimated_cost_r"),
+                    "net_realised_r": result.get("net_realised_r"),
+                    "net_learning_success": result.get("net_learning_success"),
+                    "cost_model_version": result.get("cost_model_version"),
+                    "execution_costs": result.get("execution_costs"),
                     "learning_success": result.get("learning_success"),
                     "market_state": market_state,
                 },
@@ -538,12 +547,18 @@ async def _resolve_shadow_outcomes(self: core.LiveTrader) -> dict[str, Any]:
 
 
 def _trade_skill_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
-    triggered = [row for row in reviews if bool(row.get("triggered")) and row.get("realised_r") is not None]
-    n = len(triggered)
-    total_r = sum(_num(row.get("realised_r")) for row in triggered)
+    verified = [
+        row for row in reviews
+        if str(row.get("cost_model_version") or "") == cost_model.COST_MODEL_VERSION
+        and bool(row.get("triggered"))
+        and row.get("net_realised_r") is not None
+    ]
+    n = len(verified)
+    values = [_num(row.get("net_realised_r")) for row in verified]
+    total_r = sum(values)
     avg_r = total_r / n if n else 0.0
-    wins = sum(1 for row in triggered if _num(row.get("realised_r")) > 0)
-    losses = sum(1 for row in triggered if _num(row.get("realised_r")) < 0)
+    wins = sum(1 for value in values if value > 0)
+    losses = sum(1 for value in values if value < 0)
     breakeven = n - wins - losses
     win_rate = wins / n if n else 0.0
 
@@ -568,21 +583,30 @@ def _trade_skill_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
     else:
         grade = "PROVEN"
 
+    legacy_triggered = [
+        row for row in reviews
+        if bool(row.get("triggered"))
+        and str(row.get("cost_model_version") or "") != cost_model.COST_MODEL_VERSION
+    ]
     return {
         "version": VERSION,
         "score": score,
         "grade": grade,
         "published_triggered": n,
+        "legacy_triggered_not_counted": len(legacy_triggered),
         "wins": wins,
         "losses": losses,
         "breakeven": breakeven,
+        "total_net_r": round(total_r, 3),
+        "average_net_r": round(avg_r, 3) if n else None,
         "total_r": round(total_r, 3),
         "average_r": round(avg_r, 3) if n else None,
         "win_rate": round(win_rate, 3) if n else None,
         "minimum_proven_sample": 30,
+        "cost_model_version": cost_model.COST_MODEL_VERSION,
         "meaning": (
-            "Trade Skill is intentionally conservative. Only completed published forward campaigns can make this score high; "
-            "historical backtests and shadow research are shown separately and cannot disguise poor live results."
+            "Trade Skill counts only completed published forward campaigns with the current cost model. "
+            "Legacy gross-only reviews remain visible but cannot make the score look proven."
         ),
     }
 
@@ -591,19 +615,27 @@ def _shadow_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     verified_rows = [
         row for row in rows
         if str(row.get("timing_contract_version") or "") == hardening.TIMING_CONTRACT_VERSION
+        and str(row.get("cost_model_version") or "") == cost_model.COST_MODEL_VERSION
     ]
-    triggered = [row for row in verified_rows if row.get("entry_triggered") is True and row.get("realised_r") is not None]
-    total_r = sum(_num(row.get("realised_r")) for row in triggered)
-    wins = sum(1 for row in triggered if _num(row.get("realised_r")) > 0)
-    losses = sum(1 for row in triggered if _num(row.get("realised_r")) < 0)
+    triggered = [
+        row for row in verified_rows
+        if row.get("entry_triggered") is True and row.get("net_realised_r") is not None
+    ]
+    values = [_num(row.get("net_realised_r")) for row in triggered]
+    total_r = sum(values)
+    wins = sum(1 for value in values if value > 0)
+    losses = sum(1 for value in values if value < 0)
     return {
         "resolved": len(verified_rows),
         "legacy_unverified_resolved": max(0, len(rows) - len(verified_rows)),
         "triggered": len(triggered),
         "wins": wins,
         "losses": losses,
+        "total_net_r": round(total_r, 3),
+        "average_net_r": round(total_r / len(triggered), 3) if triggered else None,
         "total_r": round(total_r, 3),
         "average_r": round(total_r / len(triggered), 3) if triggered else None,
+        "cost_model_version": cost_model.COST_MODEL_VERSION,
         "research_only": True,
         "publication_authority": False,
     }
@@ -621,7 +653,7 @@ async def _trade_skill(self: core.LiveTrader) -> dict[str, Any]:
         reviews = await self.repo.client.get(
             "live_trader_trade_reviews",
             params={
-                "select": "triggered,realised_r,outcome,completed_at",
+                "select": "triggered,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,outcome,completed_at",
                 "symbol": f"eq.{self.symbol}",
                 "order": "completed_at.desc",
                 "limit": "500",
@@ -633,7 +665,7 @@ async def _trade_skill(self: core.LiveTrader) -> dict[str, Any]:
         shadow = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "entry_triggered,realised_r,trade_outcome,observed_at,timing_contract_version",
+                "select": "entry_triggered,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,trade_outcome,observed_at,timing_contract_version",
                 "learning_version": f"eq.{SHADOW_VERSION}",
                 "status": "eq.resolved",
                 "order": "observed_at.desc",
