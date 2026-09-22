@@ -15,9 +15,12 @@ BASE_FIELDS: tuple[str, ...] = (
     "high",
     "low",
     "close",
+    "volume",
     "weekday",
     "month",
+    "quarter",
     "hour_utc",
+    "week_of_month",
     "session",
     "direction",
     "range_price",
@@ -27,27 +30,41 @@ BASE_FIELDS: tuple[str, ...] = (
     "close_location",
     "atr_14",
     "average_range_12",
+    "volatility_12",
     "compression_ratio",
     "return_1_pct",
     "return_3_pct",
+    "return_12_pct",
+    "return_48_pct",
+    "return_288_pct",
+    "context_m15_return_pct",
+    "context_m30_return_pct",
+    "context_h1_return_pct",
+    "context_h4_return_pct",
+    "context_d1_return_pct",
     "trend_12_atr",
     "trend_48_atr",
     "streak",
     "regime",
     "alignment_score",
+    "outcome_horizons",
     "outcome_complete",
     "feature_version",
     "mtf_m1_available",
     "mtf_m1_direction",
+    "mtf_m1_direction_score",
     "mtf_m1_direction_changes",
     "mtf_m1_path_efficiency",
+    "mtf_m1_first_direction",
     "mtf_m1_last_direction",
     "mtf_m15_direction",
     "mtf_m30_direction",
     "mtf_h1_direction",
     "mtf_h4_direction",
     "mtf_d1_direction",
+    "mtf_direction_alignment_score",
     "mtf_htf_alignment_score",
+    "mtf_context_complete",
     "fabric_version",
 )
 
@@ -89,10 +106,11 @@ OBS_INDEX = {name: index for index, name in enumerate(OBSERVATION_FIELDS)}
 OUTCOME_HORIZONS: tuple[str, ...] = ("5", "15", "30", "60", "240")
 OUTCOME_INDEX = {name: index for index, name in enumerate(OUTCOME_HORIZONS)}
 
+LEGACY_ONLY_MISSING = {"context_m30_return_pct", "fabric_version"}
 LEGACY_SELECT = ",".join(
     field
     for field in BASE_FIELDS
-    if not field.startswith("mtf_") and field != "fabric_version"
+    if not field.startswith("mtf_") and field not in LEGACY_ONLY_MISSING
 ) + ",outcomes"
 
 FABRIC_SELECT = ",".join(BASE_FIELDS) + ",outcomes"
