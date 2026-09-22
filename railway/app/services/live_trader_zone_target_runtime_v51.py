@@ -82,4 +82,5 @@ from app.services import live_trader_policy_lab_v85 as _live_trader_policy_lab_v
 from app.services import live_trader_execution_timing_v89 as _live_trader_execution_timing_v89  # noqa: E402,F401
 from app.services import live_trader_execution_costs_v90 as _live_trader_execution_costs_v90  # noqa: E402,F401
 from app.services import live_trader_evidence_provenance_v91 as _live_trader_evidence_provenance_v91  # noqa: E402,F401
+from app.services import live_trader_news_confirmation_workflow_v95 as _live_trader_news_confirmation_workflow_v95  # noqa: E402,F401
 from app.services import live_trader_authoritative_state_v94 as _live_trader_authoritative_state_v94  # noqa: E402,F401

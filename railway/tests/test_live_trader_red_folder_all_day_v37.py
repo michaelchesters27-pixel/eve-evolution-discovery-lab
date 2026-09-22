@@ -8,6 +8,7 @@ from app.services import live_trader as core
 from app.services import live_trader_red_folder_all_day_v37 as all_day
 from app.services import live_trader_red_folder_news_confirmation_v36 as confirmation
 from app.services import live_trader_red_folder_news_v35 as news
+from app.services import live_trader_news_confirmation_workflow_v95 as workflow
 
 
 def utc(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime:
@@ -73,4 +74,4 @@ def test_base_calendar_loader_reads_usd_and_all_scope_events(monkeypatch) -> Non
 def test_v36_uses_v37_base_calendar_loader() -> None:
     assert confirmation._current_calendar_loader is all_day._load_calendar_with_all
     assert news._decorate_event is all_day._decorate_event_v37
-    assert core.LiveTrader.answer is all_day._answer_v37
+    assert core.LiveTrader.answer is workflow._answer_v95
