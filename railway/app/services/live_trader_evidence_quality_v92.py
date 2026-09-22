@@ -9,7 +9,7 @@ from typing import Any
 
 PROTOCOL_VERSION = "eve-live-evidence-quality-v1"
 POLICY_LAB_PROTOCOL_VERSION = "eve-live-policy-lab-evidence-quality-v1"
-PUBLISHED_PAPER_PROTOCOL_VERSION = "eve-live-published-paper-evidence-quality-v1"
+PUBLISHED_PAPER_PROTOCOL_VERSION = "eve-live-published-paper-evidence-quality-v2"
 HISTORICAL_PROXY_PROTOCOL_VERSION = "eve-live-historical-proxy-screening-v1"
 
 FAMILY_ALPHA = 0.05
@@ -68,6 +68,7 @@ def published_paper_protocol_definition() -> dict[str, Any]:
         "one_sided_alpha": FAMILY_ALPHA,
         "required_lower_bound": 0.0,
         "sample_count_alone_never_proves_edge": True,
+        "support_label_requires_all_quality_gates": True,
         "automatic_money_approval": False,
     }
 
@@ -446,16 +447,18 @@ def evaluate_published_paper(
         "one_sided_lower_bound_positive": lower is not None and lower > 0.0,
     }
     supported = bool(all(gates.values()))
-    if shape["triggered"] < PUBLISHED_MIN_TRIGGERED:
-        grade = "UNPROVEN"
-    elif shape["independent_days"] < PUBLISHED_MIN_INDEPENDENT_DAYS or shape["independent_weeks"] < PUBLISHED_MIN_INDEPENDENT_WEEKS:
-        grade = "EVIDENCE_CLUSTERED"
-    elif shape["net_expectancy_r"] is None or shape["net_expectancy_r"] <= 0.0:
-        grade = "NEGATIVE_OR_FLAT"
-    elif lower is None or lower <= 0.0:
-        grade = "UNCERTAIN"
-    else:
+    if supported:
         grade = "FORWARD_NET_SUPPORTED"
+    elif not gates["minimum_triggered"]:
+        grade = "UNPROVEN"
+    elif not gates["minimum_independent_days"] or not gates["minimum_independent_weeks"]:
+        grade = "EVIDENCE_CLUSTERED"
+    elif not gates["single_day_concentration"]:
+        grade = "EVIDENCE_CONCENTRATED"
+    elif not gates["positive_net_expectancy"]:
+        grade = "NEGATIVE_OR_FLAT"
+    else:
+        grade = "UNCERTAIN"
     return {
         "protocol_version": PUBLISHED_PAPER_PROTOCOL_VERSION,
         "cohort_id": cohort_id,
@@ -465,6 +468,7 @@ def evaluate_published_paper(
         "failed_quality_gates": [name for name, passed in gates.items() if not passed],
         "forward_net_supported": supported,
         "grade": grade,
+        "support_label_consistent_with_all_quality_gates": (grade == "FORWARD_NET_SUPPORTED") == supported,
         "sample_count_alone_never_proves_edge": True,
         "automatic_money_approval": False,
         "protocol": protocol,

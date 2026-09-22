@@ -56,3 +56,42 @@ def test_historical_proxy_protocol_is_screening_only() -> None:
     assert protocol["prospective_validation_eligible"] is False
     assert protocol["historical_proxy_may_auto_promote"] is False
     assert protocol["fresh_forward_confirmation_required"] is True
+
+
+
+def test_published_concentration_gate_cannot_emit_supported_grade() -> None:
+    start = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
+    rows = [row(start + timedelta(minutes=index), 0.40) for index in range(8)]
+    rows.extend(row(start + timedelta(days=index), 0.40) for index in range(1, 23))
+
+    result = quality.evaluate_published_paper(rows, cohort_id="coh_concentrated")
+
+    assert result["triggered"] == 30
+    assert result["independent_days"] == 23
+    assert result["independent_weeks"] >= 4
+    assert result["net_expectancy_r"] > 0
+    assert result["one_sided_95pct_day_cluster_lower_bound_r"] > 0
+    assert result["max_single_day_trigger_share"] > quality.PUBLISHED_MAX_SINGLE_DAY_TRIGGER_SHARE
+    assert result["quality_gates"]["single_day_concentration"] is False
+    assert result["forward_net_supported"] is False
+    assert result["grade"] == "EVIDENCE_CONCENTRATED"
+    assert result["support_label_consistent_with_all_quality_gates"] is True
+    assert "single_day_concentration" in result["failed_quality_gates"]
+
+
+def test_supported_grade_is_exactly_equivalent_to_all_quality_gates() -> None:
+    start = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
+    rows = [row(start + timedelta(days=index), 0.40) for index in range(30)]
+
+    result = quality.evaluate_published_paper(rows, cohort_id="coh_diversified")
+
+    assert all(result["quality_gates"].values())
+    assert result["forward_net_supported"] is True
+    assert result["grade"] == "FORWARD_NET_SUPPORTED"
+    assert result["support_label_consistent_with_all_quality_gates"] is True
+
+
+def test_published_protocol_declares_all_gate_support_label_contract() -> None:
+    protocol = quality.published_paper_protocol_definition()
+    assert protocol["version"] == "eve-live-published-paper-evidence-quality-v2"
+    assert protocol["support_label_requires_all_quality_gates"] is True

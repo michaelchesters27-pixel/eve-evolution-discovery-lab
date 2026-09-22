@@ -202,3 +202,62 @@ def test_shadow_resolver_never_scores_unactivated_current_timing(monkeypatch) ->
     assert result["resolved"] == 0
     assert source_called is False
     assert engine.repo.client.patched is False
+
+
+
+def test_trade_skill_concentration_failure_never_displays_supported_grade() -> None:
+    start = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
+    reviews = [
+        {
+            "triggered": True,
+            "realised_r": 0.5,
+            "net_realised_r": 0.4,
+            "cost_model_version": cost_model.COST_MODEL_VERSION,
+            "outcome": "WIN",
+            "completed_at": (start + timedelta(minutes=index)).isoformat(),
+        }
+        for index in range(8)
+    ]
+    reviews.extend(
+        {
+            "triggered": True,
+            "realised_r": 0.5,
+            "net_realised_r": 0.4,
+            "cost_model_version": cost_model.COST_MODEL_VERSION,
+            "outcome": "WIN",
+            "completed_at": (start + timedelta(days=index)).isoformat(),
+        }
+        for index in range(1, 23)
+    )
+
+    skill = v83._trade_skill_from_reviews(reviews, cohort_id="coh_concentrated")
+
+    assert skill["published_triggered"] == 30
+    assert skill["forward_net_supported"] is False
+    assert skill["grade"] == "EVIDENCE_CONCENTRATED"
+    assert skill["support_label_consistent_with_all_quality_gates"] is True
+    assert skill["max_single_day_trigger_share"] > 0.25
+    assert "single_day_concentration" in skill["failed_quality_gates"]
+
+
+
+def test_trade_skill_fails_closed_if_quality_metadata_is_ever_contradictory(monkeypatch) -> None:
+    monkeypatch.setattr(
+        v83.quality,
+        "evaluate_published_paper",
+        lambda _rows, *, cohort_id: {
+            "grade": "FORWARD_NET_SUPPORTED",
+            "forward_net_supported": False,
+            "independent_days": 30,
+            "independent_weeks": 6,
+            "one_sided_95pct_day_cluster_lower_bound_r": 0.2,
+            "max_single_day_trigger_share": 0.10,
+            "failed_quality_gates": ["single_day_concentration"],
+        },
+    )
+
+    skill = v83._trade_skill_from_reviews([], cohort_id="coh_guard")
+
+    assert skill["forward_net_supported"] is False
+    assert skill["grade"] == "QUALIFICATION_INCONSISTENT"
+    assert skill["support_label_consistent_with_all_quality_gates"] is False

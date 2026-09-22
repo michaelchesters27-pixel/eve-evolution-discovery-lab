@@ -636,6 +636,13 @@ def _trade_skill_from_reviews(
     score = round(core.clamp(score, 0.0, 10.0), 2)
 
     quality_assessment = quality.evaluate_published_paper(verified, cohort_id=cohort_id)
+    forward_net_supported = quality_assessment.get("forward_net_supported") is True
+    grade = str(quality_assessment.get("grade") or "UNPROVEN")
+    qualification_consistent = (grade == "FORWARD_NET_SUPPORTED") == forward_net_supported
+    if not qualification_consistent:
+        # Fail closed if qualification metadata ever becomes contradictory.
+        forward_net_supported = False
+        grade = "QUALIFICATION_INCONSISTENT"
 
     legacy_triggered = [
         row for row in reviews
@@ -646,7 +653,7 @@ def _trade_skill_from_reviews(
         "version": VERSION,
         "score": score,
         "score_is_not_edge_probability": True,
-        "grade": quality_assessment.get("grade"),
+        "grade": grade,
         "published_triggered": n,
         "legacy_triggered_not_counted": len(legacy_triggered),
         "wins": wins,
@@ -662,7 +669,9 @@ def _trade_skill_from_reviews(
         "one_sided_95pct_day_cluster_lower_bound_r": quality_assessment.get(
             "one_sided_95pct_day_cluster_lower_bound_r"
         ),
-        "forward_net_supported": quality_assessment.get("forward_net_supported"),
+        "forward_net_supported": forward_net_supported,
+        "support_label_consistent_with_all_quality_gates": qualification_consistent,
+        "max_single_day_trigger_share": quality_assessment.get("max_single_day_trigger_share"),
         "failed_quality_gates": quality_assessment.get("failed_quality_gates"),
         "evidence_quality_protocol_version": quality.PUBLISHED_PAPER_PROTOCOL_VERSION,
         "minimum_screening_sample": quality.PUBLISHED_MIN_TRIGGERED,
@@ -671,8 +680,9 @@ def _trade_skill_from_reviews(
         "cost_model_version": cost_model.COST_MODEL_VERSION,
         "meaning": (
             "Trade Skill counts only current-cohort, cost-verified completed paper campaigns. "
-            "Thirty trades is a screening milestone, not proof. Support requires independent day/week coverage "
-            "and a predeclared one-sided day-cluster uncertainty bound above zero. The display score is not a win probability."
+            "Thirty trades is a screening milestone, not proof. Support requires every predeclared quality gate: "
+            "independent day/week coverage, the single-day concentration limit, positive net expectancy and a "
+            "one-sided day-cluster uncertainty bound above zero. The display score is not a win probability."
         ),
     }
 
