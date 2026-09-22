@@ -52,3 +52,31 @@ def test_bounded_mode_valid_when_all_duplicate_resident_workers_are_off() -> Non
     assert settings.bounded_research_enabled is True
     assert settings.bounded_research_memory_mb == 1536
     assert settings.bounded_research_stage_timeout_seconds == 1500
+
+
+
+def test_lease_renewal_must_be_shorter_than_lease_expiry() -> None:
+    with pytest.raises(ValidationError, match="LEASE_RENEW_SECONDS"):
+        Settings(
+            **base(),
+            bounded_research_enabled=True,
+            autonomous_enabled=False,
+            fabric_enabled=False,
+            live_trader_historical_workers_enabled=False,
+            bounded_research_lease_seconds=120,
+            bounded_research_lease_renew_seconds=120,
+        )
+
+
+def test_short_renewable_restart_lease_is_valid() -> None:
+    settings = Settings(
+        **base(),
+        bounded_research_enabled=True,
+        autonomous_enabled=False,
+        fabric_enabled=False,
+        live_trader_historical_workers_enabled=False,
+        bounded_research_lease_seconds=180,
+        bounded_research_lease_renew_seconds=45,
+    )
+    assert settings.bounded_research_lease_seconds == 180
+    assert settings.bounded_research_lease_renew_seconds == 45

@@ -73,7 +73,7 @@ async def _claim_bounded_supervisor(owner_id: str) -> dict[str, Any]:
         "claim_bounded_research_supervisor_v96",
         {
             "p_owner_id": owner_id,
-            "p_lease_seconds": min(7200, max(600, settings.bounded_research_timeout_seconds + 300)),
+            "p_lease_seconds": settings.bounded_research_lease_seconds,
         },
     )
     return _rpc_object(result)
@@ -85,7 +85,7 @@ async def _renew_bounded_supervisor(owner_id: str, token: str) -> bool:
         {
             "p_owner_id": owner_id,
             "p_lease_token": token,
-            "p_lease_seconds": min(7200, max(600, settings.bounded_research_timeout_seconds + 300)),
+            "p_lease_seconds": settings.bounded_research_lease_seconds,
         },
     )
     return bool(_rpc_object(result).get("renewed"))
@@ -178,11 +178,24 @@ async def _read_bounded_child(
     return summary, "\n".join(tail)
 
 
+async def _bounded_lease_heartbeat(
+    owner_id: str,
+    lease_token: str,
+) -> bool:
+    while True:
+        await asyncio.sleep(settings.bounded_research_lease_renew_seconds)
+        if not await _renew_bounded_supervisor(owner_id, lease_token):
+            return False
+
+
 async def _run_bounded_stage(
     cycle_id: str,
     stage_name: str,
     ordinal: int,
     timeout_seconds: float,
+    *,
+    owner_id: str,
+    lease_token: str,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     env = dict(os.environ)
@@ -202,16 +215,64 @@ async def _run_bounded_stage(
         stderr=asyncio.subprocess.STDOUT,
         env=env,
     )
+    child_task = asyncio.create_task(
+        _read_bounded_child(process, cycle_id=cycle_id, stage_name=stage_name),
+        name=f"bounded-stage-read-{stage_name}",
+    )
+    heartbeat_task = asyncio.create_task(
+        _bounded_lease_heartbeat(owner_id, lease_token),
+        name=f"bounded-lease-heartbeat-{stage_name}",
+    )
     try:
-        summary, tail = await asyncio.wait_for(
-            _read_bounded_child(process, cycle_id=cycle_id, stage_name=stage_name),
+        done, _ = await asyncio.wait(
+            {child_task, heartbeat_task},
             timeout=max(1.0, timeout_seconds),
+            return_when=asyncio.FIRST_COMPLETED,
         )
-    except asyncio.TimeoutError:
+
+        if heartbeat_task in done:
+            lease_alive = heartbeat_task.result()
+            if not lease_alive and not child_task.done():
+                process.kill()
+                await process.wait()
+                child_task.cancel()
+                try:
+                    await child_task
+                except asyncio.CancelledError:
+                    pass
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                return await _record_supervisor_stage_failure(
+                    cycle_id,
+                    stage_name,
+                    ordinal,
+                    "durable_supervisor_lease_lost_during_stage",
+                    elapsed_ms=elapsed_ms,
+                )
+
+        if child_task in done:
+            summary, tail = child_task.result()
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            if process.returncode == 0 and isinstance(summary, dict):
+                return summary
+            if isinstance(summary, dict):
+                return summary
+            reason = f"child_exit_code_{process.returncode}_without_structured_summary"
+            if tail:
+                reason += ":" + tail[-3000:]
+            return await _record_supervisor_stage_failure(
+                cycle_id,
+                stage_name,
+                ordinal,
+                reason,
+                elapsed_ms=elapsed_ms,
+            )
+
         process.kill()
+        await process.wait()
+        child_task.cancel()
         try:
-            await asyncio.wait_for(process.wait(), timeout=10)
-        except asyncio.TimeoutError:
+            await child_task
+        except asyncio.CancelledError:
             pass
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         return await _record_supervisor_stage_failure(
@@ -221,22 +282,12 @@ async def _run_bounded_stage(
             f"stage_timeout_after_{round(timeout_seconds,1)}s",
             elapsed_ms=elapsed_ms,
         )
-
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
-    if process.returncode == 0 and isinstance(summary, dict):
-        return summary
-    if isinstance(summary, dict):
-        return summary
-    reason = f"child_exit_code_{process.returncode}_without_structured_summary"
-    if tail:
-        reason += ":" + tail[-3000:]
-    return await _record_supervisor_stage_failure(
-        cycle_id,
-        stage_name,
-        ordinal,
-        reason,
-        elapsed_ms=elapsed_ms,
-    )
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 
 async def _finalise_bounded_cycle(cycle_id: str, results: dict[str, dict[str, Any]], started_perf: float) -> dict[str, Any]:
@@ -400,7 +451,14 @@ async def _bounded_research_loop() -> None:
                     break
 
                 timeout = min(float(settings.bounded_research_stage_timeout_seconds), remaining)
-                results[stage_name] = await _run_bounded_stage(cycle_id, stage_name, ordinal, timeout)
+                results[stage_name] = await _run_bounded_stage(
+                    cycle_id,
+                    stage_name,
+                    ordinal,
+                    timeout,
+                    owner_id=owner_id,
+                    lease_token=lease_token,
+                )
 
             final = await _finalise_bounded_cycle(cycle_id, results, cycle_perf)
             logger.info(

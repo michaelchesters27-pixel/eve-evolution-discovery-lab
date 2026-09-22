@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     bounded_research_stage_timeout_seconds: int = Field(default=1500, ge=300, le=3600)
     bounded_research_memory_mb: int = Field(default=1536, ge=512, le=4096)
     bounded_research_overlap_retry_seconds: int = Field(default=60, ge=15, le=600)
+    bounded_research_lease_seconds: int = Field(default=180, ge=90, le=600)
+    bounded_research_lease_renew_seconds: int = Field(default=45, ge=15, le=120)
 
     # Discovery-only every-M5 observation fabric.
     fabric_enabled: bool = True
@@ -125,6 +127,10 @@ class Settings(BaseSettings):
         # Bounded mode already runs discovery, fabric and Live Trader historical
         # stages in disposable children, so resident copies must stay off.
         if self.bounded_research_enabled:
+            if self.bounded_research_lease_renew_seconds >= self.bounded_research_lease_seconds:
+                raise ValueError(
+                    "BOUNDED_RESEARCH_LEASE_RENEW_SECONDS must be shorter than BOUNDED_RESEARCH_LEASE_SECONDS."
+                )
             conflicts: list[str] = []
             if self.autonomous_enabled:
                 conflicts.append("AUTONOMOUS_ENABLED")
