@@ -701,10 +701,9 @@ def _shadow_stats(rows: list[dict[str, Any]], current_cohorts: set[str] | None =
 
 async def _trade_skill(self: core.LiveTrader) -> dict[str, Any]:
     now = core.utc_now()
-    published_identity = evidence_id.production_identity(
+    published_identity = evidence_id.published_campaign_identity(
         self.settings,
         learning_version="eve-live-published-paper-campaign-v1",
-        evaluation_stage="published_paper_campaign",
     )
     shadow_identities = [_shadow_identity(self, key) for key in ("market_probe", "zone_touch_limit", "momentum_confirmation")]
     current_shadow_cohorts = {str(item["cohort_id"]) for item in shadow_identities}
