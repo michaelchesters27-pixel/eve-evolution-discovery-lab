@@ -402,6 +402,7 @@ async def _weekly_outcomes(self: core.LiveTrader, *, force: bool = False) -> dic
         "win_rate_pct": win_rate,
         "gross_r": gross_r,
         "cost_verified_net_r": verified_net_r if cost_verified_triggered else None,
+        "net_r": verified_net_r if cost_verified_triggered else None,
         "cost_verified_triggered": len(cost_verified_triggered),
         "legacy_triggered_not_counted_in_net": legacy_triggered,
         "cost_model_version": cost_model.COST_MODEL_VERSION,
