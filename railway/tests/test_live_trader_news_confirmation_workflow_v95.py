@@ -114,11 +114,20 @@ class FakeClient:
         self.upserts: list[tuple[str, dict, str]] = []
 
     async def get(self, table: str, *, params: dict | None = None, **_kwargs):
-        if table == "live_trader_news_events":
-            return list(self.events)
         if table == "live_trader_news_weeks":
             return []
         raise AssertionError(table)
+
+    async def rpc(self, function: str, payload: dict | None = None):
+        if function != "get_live_trader_news_inventory_v96":
+            raise AssertionError(function)
+        return {
+            "version": v95.INVENTORY_VERSION,
+            "complete": True,
+            "source": v95.INVENTORY_SOURCE,
+            "event_count": len(self.events),
+            "events": list(self.events),
+        }
 
     async def upsert(self, table: str, payload: dict, *, on_conflict: str, return_rows: bool = False):
         self.upserts.append((table, dict(payload), on_conflict))
@@ -186,3 +195,96 @@ def test_bare_legacy_confirmation_command_cannot_auto_confirm() -> None:
         v95.news._load_calendar = original
     assert result["ok"] is False
     assert "explicit" in result["answer"].lower()
+
+
+
+def _many_events(count: int) -> list[dict]:
+    start = utc(2026, 9, 20, 0)
+    return [
+        {
+            "event_id": f"evt-{index:04d}",
+            "currency": "USD",
+            "event_name": f"Event {index:04d}",
+            "scheduled_at": (start.replace(hour=(index % 24)) + __import__("datetime").timedelta(days=(index % 7))).isoformat(),
+            "event_class": "high",
+            "pre_minutes": 30,
+            "post_minutes": 15,
+            "source": "Forex Factory manual",
+            "enabled": True,
+        }
+        for index in range(count)
+    ]
+
+
+def test_server_side_inventory_is_complete_beyond_old_200_row_cap() -> None:
+    trader = FakeTrader(_many_events(250))
+    inventory = asyncio.run(v95._week_inventory(trader, utc(2026, 9, 22, 10)))
+
+    assert inventory["inventory_complete"] is True
+    assert inventory["inventory_source"] == "server_side_sql_aggregation"
+    assert inventory["event_count"] == 250
+    assert len(inventory["event_ids"]) == 250
+    assert inventory["event_ids"][-1] == "evt-0237" or len(set(inventory["event_ids"])) == 250
+
+
+def test_confirmation_allows_complete_inventory_above_200(monkeypatch) -> None:
+    trader = FakeTrader(_many_events(250))
+    monkeypatch.setattr(v95.core, "utc_now", lambda: utc(2026, 9, 22, 10))
+
+    async def confirmed_calendar(_self, *, force: bool = False):
+        return {**base_status(), "week_confirmed": True, "week_confirmation_state": "confirmed_current_inventory"}
+
+    monkeypatch.setattr(v95.news, "_load_calendar", confirmed_calendar)
+    result = asyncio.run(
+        v95._confirm_current_week_v95(
+            trader,
+            calendar_checked=True,
+            expected_event_count=250,
+            source_reference="Forex Factory full weekly calendar checked manually",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["confirmed_event_count"] == 250
+    assert len(trader.repo.client.upserts) == 1
+    payload = trader.repo.client.upserts[0][1]
+    assert payload["confirmation_version"] == v95.VERSION
+    assert payload["confirmed_event_count"] == 250
+    assert len(payload["confirmed_event_ids"]) == 250
+    assert len(payload["confirmation_details"]["event_inventory"]) == 250
+
+
+def test_incomplete_inventory_rpc_fails_closed() -> None:
+    trader = FakeTrader([])
+
+    async def incomplete_rpc(_function: str, _payload: dict | None = None):
+        return {
+            "version": v95.INVENTORY_VERSION,
+            "complete": False,
+            "source": v95.INVENTORY_SOURCE,
+            "event_count": 0,
+            "events": [],
+        }
+
+    trader.repo.client.rpc = incomplete_rpc
+    with pytest.raises(RuntimeError, match="did not prove a complete"):
+        asyncio.run(v95._week_inventory(trader, utc(2026, 9, 22, 10)))
+
+
+def test_old_v95_confirmation_requires_recheck_after_complete_inventory_upgrade() -> None:
+    row = inventory_row(2)
+    row.update(
+        {
+            "confirmed_at": "2026-09-22T10:00:00+00:00",
+            "calendar_checked_at": "2026-09-22T10:00:00+00:00",
+            "confirmation_version": "eve-live-news-confirmation-workflow-v95",
+            "confirmed_event_count": 2,
+            "confirmed_event_digest": row["_current_event_digest"],
+            "source_reference": "Forex Factory checked manually",
+        }
+    )
+    result = v95._apply_confirmation_v95(base_status(), row, utc(2026, 9, 22, 10))
+
+    assert result["week_confirmed"] is False
+    assert result["week_confirmation_state"] == "legacy_confirmation_requires_recheck"
+    assert result["block_reason"] == "weekly_confirmation_protocol_upgrade_required"
