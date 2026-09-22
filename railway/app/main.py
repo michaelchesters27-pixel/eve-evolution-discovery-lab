@@ -295,7 +295,81 @@ async def _run_bounded_stage(
             pass
 
 
-async def _finalise_bounded_cycle(cycle_id: str, results: dict[str, dict[str, Any]], started_perf: float) -> dict[str, Any]:
+async def _load_running_cycle() -> dict[str, Any] | None:
+    rows = await discovery_repo.client.get(
+        "bounded_research_cycles",
+        params={
+            "select": "*",
+            "outcome": "eq.running",
+            "order": "started_at.desc",
+            "limit": "10",
+        },
+    )
+    if not rows:
+        return None
+    newest = dict(rows[0])
+    # Once the singleton lease is ours, older concurrent-looking running rows
+    # cannot still be authoritative. Preserve them as explicit failed history.
+    for stale in rows[1:]:
+        stale_id = str(stale.get("cycle_id") or "")
+        if not stale_id:
+            continue
+        now = datetime.now(timezone.utc).isoformat()
+        await discovery_repo.client.patch(
+            "bounded_research_cycles",
+            {
+                "finished_at": now,
+                "outcome": "failed",
+                "stages_failed": max(1, int(stale.get("stages_failed") or 0)),
+                "result_summary": {
+                    **dict(stale.get("result_summary") or {}),
+                    "resource_version": resources.RESOURCE_VERSION,
+                    "reason": "superseded_stale_running_cycle_after_singleton_lease_recovery",
+                },
+                "updated_at": now,
+            },
+            filters={"cycle_id": f"eq.{stale_id}"},
+        )
+    return newest
+
+
+async def _cycle_stage_attempts(cycle_id: str) -> list[dict[str, Any]]:
+    return list(
+        await discovery_repo.client.get(
+            "bounded_research_stage_runs",
+            params={
+                "select": "*",
+                "cycle_id": f"eq.{cycle_id}",
+                "order": "id.desc",
+                "limit": "200",
+            },
+        )
+        or []
+    )
+
+
+async def _last_finalised_cycle() -> dict[str, Any] | None:
+    rows = await discovery_repo.client.get(
+        "bounded_research_cycles",
+        params={
+            "select": "*",
+            "finished_at": "not.is.null",
+            "outcome": "neq.running",
+            "order": "finished_at.desc",
+            "limit": "1",
+        },
+    )
+    return dict(rows[0]) if rows else None
+
+
+async def _finalise_bounded_cycle(
+    cycle_id: str,
+    results: dict[str, dict[str, Any]],
+    *,
+    cycle_started_at: datetime,
+    supervisor_owner: str,
+    resume_count: int,
+) -> dict[str, Any]:
     progressed = sum(1 for item in results.values() if item.get("outcome") == "progressed")
     no_op = sum(1 for item in results.values() if item.get("outcome") == "no_op")
     completed = sum(1 for item in results.values() if item.get("outcome") == "completed")
@@ -309,15 +383,46 @@ async def _finalise_bounded_cycle(cycle_id: str, results: dict[str, dict[str, An
         if completed
         else "completed_no_op"
     )
-    now = datetime.now(timezone.utc).isoformat()
-    elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    wall_elapsed_ms = max(0.0, (now_dt - cycle_started_at).total_seconds() * 1000.0)
+
+    try:
+        attempt_rows = await _cycle_stage_attempts(cycle_id)
+    except Exception:
+        logger.exception("Could not reload bounded stage attempts during finalisation")
+        attempt_rows = []
+    attempts = {str(row.get("id") or index): dict(row) for index, row in enumerate(attempt_rows)}
+    active_compute_ms = resources.active_compute_ms(attempts) if attempts else resources.active_compute_ms(results)
+    resource = resources.resource_summary(
+        attempts if attempts else results,
+        memory_ceiling_mb=settings.bounded_research_memory_mb,
+    )
+    next_due = now_dt + timedelta(minutes=settings.bounded_research_interval_minutes)
+    stage_job_ids = {
+        name: item.get("stage_run_id")
+        for name, item in results.items()
+        if item.get("stage_run_id") is not None
+    }
+    restored_stages = sorted(
+        name for name, item in results.items() if item.get("restored_from_durable_telemetry")
+    )
     summary = {
-        "telemetry_version": "eve-bounded-stage-telemetry-v1",
+        "telemetry_version": "eve-bounded-stage-telemetry-v2",
         "resource_version": resources.RESOURCE_VERSION,
         "execution_mode": "isolated_stage_processes",
         "memory_ceiling_mb": settings.bounded_research_memory_mb,
         "stage_timeout_seconds": settings.bounded_research_stage_timeout_seconds,
+        "cycle_timeout_seconds": settings.bounded_research_timeout_seconds,
         "stage_outcomes": {name: item.get("outcome") for name, item in results.items()},
+        "stage_job_ids": stage_job_ids,
+        "restart_resumable": True,
+        "resume_count": resume_count,
+        "restored_completed_stages": restored_stages,
+        "persistent_cadence": True,
+        "next_due_at": next_due.isoformat(),
+        "mode_exclusion": "bounded_vs_resident_heavy_workers",
+        **resource,
     }
     try:
         await discovery_repo.client.patch(
@@ -330,7 +435,13 @@ async def _finalise_bounded_cycle(cycle_id: str, results: dict[str, dict[str, An
                 "stages_no_op": no_op,
                 "stages_completed": completed,
                 "stages_failed": failed,
-                "elapsed_ms": round(elapsed_ms, 3),
+                "elapsed_ms": round(wall_elapsed_ms, 3),
+                "active_compute_ms": round(active_compute_ms, 3),
+                "max_stage_rss_mb": resource.get("max_stage_rss_mb"),
+                "total_stage_cpu_ms": resource.get("total_stage_cpu_ms"),
+                "resource_budget_status": resource.get("resource_budget_status"),
+                "next_due_at": next_due.isoformat(),
+                "supervisor_owner": supervisor_owner,
                 "result_summary": summary,
                 "updated_at": now,
             },
@@ -341,7 +452,8 @@ async def _finalise_bounded_cycle(cycle_id: str, results: dict[str, dict[str, An
             "bounded_research_supervisor",
             (
                 f"Isolated bounded cycle {outcome}: {progressed} progressed, "
-                f"{no_op} no-op, {completed} completed without measured progress, {failed} failed."
+                f"{no_op} no-op, {completed} completed without measured progress, {failed} failed; "
+                f"peak stage RSS={resource.get('max_stage_rss_mb')}MB."
             ),
             {"cycle_id": cycle_id, **summary},
         )
@@ -355,13 +467,16 @@ async def _finalise_bounded_cycle(cycle_id: str, results: dict[str, dict[str, An
         "no_op": no_op,
         "completed": completed,
         "failed": failed,
-        "elapsed_ms": round(elapsed_ms, 3),
+        "elapsed_ms": round(wall_elapsed_ms, 3),
+        "active_compute_ms": round(active_compute_ms, 3),
+        "next_due_at": next_due.isoformat(),
+        "resource": resource,
         "stages": results,
     }
 
 
 async def _bounded_research_loop() -> None:
-    """Run each expensive research stage in its own capped disposable process."""
+    """Run expensive research as one durable, restart-resumable bounded pipeline."""
     if settings.bounded_research_startup_seconds:
         await asyncio.sleep(settings.bounded_research_startup_seconds)
 
@@ -389,60 +504,102 @@ async def _bounded_research_loop() -> None:
                 continue
 
             lease_token = str(claim.get("lease_token") or "")
-            cycle_id = str(uuid.uuid4())
-            cycle_started = datetime.now(timezone.utc)
-            cycle_perf = time.perf_counter()
+            now_dt = datetime.now(timezone.utc)
+            running = await _load_running_cycle()
 
-            # Any old 'running' cycle can only be stale once this supervisor has
-            # acquired the singleton lease.
-            try:
+            if running is None:
+                last_cycle = await _last_finalised_cycle()
+                delay = resources.cadence_delay_seconds(
+                    last_cycle,
+                    now=now_dt,
+                    interval_minutes=settings.bounded_research_interval_minutes,
+                )
+                if delay > 0:
+                    logger.info(
+                        "Bounded research durable cadence not due for %.1f minutes; deployment will not restart heavy work early.",
+                        delay / 60.0,
+                    )
+                    await _release_bounded_supervisor(owner_id, lease_token)
+                    lease_token = None
+                    await asyncio.sleep(delay)
+                    continue
+
+                cycle_id = str(uuid.uuid4())
+                cycle_started = now_dt
+                resume_count = 0
+                results: dict[str, dict[str, Any]] = {}
+                attempt_compute_ms = 0.0
+                await discovery_repo.client.insert(
+                    "bounded_research_cycles",
+                    {
+                        "cycle_id": cycle_id,
+                        "worker_pid": os.getpid(),
+                        "started_at": cycle_started.isoformat(),
+                        "outcome": "running",
+                        "resume_count": 0,
+                        "supervisor_owner": owner_id,
+                        "result_summary": {
+                            "telemetry_version": "eve-bounded-stage-telemetry-v2",
+                            "resource_version": resources.RESOURCE_VERSION,
+                            "execution_mode": "isolated_stage_processes",
+                            "memory_ceiling_mb": settings.bounded_research_memory_mb,
+                            "supervisor_owner": owner_id,
+                            "restart_resumable": True,
+                            "persistent_cadence": True,
+                        },
+                    },
+                    return_rows=False,
+                )
+            else:
+                cycle_id = str(running.get("cycle_id") or "")
+                if not cycle_id:
+                    raise RuntimeError("running bounded cycle has no cycle_id")
+                cycle_started = resources.parse_utc(running.get("started_at")) or now_dt
+                resume_count = int(running.get("resume_count") or 0) + 1
+                attempts = await _cycle_stage_attempts(cycle_id)
+                results = resources.restored_stage_results(attempts)
+                attempt_compute_ms = sum(max(0.0, float(row.get("elapsed_ms") or 0.0)) for row in attempts)
+                resume_summary = {
+                    **dict(running.get("result_summary") or {}),
+                    "telemetry_version": "eve-bounded-stage-telemetry-v2",
+                    "resource_version": resources.RESOURCE_VERSION,
+                    "restart_resumable": True,
+                    "resumed_by": owner_id,
+                    "resume_count": resume_count,
+                    "restored_completed_stages": sorted(results),
+                }
                 await discovery_repo.client.patch(
                     "bounded_research_cycles",
                     {
-                        "finished_at": cycle_started.isoformat(),
-                        "outcome": "failed",
-                        "stages_failed": 1,
-                        "result_summary": {
-                            "resource_version": resources.RESOURCE_VERSION,
-                            "recovered_by_new_supervisor": owner_id,
-                            "reason": "previous_supervisor_lease_expired_or_released_without_finalising",
-                        },
-                        "updated_at": cycle_started.isoformat(),
-                    },
-                    filters={"outcome": "eq.running"},
-                )
-            except Exception:
-                logger.exception("Could not mark stale bounded cycles during restart recovery")
-
-            await discovery_repo.client.insert(
-                "bounded_research_cycles",
-                {
-                    "cycle_id": cycle_id,
-                    "worker_pid": os.getpid(),
-                    "started_at": cycle_started.isoformat(),
-                    "outcome": "running",
-                    "result_summary": {
-                        "telemetry_version": "eve-bounded-stage-telemetry-v1",
-                        "resource_version": resources.RESOURCE_VERSION,
-                        "execution_mode": "isolated_stage_processes",
-                        "memory_ceiling_mb": settings.bounded_research_memory_mb,
+                        "worker_pid": os.getpid(),
+                        "resume_count": resume_count,
+                        "last_resumed_at": now_dt.isoformat(),
                         "supervisor_owner": owner_id,
+                        "result_summary": resume_summary,
+                        "updated_at": now_dt.isoformat(),
                     },
-                },
-                return_rows=False,
-            )
-
-            results: dict[str, dict[str, Any]] = {}
-            deadline = cycle_perf + settings.bounded_research_timeout_seconds
+                    filters={"cycle_id": f"eq.{cycle_id}"},
+                )
+                logger.info(
+                    "Resuming bounded research cycle %s without repeating completed stages: %s",
+                    cycle_id,
+                    ",".join(sorted(results)) or "none",
+                )
 
             for stage_name, ordinal in stages:
-                remaining = deadline - time.perf_counter()
+                if stage_name in results and results[stage_name].get("ok") is True:
+                    continue
+
+                remaining = max(
+                    0.0,
+                    float(settings.bounded_research_timeout_seconds) - attempt_compute_ms / 1000.0,
+                )
                 if remaining <= 0:
                     results[stage_name] = await _record_supervisor_stage_failure(
                         cycle_id,
                         stage_name,
                         ordinal,
-                        "cycle_time_budget_exhausted_before_stage_start",
+                        "cycle_active_compute_budget_exhausted_before_stage_start",
                     )
                     break
 
@@ -456,7 +613,7 @@ async def _bounded_research_loop() -> None:
                     break
 
                 timeout = min(float(settings.bounded_research_stage_timeout_seconds), remaining)
-                results[stage_name] = await _run_bounded_stage(
+                stage_result = await _run_bounded_stage(
                     cycle_id,
                     stage_name,
                     ordinal,
@@ -464,15 +621,26 @@ async def _bounded_research_loop() -> None:
                     owner_id=owner_id,
                     lease_token=lease_token,
                 )
+                results[stage_name] = stage_result
+                attempt_compute_ms += max(0.0, float(stage_result.get("elapsed_ms") or 0.0))
 
-            final = await _finalise_bounded_cycle(cycle_id, results, cycle_perf)
+            final = await _finalise_bounded_cycle(
+                cycle_id,
+                results,
+                cycle_started_at=cycle_started,
+                supervisor_owner=owner_id,
+                resume_count=resume_count,
+            )
             logger.info(
-                "Bounded research cycle %s finished outcome=%s max_stage_memory_ceiling=%sMB",
+                "Bounded research cycle %s finished outcome=%s peak_stage_rss=%sMB next_due=%s",
                 cycle_id,
                 final.get("outcome"),
-                settings.bounded_research_memory_mb,
+                (final.get("resource") or {}).get("max_stage_rss_mb"),
+                final.get("next_due_at"),
             )
         except asyncio.CancelledError:
+            # Leave a running cycle open. The next deployment will acquire the
+            # durable lease and resume from stage telemetry instead of restarting.
             raise
         except Exception as exc:
             logger.exception("Bounded research supervisor failed safely")
@@ -480,8 +648,12 @@ async def _bounded_research_loop() -> None:
                 await discovery_repo.event(
                     "error",
                     "bounded_research_supervisor",
-                    "Bounded research supervisor failed safely.",
-                    {"owner_id": owner_id, "error": str(exc)[:2000]},
+                    "Bounded research supervisor failed safely; durable running-cycle telemetry is retained for restart recovery.",
+                    {
+                        "owner_id": owner_id,
+                        "resource_version": resources.RESOURCE_VERSION,
+                        "error": str(exc)[:2000],
+                    },
                 )
             except Exception:
                 pass
