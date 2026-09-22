@@ -130,7 +130,10 @@ def _classify_stage_result(value: Any) -> str:
     if value is False or value is None:
         return "no_op"
     if value is True:
-        return "progressed"
+        # A truthy sentinel proves only successful completion, not that any
+        # checkpoint/output changed. Progress requires an explicit action or
+        # positive work counter below.
+        return "completed"
     if not isinstance(value, dict):
         return "completed"
 
