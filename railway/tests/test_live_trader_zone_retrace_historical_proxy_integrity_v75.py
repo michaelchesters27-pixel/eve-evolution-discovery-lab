@@ -37,7 +37,8 @@ def test_historical_m1_candidate_is_not_live_promotion() -> None:
     assert result["live_entry_execution_edge_supported"] is False
     assert result["live_strategy_edge_proven"] is False
     assert result["forward_live_campaign_validation_required"] is True
-    assert result["phase"] == "HISTORICAL M1 ENTRY CANDIDATE"
+    assert result["phase"] == "HISTORICAL M1 SCREENING CANDIDATE"
+    assert result["status"] == "historical_m1_screening_candidate_fresh_forward_confirmation_required"
     assert result["promotion_blocked"] is True
 
 
