@@ -421,6 +421,24 @@ def evaluate_segment(rows: Iterable[dict[str, Any]], rules: dict[str, Any], *, c
 
 
 def chronological_segments(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    presegmented = getattr(rows, "development_partition", None)
+    if isinstance(presegmented, dict):
+        expected = int(presegmented.get("development_rows") or len(rows))
+        if expected != len(rows):
+            raise RuntimeError(
+                f"Pre-segmented development partition expected {expected} rows but received {len(rows)}"
+            )
+        return {
+            "development": list(rows),
+            "validation": [],
+            "confirmation": [],
+            "holdout": [],
+            "years": list(presegmented.get("years") or []),
+            "method": str(presegmented.get("method") or "calendar_year_four_stage"),
+            "presegmented_development_only": True,
+            "full_dataset_rows": int(presegmented.get("total_rows") or len(rows)),
+        }
+
     ordered = sorted(rows, key=lambda row: str(row.get("candle_time") or ""))
     by_year: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in ordered:
