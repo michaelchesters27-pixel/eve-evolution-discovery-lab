@@ -9,7 +9,7 @@ import sys
 import time
 import uuid
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -25,6 +25,7 @@ from app.services.live_trader import LiveTrader
 from app.services.mt5_generator import decode_package
 from app.services.orchestrator_v3 import DiscoveryOrchestrator
 from app.services import mtf_reasoning as _mtf_reasoning  # noqa: F401 — activates shared research/live semantics
+from app.services import resource_bounded_v97 as resources
 from app.services.passport import passport_is_complete
 from app.services.repository import DiscoveryRepository, SourceRepository
 
@@ -123,7 +124,7 @@ async def _record_supervisor_stage_failure(
         "cpu_system_ms": None,
         "process_max_rss_mb": None,
         "result_summary": {
-            "resource_version": "eve-resource-bounded-workers-v96",
+            "resource_version": resources.RESOURCE_VERSION,
             "memory_ceiling_mb": settings.bounded_research_memory_mb,
             "supervisor_failure": reason[:1000],
         },
@@ -142,7 +143,7 @@ async def _record_supervisor_stage_failure(
         "error": reason[:2000],
         "elapsed_ms": round(elapsed_ms, 3),
         "memory_ceiling_mb": settings.bounded_research_memory_mb,
-        "resource_version": "eve-resource-bounded-workers-v96",
+        "resource_version": resources.RESOURCE_VERSION,
     }
 
 
@@ -308,7 +309,7 @@ async def _finalise_bounded_cycle(cycle_id: str, results: dict[str, dict[str, An
     elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
     summary = {
         "telemetry_version": "eve-bounded-stage-telemetry-v1",
-        "resource_version": "eve-resource-bounded-workers-v96",
+        "resource_version": resources.RESOURCE_VERSION,
         "execution_mode": "isolated_stage_processes",
         "memory_ceiling_mb": settings.bounded_research_memory_mb,
         "stage_timeout_seconds": settings.bounded_research_stage_timeout_seconds,
@@ -398,7 +399,7 @@ async def _bounded_research_loop() -> None:
                         "outcome": "failed",
                         "stages_failed": 1,
                         "result_summary": {
-                            "resource_version": "eve-resource-bounded-workers-v96",
+                            "resource_version": resources.RESOURCE_VERSION,
                             "recovered_by_new_supervisor": owner_id,
                             "reason": "previous_supervisor_lease_expired_or_released_without_finalising",
                         },
@@ -418,7 +419,7 @@ async def _bounded_research_loop() -> None:
                     "outcome": "running",
                     "result_summary": {
                         "telemetry_version": "eve-bounded-stage-telemetry-v1",
-                        "resource_version": "eve-resource-bounded-workers-v96",
+                        "resource_version": resources.RESOURCE_VERSION,
                         "execution_mode": "isolated_stage_processes",
                         "memory_ceiling_mb": settings.bounded_research_memory_mb,
                         "supervisor_owner": owner_id,
