@@ -7,6 +7,7 @@ from typing import Any
 from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_execution_cost_model as cost_model
+from app.services import live_trader_evidence_identity as evidence_id
 from app.services import live_trader_learning_v2 as v2
 from app.services import live_trader_learning_v22 as v22
 from app.services import live_trader_london_session_gate_v46 as session_gate
@@ -24,6 +25,46 @@ TRADE_SKILL_CACHE_SECONDS = 60.0
 _current_refresh_state = core.LiveTrader.refresh_state
 _current_learning_summary = core.LiveTrader.learning_summary
 _current_runtime_status = core.LiveTrader.runtime_status
+
+
+def _shadow_policy_definition(variant: str) -> dict[str, Any]:
+    variant_rules = {
+        "market_probe": "Immediate market probe using nearest matching quality zone for stop geometry.",
+        "zone_touch_limit": "First-touch limit at nearest matching quality zone boundary.",
+        "momentum_confirmation": "0.15 ATR directional stop-entry confirmation with 0.85 ATR opposing stop geometry.",
+    }
+    return {
+        "contract_version": "eve-live-shadow-policy-contract-v1",
+        "forward_shadow_version": VERSION,
+        "learning_version": SHADOW_VERSION,
+        "variant": variant,
+        "variant_rule": variant_rules.get(variant, "unknown"),
+        "target_r": SHADOW_TARGET_R,
+        "minimum_zone_quality": SHADOW_MIN_ZONE_QUALITY,
+        "live_zone_distance_gate_applied": False,
+        "publication_authority": False,
+        "manual_only": True,
+        "automatic_order_placement": False,
+    }
+
+
+def _shadow_identity(self: core.LiveTrader, variant: str) -> dict[str, Any]:
+    return evidence_id.build_identity(
+        policy_kind="forward_shadow_research",
+        policy_key=variant,
+        policy_definition=_shadow_policy_definition(variant),
+        settings=self.settings,
+        learning_version=SHADOW_VERSION,
+        evaluation_stage="shadow_forward_research",
+    )
+
+
+def _production_forward_identity(self: core.LiveTrader) -> dict[str, Any]:
+    return evidence_id.production_identity(
+        self.settings,
+        learning_version=hardening.LEARNING_NAMESPACE,
+        evaluation_stage="production_forward_learning",
+    )
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -84,13 +125,16 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
         diagnostics["reason"] = "no_setup_family"
         return diagnostics
     episode = _forward_episode_key(state)
+    identity = _production_forward_identity(self)
 
     try:
+        await evidence_id.ensure_registered(self.repo, identity)
         existing = await self.repo.client.get(
             "live_trader_opinions",
             params={
                 "select": "id,observed_at,status,timing_contract_version,activation_at",
                 "learning_version": f"eq.{hardening.LEARNING_NAMESPACE}",
+                "cohort_id": f"eq.{identity['cohort_id']}",
                 "setup_family": f"eq.{family}",
                 "episode_key": f"eq.{episode}",
                 "limit": "1",
@@ -103,6 +147,7 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
                 "setup_family": family,
                 "timing_contract_version": (existing[0] or {}).get("timing_contract_version"),
                 "activation_at": (existing[0] or {}).get("activation_at"),
+                "evidence_identity": evidence_id.public_identity(identity),
             })
             return diagnostics
 
@@ -120,6 +165,7 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
                 "forward_recorder": VERSION,
                 "self_healing_fallback": True,
             },
+            "evidence_identity": evidence_id.public_identity(identity),
         }
         row, timing = await hardening._insert_timed_forward_opinion(
             self,
@@ -136,9 +182,10 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
                 "learning_version": hardening.LEARNING_NAMESPACE,
                 "independent_sample": True,
                 "zones": state.get("zones") or {},
-                "trade_idea": state.get("trade") or {},
+                "trade_idea": evidence_id.attach_trade(dict(state.get("trade") or {}), identity),
                 "opinion_text": state.get("opinion") or "",
                 "status": "open",
+                **evidence_id.row_columns(identity),
             },
             observed=observed,
             market_state=market_state,
@@ -157,6 +204,7 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
                 "publication_confirmed_at": timing.get("publication_confirmed_at"),
                 "activation_at": timing.get("activation_at"),
                 "execution_start_at": timing.get("execution_start_at"),
+                "evidence_identity": evidence_id.public_identity(identity),
             }
         )
         return diagnostics
@@ -349,12 +397,15 @@ async def _record_shadow_variants(self: core.LiveTrader, state: dict[str, Any]) 
     for trade in candidates:
         variant = str(trade.get("shadow_variant") or "unknown")
         family, episode = _shadow_ids(state, variant)
+        identity = _shadow_identity(self, variant)
         try:
+            await evidence_id.ensure_registered(self.repo, identity)
             existing = await self.repo.client.get(
                 "live_trader_opinions",
                 params={
                     "select": "id",
                     "learning_version": f"eq.{SHADOW_VERSION}",
+                    "cohort_id": f"eq.{identity['cohort_id']}",
                     "setup_family": f"eq.{family}",
                     "episode_key": f"eq.{episode}",
                     "limit": "1",
@@ -380,6 +431,7 @@ async def _record_shadow_variants(self: core.LiveTrader, state: dict[str, Any]) 
             "shadow_net_cost_model_version": cost_model.COST_MODEL_VERSION,
                     "market_observed_at": observed.isoformat(),
                     "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+                    "evidence_identity": evidence_id.public_identity(identity),
                 },
             }
             row, timing = await hardening._insert_timed_forward_opinion(
@@ -397,9 +449,10 @@ async def _record_shadow_variants(self: core.LiveTrader, state: dict[str, Any]) 
                     "learning_version": SHADOW_VERSION,
                     "independent_sample": False,
                     "zones": state.get("zones") or {},
-                    "trade_idea": trade,
+                    "trade_idea": evidence_id.attach_trade(trade, identity),
                     "opinion_text": "Research-only shadow trade; never shown as a Live Trader recommendation.",
                     "status": "open",
+                    **evidence_id.row_columns(identity),
                 },
                 observed=observed,
                 market_state=market_state,
@@ -413,6 +466,7 @@ async def _record_shadow_variants(self: core.LiveTrader, state: dict[str, Any]) 
                 "variant": variant,
                 "activation_at": timing.get("activation_at"),
                 "execution_start_at": timing.get("execution_start_at"),
+                "cohort_id": identity.get("cohort_id"),
             })
         except Exception as exc:
             errors.append(str(exc)[:160])
@@ -611,11 +665,15 @@ def _trade_skill_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _shadow_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _shadow_stats(rows: list[dict[str, Any]], current_cohorts: set[str] | None = None) -> dict[str, Any]:
     verified_rows = [
         row for row in rows
         if str(row.get("timing_contract_version") or "") == hardening.TIMING_CONTRACT_VERSION
         and str(row.get("cost_model_version") or "") == cost_model.COST_MODEL_VERSION
+        and (
+            current_cohorts is None
+            or str(row.get("cohort_id") or "") in current_cohorts
+        )
     ]
     triggered = [
         row for row in verified_rows
@@ -643,6 +701,13 @@ def _shadow_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 async def _trade_skill(self: core.LiveTrader) -> dict[str, Any]:
     now = core.utc_now()
+    published_identity = evidence_id.production_identity(
+        self.settings,
+        learning_version="eve-live-published-paper-campaign-v1",
+        evaluation_stage="published_paper_campaign",
+    )
+    shadow_identities = [_shadow_identity(self, key) for key in ("market_probe", "zone_touch_limit", "momentum_confirmation")]
+    current_shadow_cohorts = {str(item["cohort_id"]) for item in shadow_identities}
     cached_at = getattr(self, "_trade_skill_cache_at_v83", None)
     cached = getattr(self, "_trade_skill_cache_v83", None)
     if isinstance(cached_at, datetime) and isinstance(cached, dict):
@@ -655,6 +720,7 @@ async def _trade_skill(self: core.LiveTrader) -> dict[str, Any]:
             params={
                 "select": "triggered,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,outcome,completed_at",
                 "symbol": f"eq.{self.symbol}",
+                "cohort_id": f"eq.{published_identity['cohort_id']}",
                 "order": "completed_at.desc",
                 "limit": "500",
             },
@@ -665,7 +731,7 @@ async def _trade_skill(self: core.LiveTrader) -> dict[str, Any]:
         shadow = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "entry_triggered,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,trade_outcome,observed_at,timing_contract_version",
+                "select": "entry_triggered,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,trade_outcome,observed_at,timing_contract_version,cohort_id",
                 "learning_version": f"eq.{SHADOW_VERSION}",
                 "status": "eq.resolved",
                 "order": "observed_at.desc",
@@ -676,7 +742,9 @@ async def _trade_skill(self: core.LiveTrader) -> dict[str, Any]:
         shadow = []
 
     result = _trade_skill_from_reviews(list(reviews))
-    result["shadow_research"] = _shadow_stats(list(shadow))
+    result["evidence_identity"] = evidence_id.public_identity(published_identity)
+    result["shadow_research"] = _shadow_stats(list(shadow), current_shadow_cohorts)
+    result["shadow_research"]["current_cohort_ids"] = sorted(current_shadow_cohorts)
     self._trade_skill_cache_at_v83 = now
     self._trade_skill_cache_v83 = dict(result)
     return result
