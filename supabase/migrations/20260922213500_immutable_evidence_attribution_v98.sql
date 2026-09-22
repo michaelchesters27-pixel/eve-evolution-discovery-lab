@@ -125,6 +125,14 @@ begin
   end if;
 
   if v_all_null then
+    if new.evidence_identity_version is not null then
+      raise exception 'Legacy Live Trader evidence cannot carry a prospective identity version';
+    end if;
+    if new.evaluation_stage is not null
+       and new.evaluation_stage not like 'legacy_%'
+    then
+      raise exception 'Unattributed Live Trader evidence cannot claim a prospective evaluation stage';
+    end if;
     return new;
   end if;
 
