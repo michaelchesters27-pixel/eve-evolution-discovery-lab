@@ -11,6 +11,7 @@ from app.services import live_trader_clear_bias_gate_v45 as clear_gate
 from app.services import live_trader_execution_integrity_v39 as integrity
 from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_evidence_identity as evidence_id
+from app.services import live_trader_evidence_quality_v92 as quality
 from app.services import live_trader_historical_learning_v29 as academy
 from app.services import live_trader_london_session_gate_v46 as session_gate
 from app.services import live_trader_zone_retrace_integrity_v64 as v64
@@ -64,6 +65,7 @@ def _academy_identity(settings: Any) -> dict[str, Any]:
         settings=settings,
         learning_version=ACADEMY_VERSION,
         evaluation_stage="historical_current_policy_proxy",
+        evaluation_protocol=quality.historical_proxy_protocol_definition(),
     )
 
 
@@ -528,7 +530,7 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
         net_expectancy_triggered = total_net_r / triggered if triggered else None
         trigger_rate = triggered / scorable if scorable else None
         coverage = scorable / opportunities if opportunities else 0.0
-        promoted = bool(
+        historical_screening_candidate = bool(
             caught_up
             and opportunities > 0
             and coverage >= MIN_SCORABLE_COVERAGE
@@ -537,7 +539,16 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
             and net_expectancy_opportunity is not None
             and net_expectancy_opportunity > MIN_PROMOTION_EXPECTANCY_R
         )
-        status = "caught_up_promoted" if caught_up and promoted else "caught_up_not_promoted" if caught_up else "scanning"
+        # Historical selection evidence may screen a policy for a fresh forward
+        # confirmation cohort, but it may never directly promote live execution.
+        promoted = False
+        status = (
+            "caught_up_screening_candidate"
+            if caught_up and historical_screening_candidate
+            else "caught_up_not_promoted"
+            if caught_up
+            else "scanning"
+        )
         previous = await self._state()
         payload = {
             "cohort_id": self.evidence_identity["cohort_id"],
@@ -581,6 +592,11 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
                 "promotion_min_triggered": MIN_PROMOTION_TRIGGERED,
                 "promotion_min_expectancy_r": MIN_PROMOTION_EXPECTANCY_R,
                 "promotion_metric": "net_expectancy_per_opportunity_r",
+                "historical_screening_candidate": historical_screening_candidate,
+                "historical_proxy_may_auto_promote": False,
+                "fresh_forward_confirmation_required": True,
+                "evidence_quality_protocol_version": quality.HISTORICAL_PROXY_PROTOCOL_VERSION,
+                "evidence_quality_protocol": quality.historical_proxy_protocol_definition(),
                 "cost_model_version": cost_model.COST_MODEL_VERSION,
                 "evidence_identity": evidence_id.public_identity(self.evidence_identity),
                 "historical_news_gate_replayed": False,
