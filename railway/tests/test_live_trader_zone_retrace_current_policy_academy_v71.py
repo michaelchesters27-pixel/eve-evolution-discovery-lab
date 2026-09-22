@@ -56,14 +56,17 @@ def test_current_policy_academy_can_only_qualify_historical_m1_candidate() -> No
     assert specialist["historical_policy_proxy_verified"] is True
     assert specialist["historical_policy_proxy_candidate_execution"] == "market_after_zone_confirmation"
     assert specialist["historical_policy_proxy_entry_geometry_verified"] is True
-    assert specialist["historical_entry_execution_edge_supported"] is True
+    assert specialist["historical_entry_execution_edge_supported"] is False
+    assert specialist["historical_screening_candidate"] is True
+    assert specialist["historical_screening_candidate_execution"] == "market_after_zone_confirmation"
+    assert specialist["historical_proxy_may_auto_promote"] is False
     assert specialist["historical_tick_exact"] is False
     assert specialist["forward_live_campaign_validation_required"] is True
     assert specialist["live_promoted_execution"] is None
     assert specialist["promoted_execution"] is None
     assert specialist["promotion_blocked"] is True
-    assert specialist["promotion_scope"] == "historical_causal_m1_candidate"
-    assert specialist["phase"] == "HISTORICAL M1 ENTRY CANDIDATE"
+    assert specialist["promotion_scope"] == "historical_screening_only"
+    assert specialist["phase"] == "HISTORICAL M1 SCREENING CANDIDATE"
     assert specialist["live_entry_execution_edge_supported"] is False
     assert specialist["live_strategy_edge_proven"] is False
 

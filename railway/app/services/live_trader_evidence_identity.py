@@ -116,6 +116,7 @@ def build_identity(
     learning_version: str,
     evaluation_stage: str,
     scorer_definition: dict[str, Any] | None = None,
+    evaluation_protocol: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     policy_payload = {
         "identity_version": IDENTITY_VERSION,
@@ -134,6 +135,7 @@ def build_identity(
     scorer_hash = _hash(scorer_payload)
     scorer_id = f"scr_{scorer_hash[:24]}"
 
+    protocol = dict(evaluation_protocol or {})
     cohort_definition = {
         "identity_version": IDENTITY_VERSION,
         "cohort_protocol_version": COHORT_PROTOCOL_VERSION,
@@ -141,6 +143,9 @@ def build_identity(
         "scorer_id": scorer_id,
         "learning_version": str(learning_version),
         "evaluation_stage": str(evaluation_stage),
+        "evaluation_protocol_version": protocol.get("version"),
+        "evaluation_protocol_hash": _hash(protocol) if protocol else None,
+        "evaluation_protocol": protocol or None,
     }
     cohort_hash = _hash(cohort_definition)
     cohort_id = f"coh_{cohort_hash[:24]}"
@@ -159,6 +164,8 @@ def build_identity(
         "cohort_definition_hash": cohort_hash,
         "cohort_definition": cohort_definition,
         "cohort_protocol_version": COHORT_PROTOCOL_VERSION,
+        "evaluation_protocol_version": cohort_definition.get("evaluation_protocol_version"),
+        "evaluation_protocol_hash": cohort_definition.get("evaluation_protocol_hash"),
         "learning_version": str(learning_version),
         "evaluation_stage": str(evaluation_stage),
     }
@@ -183,6 +190,8 @@ def public_identity(identity: dict[str, Any]) -> dict[str, Any]:
         "scorer_definition_hash": identity.get("scorer_definition_hash"),
         "cohort_definition_hash": identity.get("cohort_definition_hash"),
         "cohort_protocol_version": identity.get("cohort_protocol_version"),
+        "evaluation_protocol_version": identity.get("evaluation_protocol_version"),
+        "evaluation_protocol_hash": identity.get("evaluation_protocol_hash"),
     }
 
 
@@ -243,6 +252,8 @@ def published_campaign_identity(
     learning_version: str,
     evaluation_stage: str = "published_paper_campaign",
 ) -> dict[str, Any]:
+    from app.services import live_trader_evidence_quality_v92 as quality
+
     return build_identity(
         policy_kind="production_manual_paper",
         policy_key=PRODUCTION_POLICY_CONTRACT_VERSION,
@@ -251,6 +262,7 @@ def published_campaign_identity(
         learning_version=learning_version,
         evaluation_stage=evaluation_stage,
         scorer_definition=published_campaign_scorer_definition(settings),
+        evaluation_protocol=quality.published_paper_protocol_definition(),
     )
 
 

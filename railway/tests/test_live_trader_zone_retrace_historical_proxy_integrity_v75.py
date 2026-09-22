@@ -30,11 +30,15 @@ def test_historical_m1_candidate_is_not_live_promotion() -> None:
     assert result["live_policy_tick_exact_verified"] is False
     assert result["live_policy_entry_geometry_verified"] is False
     assert result["historical_policy_proxy_entry_geometry_verified"] is True
-    assert result["historical_entry_execution_edge_supported"] is True
+    assert result["historical_entry_execution_edge_supported"] is False
+    assert result["historical_screening_candidate"] is True
+    assert result["historical_screening_candidate_execution"] == "market_after_zone_confirmation"
+    assert result["historical_proxy_may_auto_promote"] is False
     assert result["live_entry_execution_edge_supported"] is False
     assert result["live_strategy_edge_proven"] is False
     assert result["forward_live_campaign_validation_required"] is True
-    assert result["phase"] == "HISTORICAL M1 ENTRY CANDIDATE"
+    assert result["phase"] == "HISTORICAL M1 SCREENING CANDIDATE"
+    assert result["status"] == "historical_m1_screening_candidate_fresh_forward_confirmation_required"
     assert result["promotion_blocked"] is True
 
 

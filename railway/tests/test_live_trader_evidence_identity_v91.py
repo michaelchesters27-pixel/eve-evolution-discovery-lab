@@ -22,7 +22,12 @@ def explicit_scorer(version: str) -> dict:
     return {"scorer_contract_version": version, "metric": "net_r"}
 
 
-def build(policy_version: str, scorer_version: str, stage: str = "forward") -> dict:
+def build(
+    policy_version: str,
+    scorer_version: str,
+    stage: str = "forward",
+    evaluation_protocol: dict | None = None,
+) -> dict:
     return identity.build_identity(
         policy_kind="test_policy",
         policy_key="test",
@@ -31,6 +36,7 @@ def build(policy_version: str, scorer_version: str, stage: str = "forward") -> d
         learning_version="test-learning-v1",
         evaluation_stage=stage,
         scorer_definition=explicit_scorer(scorer_version),
+        evaluation_protocol=evaluation_protocol,
     )
 
 
@@ -58,6 +64,16 @@ def test_scorer_change_forces_new_scorer_and_new_cohort() -> None:
     assert before["cohort_id"] != after["cohort_id"]
 
 
+def test_evaluation_protocol_change_starts_new_cohort_without_relabelling_policy_or_scorer() -> None:
+    before = build("p1", "s1", evaluation_protocol={"version": "q1", "min_days": 10})
+    after = build("p1", "s1", evaluation_protocol={"version": "q2", "min_days": 20})
+    assert before["policy_id"] == after["policy_id"]
+    assert before["scorer_id"] == after["scorer_id"]
+    assert before["cohort_id"] != after["cohort_id"]
+    assert before["evaluation_protocol_version"] == "q1"
+    assert after["evaluation_protocol_version"] == "q2"
+
+
 def test_evaluation_stage_change_starts_new_cohort_without_relabelling_policy() -> None:
     research = build("p1", "s1", "research")
     published = build("p1", "s1", "published")
@@ -79,7 +95,7 @@ def test_policy_lab_old_positive_cohort_cannot_qualify_current_cohort() -> None:
                 "cost_model_version": v85.cost_model.COST_MODEL_VERSION,
                 "timing_contract_version": v85.hardening.TIMING_CONTRACT_VERSION,
                 "cohort_id": "coh_old",
-                "trade_idea": {"policy_lab": {"policy_key": "candidate"}},
+                "trade_idea": {"policy_lab": {"policy_key": "directional_quality_market"}},
             }
         )
     for index in range(30):
@@ -93,13 +109,14 @@ def test_policy_lab_old_positive_cohort_cannot_qualify_current_cohort() -> None:
                 "cost_model_version": v85.cost_model.COST_MODEL_VERSION,
                 "timing_contract_version": v85.hardening.TIMING_CONTRACT_VERSION,
                 "cohort_id": "coh_current",
-                "trade_idea": {"policy_lab": {"policy_key": "candidate"}},
+                "trade_idea": {"policy_lab": {"policy_key": "directional_quality_market"}},
             }
         )
 
-    stats = v85._policy_stats(rows, {"candidate": "coh_current"})
+    stats = v85._policy_stats(rows, {"directional_quality_market": "coh_current"})
     leader = stats["leader"]
     assert leader is not None
+    assert leader["policy_key"] == "directional_quality_market"
     assert leader["triggered"] == 30
     assert leader["net_expectancy_r"] == -1.2
     assert leader["forward_candidate"] is False

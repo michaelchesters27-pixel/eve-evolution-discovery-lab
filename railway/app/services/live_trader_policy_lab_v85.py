@@ -10,6 +10,7 @@ from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_clear_bias_gate_v45 as clear_gate
 from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_evidence_identity as evidence_id
+from app.services import live_trader_evidence_quality_v92 as quality
 from app.services import live_trader_forward_shadow_learning_v83 as v83
 from app.services import live_trader_historical_runtime_v30 as historical_runtime
 from app.services import live_trader_learning_v2 as v2
@@ -77,6 +78,7 @@ def _policy_identity(self: core.LiveTrader, policy_key: str) -> dict[str, Any]:
         settings=self.settings,
         learning_version=LEARNING_VERSION,
         evaluation_stage="policy_lab_forward_research",
+        evaluation_protocol=quality.policy_lab_protocol_definition(),
     )
 
 
@@ -554,6 +556,7 @@ def _policy_stats(
         if current_cohorts is not None and str(row.get("cohort_id") or "") != str(current_cohorts.get(key) or ""):
             continue
         verified_rows.append(row)
+
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in verified_rows:
         trade = dict(row.get("trade_idea") or {})
@@ -562,12 +565,18 @@ def _policy_stats(
         grouped[key].append(row)
 
     leaderboard: list[dict[str, Any]] = []
-    for key, items in grouped.items():
-        ordered = sorted(items, key=lambda row: str(row.get("observed_at") or ""))
+    # Always report all seven declared policies, even before a policy has a row.
+    for key in POLICY_KEYS:
+        items = sorted(grouped.get(key, []), key=lambda row: str(row.get("observed_at") or ""))
         triggered = [
-            row for row in ordered
+            row for row in items
             if row.get("entry_triggered") is True and row.get("net_realised_r") is not None
         ]
+        assessment = quality.evaluate_policy_lab_candidate(
+            triggered,
+            policy_key=key,
+            cohort_id=(current_cohorts or {}).get(key),
+        )
         net_values = [_num(row.get("net_realised_r")) for row in triggered]
         gross_values = [
             _num(row.get("gross_realised_r"), _num(row.get("realised_r")))
@@ -575,44 +584,49 @@ def _policy_stats(
         ]
         wins = sum(1 for value in net_values if value > 0)
         losses = sum(1 for value in net_values if value < 0)
-        total_net_r = sum(net_values)
         total_gross_r = sum(gross_values)
-        expectancy_net = total_net_r / len(net_values) if net_values else None
-        expectancy_gross = total_gross_r / len(gross_values) if gross_values else None
-        days = {
-            str(row.get("observed_at") or "")[:10]
-            for row in triggered
-            if row.get("observed_at")
-        }
-        candidate = bool(
-            len(triggered) >= MIN_CANDIDATE_TRIGGERED
-            and expectancy_net is not None
-            and expectancy_net >= MIN_CANDIDATE_EXPECTANCY_R
-        )
+        gross_expectancy = total_gross_r / len(gross_values) if gross_values else None
         leaderboard.append(
             {
                 "policy_key": key,
+                "cohort_id": (current_cohorts or {}).get(key),
                 "resolved": len(items),
-                "triggered": len(triggered),
+                "triggered": assessment["triggered"],
                 "wins_net": wins,
                 "losses_net": losses,
                 "wins": wins,
                 "losses": losses,
                 "total_gross_r": round(total_gross_r, 3),
-                "total_net_r": round(total_net_r, 3),
-                "total_r": round(total_net_r, 3),
-                "gross_expectancy_r": round(expectancy_gross, 3) if expectancy_gross is not None else None,
-                "net_expectancy_r": round(expectancy_net, 3) if expectancy_net is not None else None,
-                "expectancy_r": round(expectancy_net, 3) if expectancy_net is not None else None,
+                "total_net_r": round(_num(assessment.get("total_net_r")), 3),
+                "total_r": round(_num(assessment.get("total_net_r")), 3),
+                "gross_expectancy_r": round(gross_expectancy, 3) if gross_expectancy is not None else None,
+                "net_expectancy_r": assessment.get("net_expectancy_r"),
+                "expectancy_r": assessment.get("net_expectancy_r"),
                 "win_rate_net": round(wins / len(triggered), 3) if triggered else None,
                 "win_rate": round(wins / len(triggered), 3) if triggered else None,
                 "max_drawdown_net_r": _max_drawdown(net_values),
                 "max_drawdown_r": _max_drawdown(net_values),
-                "independent_days": len(days),
-                "forward_candidate": candidate,
-                "minimum_triggered": MIN_CANDIDATE_TRIGGERED,
-                "minimum_net_expectancy_r": MIN_CANDIDATE_EXPECTANCY_R,
-                "minimum_expectancy_r": MIN_CANDIDATE_EXPECTANCY_R,
+                "independent_days": assessment.get("independent_days"),
+                "independent_weeks": assessment.get("independent_weeks"),
+                "max_single_day_trigger_share": assessment.get("max_single_day_trigger_share"),
+                "multiplicity_adjusted_one_sided_lower_bound_r": assessment.get(
+                    "multiplicity_adjusted_one_sided_lower_bound_r"
+                ),
+                "screening_pass_30_and_mean_only": assessment.get("screening_pass_30_and_mean_only"),
+                "fresh_confirmation_candidate": assessment.get("fresh_confirmation_candidate"),
+                "forward_candidate": assessment.get("forward_candidate"),
+                "quality_gates": assessment.get("quality_gates"),
+                "failed_quality_gates": assessment.get("failed_quality_gates"),
+                "minimum_triggered": quality.POLICY_LAB_MIN_TRIGGERED,
+                "minimum_independent_days": quality.POLICY_LAB_MIN_INDEPENDENT_DAYS,
+                "minimum_independent_weeks": quality.POLICY_LAB_MIN_INDEPENDENT_WEEKS,
+                "minimum_net_expectancy_r": quality.POLICY_LAB_MIN_NET_EXPECTANCY_R,
+                "minimum_expectancy_r": quality.POLICY_LAB_MIN_NET_EXPECTANCY_R,
+                "family_wise_alpha": quality.FAMILY_ALPHA,
+                "simultaneous_policy_count": quality.POLICY_LAB_COMPARISONS,
+                "evidence_quality_protocol_version": quality.POLICY_LAB_PROTOCOL_VERSION,
+                "fresh_confirmation_required": True,
+                "selection_cohort_may_confirm_winner": False,
                 "cost_model_version": cost_model.COST_MODEL_VERSION,
                 "publication_authority": False,
             }
@@ -620,8 +634,10 @@ def _policy_stats(
 
     leaderboard.sort(
         key=lambda item: (
-            bool(item.get("forward_candidate")),
+            bool(item.get("fresh_confirmation_candidate")),
+            _num(item.get("multiplicity_adjusted_one_sided_lower_bound_r"), -999.0),
             _num(item.get("net_expectancy_r"), -999.0),
+            int(item.get("independent_days") or 0),
             int(item.get("triggered") or 0),
         ),
         reverse=True,
@@ -631,22 +647,42 @@ def _policy_stats(
         "learning_version": LEARNING_VERSION,
         "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
         "cost_model_version": cost_model.COST_MODEL_VERSION,
+        "evidence_quality_protocol_version": quality.POLICY_LAB_PROTOCOL_VERSION,
+        "evidence_quality_protocol": quality.policy_lab_protocol_definition(),
         "legacy_unverified_resolved": max(0, len(rows) - len(verified_rows)),
         "leader": leaderboard[0] if leaderboard else None,
         "leaderboard": leaderboard,
+        "all_declared_policies_reported": len(leaderboard) == len(POLICY_KEYS),
         "live_policy_unchanged": True,
         "automatic_promotion": False,
+        "fresh_confirmation_required": True,
+        "selection_cohort_may_confirm_winner": False,
         "purpose": (
-            "Research multiple execution/gating policies in parallel using causal M1 outcomes. "
-            "Candidate screening uses cost-stress adjusted net R; gross R is retained separately. "
-            "This lab never publishes or executes a candidate automatically."
+            "Research seven execution/gating policies in parallel using causal cost-adjusted M1 outcomes. "
+            "A raw 30-trade/+0.10R mean is only a screening flag. Confirmation candidacy additionally requires "
+            "independent UTC-day/week coverage, a concentration limit and a Bonferroni-adjusted one-sided "
+            "day-cluster bootstrap lower bound above zero. A selected winner must still start a fresh confirmation cohort."
         ),
     }
 
 
+async def _ensure_current_policy_identities(self: core.LiveTrader) -> dict[str, dict[str, Any]]:
+    identities = {key: _policy_identity(self, key) for key in POLICY_KEYS}
+    registered = getattr(self, "_policy_lab_registered_cohorts_v92", set())
+    registered = set(registered or set())
+    for key, identity in identities.items():
+        cohort_id = str(identity["cohort_id"])
+        if cohort_id in registered:
+            continue
+        await evidence_id.ensure_registered(self.repo, identity)
+        registered.add(cohort_id)
+    self._policy_lab_registered_cohorts_v92 = registered
+    return identities
+
+
 async def _policy_lab_summary(self: core.LiveTrader) -> dict[str, Any]:
     now = core.utc_now()
-    current_identities = {key: _policy_identity(self, key) for key in POLICY_KEYS}
+    current_identities = await _ensure_current_policy_identities(self)
     current_cohorts = {key: str(identity["cohort_id"]) for key, identity in current_identities.items()}
     cached_at = getattr(self, "_policy_lab_summary_at_v85", None)
     cached = getattr(self, "_policy_lab_summary_v85", None)
@@ -676,6 +712,7 @@ async def _policy_lab_summary(self: core.LiveTrader) -> dict[str, Any]:
 
 async def _refresh_state_v85(self: core.LiveTrader, *, force_rows: bool = False) -> dict[str, Any]:
     state = dict(await _current_refresh_state(self, force_rows=force_rows))
+    identities = await _ensure_current_policy_identities(self)
     recording = await _record_policy_candidates(self, state)
     resolution = await _resolve_policy_outcomes(self)
     state["policy_lab_health"] = {
@@ -684,6 +721,9 @@ async def _refresh_state_v85(self: core.LiveTrader, *, force_rows: bool = False)
         "resolution": resolution,
         "live_policy_unchanged": True,
         "publication_authority": False,
+        "evidence_quality_protocol_version": quality.POLICY_LAB_PROTOCOL_VERSION,
+        "current_cohort_ids": {key: str(identity["cohort_id"]) for key, identity in identities.items()},
+        "fresh_confirmation_required": True,
     }
     self._latest_state = state
     return state
@@ -706,8 +746,14 @@ def _runtime_status_v85(self: core.LiveTrader) -> dict[str, Any]:
             "policy_lab_cost_model_version": cost_model.COST_MODEL_VERSION,
             "policy_lab_identity_version": evidence_id.IDENTITY_VERSION,
             "policy_lab_current_cohort_ids": current_cohorts,
+            "policy_lab_evidence_quality_protocol_version": quality.POLICY_LAB_PROTOCOL_VERSION,
+            "policy_lab_min_independent_days": quality.POLICY_LAB_MIN_INDEPENDENT_DAYS,
+            "policy_lab_min_independent_weeks": quality.POLICY_LAB_MIN_INDEPENDENT_WEEKS,
+            "policy_lab_family_wise_alpha": quality.FAMILY_ALPHA,
             "policy_lab_parallel_forward_research": True,
             "policy_lab_automatic_promotion": False,
+            "policy_lab_fresh_confirmation_required": True,
+            "policy_lab_selection_cohort_may_confirm_winner": False,
             "policy_lab_publication_authority": False,
             "visible_trade_gate_unchanged": True,
         }

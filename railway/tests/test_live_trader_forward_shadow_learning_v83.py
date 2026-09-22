@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_forward_shadow_learning_v83 as v83
@@ -80,7 +80,8 @@ def test_trade_skill_requires_sample_before_proven() -> None:
     assert skill["score"] <= 3.0
 
 
-def test_trade_skill_can_become_proven_with_forward_evidence() -> None:
+def test_trade_skill_never_calls_30_raw_trades_proven() -> None:
+    start = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
     reviews = [
         {
             "triggered": True,
@@ -88,13 +89,15 @@ def test_trade_skill_can_become_proven_with_forward_evidence() -> None:
             "net_realised_r": 0.9 if index % 2 == 0 else -1.1,
             "cost_model_version": cost_model.COST_MODEL_VERSION,
             "outcome": "DONE",
+            "completed_at": (start + timedelta(days=index)).isoformat(),
         }
         for index in range(40)
     ]
-    # 50% win rate at 1:1 is not good enough to be called proven.
-    skill = v83._trade_skill_from_reviews(reviews)
+    skill = v83._trade_skill_from_reviews(reviews, cohort_id="coh_test")
     assert skill["published_triggered"] == 40
-    assert skill["score"] < 7.5
+    assert skill["forward_net_supported"] is False
+    assert skill["grade"] != "PROVEN"
+    assert skill["sample_count_alone_never_proves_edge"] is True
 
     better = [
         {
@@ -103,13 +106,15 @@ def test_trade_skill_can_become_proven_with_forward_evidence() -> None:
             "net_realised_r": 1.4 if index % 3 != 0 else -1.1,
             "cost_model_version": cost_model.COST_MODEL_VERSION,
             "outcome": "DONE",
+            "completed_at": (start + timedelta(days=index)).isoformat(),
         }
         for index in range(45)
     ]
-    better_skill = v83._trade_skill_from_reviews(better)
+    better_skill = v83._trade_skill_from_reviews(better, cohort_id="coh_test")
     assert better_skill["published_triggered"] == 45
     assert better_skill["score"] >= 7.5
-    assert better_skill["grade"] == "PROVEN"
+    assert better_skill["grade"] == "FORWARD_NET_SUPPORTED"
+    assert better_skill["one_sided_95pct_day_cluster_lower_bound_r"] > 0
 
 
 def test_shadow_research_does_not_copy_live_zone_distance_gate() -> None:

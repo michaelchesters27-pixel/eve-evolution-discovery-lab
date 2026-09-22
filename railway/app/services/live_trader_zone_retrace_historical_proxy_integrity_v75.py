@@ -21,8 +21,13 @@ def _current_policy_contract_v75(payload: dict[str, Any]) -> dict[str, Any]:
     # is not tick-exact. Preserve the useful historical qualification separately
     # from any claim of live/forward proof.
     historical_verified = bool(specialist.get("live_policy_expectancy_verified"))
-    historical_candidate = specialist.get("live_promoted_execution")
     academy = dict(specialist.get("current_policy_academy") or {})
+    historical_screening_candidate = bool(
+        specialist.get("historical_screening_candidate")
+        or dict(academy.get("policy") or {}).get("historical_screening_candidate")
+        or specialist.get("live_promoted_execution")  # legacy pre-v92 candidate becomes screening-only
+    )
+    historical_candidate = "market_after_zone_confirmation" if historical_screening_candidate else None
 
     specialist.update(
         {
@@ -40,10 +45,13 @@ def _current_policy_contract_v75(payload: dict[str, Any]) -> dict[str, Any]:
             "live_policy_tick_exact_verified": False,
             "live_policy_entry_geometry_verified": False,
             "historical_policy_proxy_entry_geometry_verified": historical_verified,
-            "historical_entry_execution_edge_supported": bool(historical_candidate),
+            "historical_entry_execution_edge_supported": False,
+            "historical_screening_candidate": historical_screening_candidate,
+            "historical_screening_candidate_execution": historical_candidate,
+            "historical_proxy_may_auto_promote": False,
             "live_entry_execution_edge_supported": False,
             "live_strategy_edge_proven": False,
-            "promotion_scope": "historical_causal_m1_candidate" if historical_candidate else "none",
+            "promotion_scope": "historical_screening_only" if historical_candidate else "none",
         }
     )
 
@@ -53,17 +61,17 @@ def _current_policy_contract_v75(payload: dict[str, Any]) -> dict[str, Any]:
         specialist["promoted_execution"] = None
         specialist["promotion_blocked"] = True
         specialist["promotion_block_reason"] = (
-            "The current-policy causal M1 archive has qualified an historical entry candidate, "
-            "but live promotion remains blocked until forward Live Trader campaigns validate it."
+            "The current-policy causal M1 archive has passed the predeclared historical screening thresholds, "
+            "but that selection evidence is not confirmation. A fresh prospective forward cohort is required."
         )
-        specialist["phase"] = "HISTORICAL M1 ENTRY CANDIDATE"
-        specialist["status"] = "historical_m1_entry_candidate_forward_validation_required"
+        specialist["phase"] = "HISTORICAL M1 SCREENING CANDIDATE"
+        specialist["status"] = "historical_m1_screening_candidate_fresh_forward_confirmation_required"
     elif historical_verified:
         specialist["phase"] = "CURRENT-POLICY M1 PROXY VERIFIED"
         specialist["status"] = "current_policy_m1_proxy_verified_no_candidate"
         specialist["promotion_blocked"] = True
         specialist["promotion_block_reason"] = (
-            "The causal M1 current-policy archive is verified but has not met the historical candidate thresholds."
+            "The causal M1 current-policy archive is verified but has not met the historical screening thresholds."
         )
     else:
         specialist["phase"] = "CURRENT-POLICY M1 PROXY SCANNING"

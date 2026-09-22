@@ -69,7 +69,7 @@ def test_policy_lab_comparison_does_not_require_live_zone_distance() -> None:
     assert "clear_bias_zone_2_5atr" not in keys
 
 
-def test_policy_lab_marks_only_mature_positive_forward_candidate() -> None:
+def test_policy_lab_30_correlated_rows_are_only_a_screening_flag() -> None:
     rows = []
     for index in range(30):
         rows.append(
@@ -82,12 +82,42 @@ def test_policy_lab_marks_only_mature_positive_forward_candidate() -> None:
                 "cost_model_version": v85.cost_model.COST_MODEL_VERSION,
                 "trade_outcome": "target" if index % 2 == 0 else "stop",
                 "timing_contract_version": v85.hardening.TIMING_CONTRACT_VERSION,
-                "trade_idea": {"policy_lab": {"policy_key": "candidate"}},
+                "trade_idea": {"policy_lab": {"policy_key": "directional_quality_market"}},
             }
         )
     stats = v85._policy_stats(rows)
-    leader = stats["leader"]
+    leader = next(item for item in stats["leaderboard"] if item["policy_key"] == "directional_quality_market")
     assert leader["triggered"] == 30
     assert leader["expectancy_r"] == 0.25
-    assert leader["forward_candidate"] is True
+    assert leader["screening_pass_30_and_mean_only"] is True
+    assert leader["forward_candidate"] is False
+    assert "minimum_independent_days" in leader["failed_quality_gates"]
     assert stats["automatic_promotion"] is False
+    assert stats["fresh_confirmation_required"] is True
+
+
+def test_policy_lab_requires_clustered_uncertainty_and_independent_weeks() -> None:
+    rows = []
+    for index in range(30):
+        day = index + 1
+        rows.append(
+            {
+                "observed_at": f"2026-09-{day:02d}T10:00:00+00:00",
+                "entry_triggered": True,
+                "realised_r": 0.4,
+                "gross_realised_r": 0.4,
+                "net_realised_r": 0.3,
+                "cost_model_version": v85.cost_model.COST_MODEL_VERSION,
+                "trade_outcome": "expired_win",
+                "timing_contract_version": v85.hardening.TIMING_CONTRACT_VERSION,
+                "trade_idea": {"policy_lab": {"policy_key": "directional_quality_market"}},
+            }
+        )
+    stats = v85._policy_stats(rows)
+    candidate = next(item for item in stats["leaderboard"] if item["policy_key"] == "directional_quality_market")
+    assert candidate["independent_days"] == 30
+    assert candidate["independent_weeks"] >= 4
+    assert candidate["multiplicity_adjusted_one_sided_lower_bound_r"] > 0
+    assert candidate["fresh_confirmation_candidate"] is True
+    assert candidate["forward_candidate"] is True
+    assert candidate["selection_cohort_may_confirm_winner"] is False
