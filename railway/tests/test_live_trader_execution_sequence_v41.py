@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from app.services import live_trader_execution_integrity_v39 as integrity
 from app.services import live_trader_execution_sequence_v41 as sequence
+from app.services import live_trader_execution_sequence_v88 as current_sequence
 from app.services import live_trader_learning_v2 as v2
 
 
@@ -65,8 +66,12 @@ def test_regrader_current_version_state_resumes(monkeypatch) -> None:
     assert asyncio.run(sequence._state_v41(SimpleNamespace())) == expected
 
 
-def test_shared_execution_schema_and_scorer_are_v41() -> None:
-    assert integrity.EXECUTION_SCHEMA == sequence.EXECUTION_SCHEMA
-    assert integrity.REGRADER_VERSION == sequence.REGRADER_VERSION
-    assert integrity._trade_path_result_v39 is sequence._trade_path_result_v41
-    assert v2._trade_path_result is sequence._trade_path_result_v41
+def test_v41_contract_is_superseded_by_current_v88_scorer() -> None:
+    # v41 remains available for regression tests, but the package bootstrap now
+    # intentionally installs v88 as the shared production scorer.
+    assert integrity.EXECUTION_SCHEMA == current_sequence.EXECUTION_SCHEMA
+    assert integrity.REGRADER_VERSION == current_sequence.REGRADER_VERSION
+    assert sequence.EXECUTION_SCHEMA == current_sequence.EXECUTION_SCHEMA
+    assert sequence.REGRADER_VERSION == current_sequence.REGRADER_VERSION
+    assert integrity._trade_path_result_v39 is current_sequence._trade_path_result_v88
+    assert v2._trade_path_result is current_sequence._trade_path_result_v88
