@@ -66,7 +66,17 @@ def _advance_campaign_v89(
             campaign["activation_price"] = round(price, 3)
             campaign["activation_price_recorded_at"] = core.utc_now().isoformat()
             self._live_campaign_dirty = True
-    return _current_advance_campaign(self, campaign, price, allow_price_events=allow_price_events)
+    advanced = _current_advance_campaign(self, campaign, price, allow_price_events=allow_price_events)
+    if isinstance(advanced, dict) and str(advanced.get("status") or "").lower() in {"won", "lost", "invalidated", "expired"}:
+        gross_r = cost_model.campaign_gross_r(advanced)
+        costed = cost_model.campaign_cost_result(advanced, gross_r)
+        advanced["gross_realised_r"] = costed.get("gross_realised_r")
+        advanced["estimated_cost_r"] = costed.get("estimated_cost_r")
+        advanced["net_realised_r"] = costed.get("net_realised_r")
+        advanced["execution_costs"] = costed.get("execution_costs")
+        advanced["cost_model_version"] = costed.get("cost_model_version")
+        self._live_campaign_dirty = True
+    return advanced
 
 
 def _campaign_fingerprint_v89(campaign: dict[str, Any]) -> str:
