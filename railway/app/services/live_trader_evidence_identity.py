@@ -143,10 +143,17 @@ def build_identity(
         "scorer_id": scorer_id,
         "learning_version": str(learning_version),
         "evaluation_stage": str(evaluation_stage),
-        "evaluation_protocol_version": protocol.get("version"),
-        "evaluation_protocol_hash": _hash(protocol) if protocol else None,
-        "evaluation_protocol": protocol or None,
     }
+    # Preserve the exact v91 cohort identity when no evaluation protocol is
+    # supplied. Only qualification-aware stages should start a new cohort.
+    if protocol:
+        cohort_definition.update(
+            {
+                "evaluation_protocol_version": protocol.get("version"),
+                "evaluation_protocol_hash": _hash(protocol),
+                "evaluation_protocol": protocol,
+            }
+        )
     cohort_hash = _hash(cohort_definition)
     cohort_id = f"coh_{cohort_hash[:24]}"
 

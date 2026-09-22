@@ -64,6 +64,22 @@ def test_scorer_change_forces_new_scorer_and_new_cohort() -> None:
     assert before["cohort_id"] != after["cohort_id"]
 
 
+def test_no_evaluation_protocol_preserves_v91_cohort_hash_shape() -> None:
+    result = build("p1", "s1", stage="forward")
+    legacy_definition = {
+        "identity_version": identity.IDENTITY_VERSION,
+        "cohort_protocol_version": identity.COHORT_PROTOCOL_VERSION,
+        "policy_id": result["policy_id"],
+        "scorer_id": result["scorer_id"],
+        "learning_version": "test-learning-v1",
+        "evaluation_stage": "forward",
+    }
+    expected = f"coh_{identity._hash(legacy_definition)[:24]}"
+    assert result["cohort_id"] == expected
+    assert result["evaluation_protocol_version"] is None
+    assert result["evaluation_protocol_hash"] is None
+
+
 def test_evaluation_protocol_change_starts_new_cohort_without_relabelling_policy_or_scorer() -> None:
     before = build("p1", "s1", evaluation_protocol={"version": "q1", "min_days": 10})
     after = build("p1", "s1", evaluation_protocol={"version": "q2", "min_days": 20})
