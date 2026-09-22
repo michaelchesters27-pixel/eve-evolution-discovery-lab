@@ -130,8 +130,11 @@ async def _record_supervisor_stage_failure(
         },
         "error": reason[:2000],
     }
+    stage_run_id: int | None = None
     try:
-        await discovery_repo.client.insert("bounded_research_stage_runs", payload, return_rows=False)
+        inserted = await discovery_repo.client.insert("bounded_research_stage_runs", payload, return_rows=True)
+        if inserted and isinstance(inserted[0], dict) and inserted[0].get("id") is not None:
+            stage_run_id = int(inserted[0]["id"])
     except Exception:
         logger.exception("Could not persist supervisor-generated stage failure")
     return {
@@ -144,6 +147,7 @@ async def _record_supervisor_stage_failure(
         "elapsed_ms": round(elapsed_ms, 3),
         "memory_ceiling_mb": settings.bounded_research_memory_mb,
         "resource_version": resources.RESOURCE_VERSION,
+        "stage_run_id": stage_run_id,
     }
 
 
