@@ -65,6 +65,8 @@ from app.services import live_trader_execution_integrity_v39 as _live_trader_exe
 from app.services import live_trader_execution_integrity_compat_v40 as _live_trader_execution_integrity_compat_v40  # noqa: F401
 # Match LIMIT-order replay sequencing to the actual locked campaign state machine and restart revalidation.
 from app.services import live_trader_execution_sequence_v41 as _live_trader_execution_sequence_v41  # noqa: F401
+# Prevent same-minute pre-fill target credit for LIMIT orders and restart historical execution regrading.
+from app.services import live_trader_execution_sequence_v88 as _live_trader_execution_sequence_v88  # noqa: F401
 # Prevent dashboard polling/multiple tabs from launching overlapping heavy intelligence aggregates.
 from app.services import live_trader_db_load_guard_v42 as _live_trader_db_load_guard_v42  # noqa: F401
 # Show true multi-candle closed-candle structure per timeframe and fail closed on provably stale HTF context.
