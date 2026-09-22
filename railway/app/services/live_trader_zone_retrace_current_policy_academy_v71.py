@@ -712,6 +712,7 @@ async def _learning_summary_v71(self: core.LiveTrader) -> dict[str, Any]:
     summary["zone_retrace_current_policy_academy"] = state or {
         "academy_version": ACADEMY_VERSION,
         "status": "waiting_for_first_scan",
+        "evidence_identity": evidence_id.public_identity(_academy_identity(self.settings)),
     }
     return summary
 
@@ -732,7 +733,7 @@ def _runtime_status_v71(self: core.LiveTrader) -> dict[str, Any]:
             "zone_retrace_live_promotion_authority": ACADEMY_VERSION,
             "zone_retrace_compatibility_replay_authoritative": False,
             "zone_retrace_current_policy_identity_version": evidence_id.IDENTITY_VERSION,
-            "zone_retrace_current_policy_cohort_id": state.get("cohort_id"),
+            "zone_retrace_current_policy_cohort_id": state.get("cohort_id") or _academy_identity(self.settings)["cohort_id"],
         }
     )
     return status
