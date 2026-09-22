@@ -15,11 +15,13 @@ from app.services.repository import SourceRepository
 
 ENGINE_VERSION = "eve-live-learning-engine-v2.6"
 LEARNING_NAMESPACE = "eve-live-learning-family-v1"
-OUTCOME_SCHEMA = "causal-m1-path-v1"
+OUTCOME_SCHEMA = "causal-m1-path-v2-activation"
+TIMING_CONTRACT_VERSION = "eve-live-execution-timing-v1"
 OBSERVATION_POLICY = (
-    "Learning observations are clocked to the market-data timestamp used by the decision, not the later wall-clock "
-    "database insert time. Actionable outcomes are reconstructed from the read-only source M1 path; incomplete M1 "
-    "paths are never scored as wins or losses."
+    "Market observation time identifies the data used by the decision, but executable outcome evidence starts only "
+    "after the decision has been durably persisted. Receipt, decision, publication-request, publication-confirmation "
+    "and activation timestamps are recorded separately. Causal M1 replay begins at the first full minute at or after "
+    "activation, so no pre-publication or partial activation-minute price action can earn entry/target credit."
 )
 SOCKET_WARMUP_SECONDS = 30.0
 MAX_ENDPOINT_LAG_SECONDS = 75.0
@@ -38,6 +40,139 @@ def _parse_time(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _first_full_m1_at_or_after(value: datetime) -> datetime:
+    value = value.astimezone(timezone.utc)
+    minute = value.replace(second=0, microsecond=0)
+    return minute if value == minute else minute + timedelta(minutes=1)
+
+
+def _execution_timing_seed(
+    self: core.LiveTrader,
+    observed: datetime,
+    *,
+    decision_at: datetime | None = None,
+) -> dict[str, Any]:
+    decision = decision_at or core.utc_now()
+    received = _parse_time(getattr(self, "last_tick_received_at", None))
+    return {
+        "version": TIMING_CONTRACT_VERSION,
+        "market_observed_at": observed.isoformat(),
+        "market_received_at": received.isoformat() if received is not None else None,
+        "decision_at": decision.isoformat(),
+        "publication_requested_at": None,
+        "publication_confirmed_at": None,
+        "activation_at": None,
+        "execution_start_at": None,
+        "pre_activation_price_events_eligible": False,
+        "partial_activation_minute_eligible": False,
+    }
+
+
+async def _insert_timed_forward_opinion(
+    self: core.LiveTrader,
+    payload: dict[str, Any],
+    *,
+    observed: datetime,
+    market_state: dict[str, Any],
+    decision_at: datetime | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Persist a forward decision, then activate it only after durable publication.
+
+    If the post-insert activation patch fails the row remains unactivated and
+    therefore cannot be scored as executable evidence.
+    """
+    timing = _execution_timing_seed(self, observed, decision_at=decision_at)
+    requested = core.utc_now()
+    timing["publication_requested_at"] = requested.isoformat()
+    seeded_state = dict(market_state)
+    seeded_state["execution_timing"] = dict(timing)
+
+    row_payload = dict(payload)
+    row_payload.update(
+        {
+            "market_observed_at": observed.isoformat(),
+            "market_received_at": timing.get("market_received_at"),
+            "decision_at": timing.get("decision_at"),
+            "publication_requested_at": timing.get("publication_requested_at"),
+            "publication_confirmed_at": None,
+            "activation_at": None,
+            "execution_start_at": None,
+            "timing_contract_version": TIMING_CONTRACT_VERSION,
+            "market_state": seeded_state,
+        }
+    )
+    inserted = await self.repo.client.insert("live_trader_opinions", row_payload, return_rows=True)
+    if not inserted:
+        return None, timing
+
+    row = dict(inserted[0] or {})
+    row_id = row.get("id")
+    if row_id is None:
+        return row, timing
+
+    confirmed = core.utc_now()
+    execution_start = _first_full_m1_at_or_after(confirmed)
+    timing.update(
+        {
+            "publication_confirmed_at": confirmed.isoformat(),
+            "activation_at": confirmed.isoformat(),
+            "execution_start_at": execution_start.isoformat(),
+        }
+    )
+    final_state = dict(seeded_state)
+    final_state["execution_timing"] = dict(timing)
+    await self.repo.client.patch(
+        "live_trader_opinions",
+        {
+            "publication_confirmed_at": confirmed.isoformat(),
+            "activation_at": confirmed.isoformat(),
+            "execution_start_at": execution_start.isoformat(),
+            "market_state": final_state,
+        },
+        filters={"id": f"eq.{row_id}"},
+    )
+    row.update(
+        {
+            "publication_confirmed_at": confirmed.isoformat(),
+            "activation_at": confirmed.isoformat(),
+            "execution_start_at": execution_start.isoformat(),
+            "market_state": final_state,
+        }
+    )
+    return row, timing
+
+
+def _execution_window(
+    row: dict[str, Any],
+    *,
+    fallback_observed: datetime,
+    horizon_minutes: int,
+) -> tuple[datetime, datetime, bool, dict[str, Any]]:
+    contract = str(row.get("timing_contract_version") or "")
+    activation = _parse_time(row.get("activation_at"))
+    execution_start = _parse_time(row.get("execution_start_at"))
+    verified = contract == TIMING_CONTRACT_VERSION and activation is not None
+    if verified:
+        start = execution_start or _first_full_m1_at_or_after(activation)
+        horizon = activation + timedelta(minutes=max(horizon_minutes, 1))
+    else:
+        start = fallback_observed
+        horizon = fallback_observed + timedelta(minutes=max(horizon_minutes, 1))
+    return start, horizon, verified, {
+        "timing_contract_version": contract or None,
+        "market_observed_at": row.get("market_observed_at") or fallback_observed.isoformat(),
+        "market_received_at": row.get("market_received_at"),
+        "decision_at": row.get("decision_at"),
+        "publication_requested_at": row.get("publication_requested_at"),
+        "publication_confirmed_at": row.get("publication_confirmed_at"),
+        "activation_at": row.get("activation_at"),
+        "execution_start_at": (execution_start.isoformat() if execution_start is not None else None),
+        "executable_timing_verified": verified,
+        "pre_activation_price_events_excluded": verified,
+        "partial_activation_minute_excluded": verified,
+    }
 
 
 def _signature_v26(self: core.LiveTrader, state: dict[str, Any]) -> str:
@@ -124,7 +259,7 @@ async def _record_v26(self: core.LiveTrader, state: dict[str, Any]) -> None:
         existing = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "id",
+                "select": "id,timing_contract_version,activation_at",
                 "setup_family": f"eq.{family}",
                 "episode_key": f"eq.{episode}",
                 "learning_version": f"eq.{LEARNING_NAMESPACE}",
@@ -133,9 +268,22 @@ async def _record_v26(self: core.LiveTrader, state: dict[str, Any]) -> None:
         )
         if existing:
             return
-        recorded_at = core.utc_now()
-        await self.repo.client.insert(
-            "live_trader_opinions",
+
+        decision_at = core.utc_now()
+        market_state = {
+            "market": record_state.get("market"),
+            "bias": record_state.get("bias"),
+            "liquidity": record_state.get("liquidity"),
+            "setup_family_descriptor": record_state.get("setup_family_descriptor"),
+            "learning_observation": {
+                "policy": OBSERVATION_POLICY,
+                "market_observed_at": observed.isoformat(),
+                "engine_version": ENGINE_VERSION,
+                "outcome_schema": OUTCOME_SCHEMA,
+            },
+        }
+        row, timing = await _insert_timed_forward_opinion(
+            self,
             {
                 "observed_at": observed.isoformat(),
                 "symbol": self.symbol,
@@ -148,28 +296,18 @@ async def _record_v26(self: core.LiveTrader, state: dict[str, Any]) -> None:
                 "episode_key": episode,
                 "learning_version": LEARNING_NAMESPACE,
                 "independent_sample": True,
-                "market_state": {
-                    "market": record_state.get("market"),
-                    "bias": record_state.get("bias"),
-                    "liquidity": record_state.get("liquidity"),
-                    "setup_family_descriptor": record_state.get("setup_family_descriptor"),
-                    "learning_observation": {
-                        "policy": OBSERVATION_POLICY,
-                        "market_observed_at": observed.isoformat(),
-                        "recorded_at": recorded_at.isoformat(),
-                        "engine_version": ENGINE_VERSION,
-                        "outcome_schema": OUTCOME_SCHEMA,
-                    },
-                },
                 "zones": record_state.get("zones") or {},
                 "trade_idea": record_state.get("trade") or {},
                 "opinion_text": record_state.get("opinion") or "",
                 "status": "open",
             },
-            return_rows=False,
+            observed=observed,
+            market_state=market_state,
+            decision_at=decision_at,
         )
-        self._last_recorded_signature = family
-        self._last_opinion_at = recorded_at
+        if row is not None and timing.get("activation_at"):
+            self._last_recorded_signature = family
+            self._last_opinion_at = _parse_time(timing.get("publication_confirmed_at")) or core.utc_now()
     except Exception as exc:
         core.logger.warning("Live Trader v2.6 could not record causal learning observation: %s", exc)
 
@@ -244,7 +382,11 @@ async def _resolve_v26(self: core.LiveTrader, _live_price: float) -> None:
         opinions = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "id,observed_at,price,bias,horizon_minutes,market_state,trade_idea",
+                "select": (
+                    "id,observed_at,price,bias,horizon_minutes,market_state,trade_idea,"
+                    "market_observed_at,market_received_at,decision_at,publication_requested_at,"
+                    "publication_confirmed_at,activation_at,execution_start_at,timing_contract_version"
+                ),
                 "status": "eq.open",
                 "learning_version": f"eq.{LEARNING_NAMESPACE}",
                 "independent_sample": "eq.true",
@@ -258,22 +400,28 @@ async def _resolve_v26(self: core.LiveTrader, _live_price: float) -> None:
             if observed is None or core.number(row.get("price")) <= 0:
                 continue
             horizon_minutes = int(core.number(row.get("horizon_minutes"), self.settings.live_trader_learning_horizon_minutes))
-            horizon = observed + timedelta(minutes=max(horizon_minutes, 1))
-            source_rows = await _source_m1_rows(self, observed, horizon)
-            path = _causal_m1_path(source_rows, observed, horizon)
+            path_start, horizon, timing_verified, timing = _execution_window(
+                row,
+                fallback_observed=observed,
+                horizon_minutes=horizon_minutes,
+            )
+            if timing_verified and now < horizon:
+                continue
+
+            source_rows = await _source_m1_rows(self, path_start, horizon)
+            path = _causal_m1_path(source_rows, path_start, horizon)
             endpoint = path.get("endpoint_price")
             endpoint_time = path.get("endpoint_time")
             endpoint_lag = path.get("endpoint_lag_seconds")
             if endpoint is None or endpoint_time is None or endpoint_lag is None or endpoint_lag > MAX_ENDPOINT_LAG_SECONDS:
-                # Source ingestion may be a little behind the horizon. Leave the
-                # opinion open and retry rather than resolving it from stale/current price.
                 continue
 
             direction_correct, move_pct, threshold = v2._direction_result(row, float(endpoint))
             trade = dict(row.get("trade_idea") or {})
             order_type = str(trade.get("order_type") or "none")
             path_complete = (
-                (path.get("initial_gap_seconds") is not None and float(path.get("initial_gap_seconds") or 0.0) <= 1.0)
+                path.get("initial_gap_seconds") is not None
+                and float(path.get("initial_gap_seconds") or 0.0) <= 1.0
                 and int(path.get("gap_count") or 0) == 0
             )
             if order_type != "none" and not path_complete:
@@ -295,6 +443,7 @@ async def _resolve_v26(self: core.LiveTrader, _live_price: float) -> None:
                 "policy": OBSERVATION_POLICY,
                 "outcome_schema": OUTCOME_SCHEMA,
                 "observed_at": observed.isoformat(),
+                "path_start_at": path_start.isoformat(),
                 "horizon_at": horizon.isoformat(),
                 "resolved_price_time": endpoint_time.isoformat(),
                 "m1_path_bars": len(path.get("bars") or []),
@@ -302,6 +451,7 @@ async def _resolve_v26(self: core.LiveTrader, _live_price: float) -> None:
                 "gap_count": path.get("gap_count"),
                 "endpoint_lag_seconds": endpoint_lag,
                 "actionable_path_complete": path_complete,
+                **timing,
             }
             await self.repo.client.patch(
                 "live_trader_opinions",
@@ -456,6 +606,9 @@ def _runtime_status_v26(self: core.LiveTrader) -> dict[str, Any]:
             "learning_observation_policy": OBSERVATION_POLICY,
             "learning_namespace_stable": True,
             "learning_uses_source_m1_path": True,
+            "execution_timing_contract_version": TIMING_CONTRACT_VERSION,
+            "pre_publication_price_credit_allowed": False,
+            "partial_activation_minute_credit_allowed": False,
             "socket_staleness_uses_feed_policy": True,
         }
     )

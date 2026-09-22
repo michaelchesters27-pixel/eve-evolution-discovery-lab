@@ -74,6 +74,7 @@ class LiveTrader:
         self._latest_state: dict[str, Any] = self._empty_state()
         self.connected = False
         self.last_tick_at: str | None = None
+        self.last_tick_received_at: str | None = None
         self.last_error: str | None = None
         self.reconnects = 0
         self.messages_received = 0
@@ -89,6 +90,7 @@ class LiveTrader:
                 "provider": "Twelve Data WebSocket",
                 "connected": False,
                 "last_tick_at": None,
+                "last_tick_received_at": None,
                 "api_key_configured": bool(self.settings.twelve_data_api_key),
             },
             "bias": {"overall": "neutral", "confidence": 0, "timeframes": {}},
@@ -584,6 +586,7 @@ class LiveTrader:
                 "socket_connected": self.connected,
                 "tick_age_seconds": round(tick_age, 1) if tick_age is not None else None,
                 "last_tick_at": self.last_tick_at,
+                "last_tick_received_at": self.last_tick_received_at,
                 "api_key_configured": bool(self.settings.twelve_data_api_key),
                 "messages_received": self.messages_received,
             },
@@ -864,10 +867,12 @@ class LiveTrader:
             return
         timestamp = number(payload.get("timestamp"))
         stamp = datetime.fromtimestamp(timestamp, tz=timezone.utc) if timestamp > 0 else utc_now()
+        received_at = utc_now()
         self._ticks.append((stamp, price))
         self.last_tick_at = stamp.isoformat()
+        self.last_tick_received_at = received_at.isoformat()
         self.messages_received += 1
-        now = utc_now()
+        now = received_at
         if self._last_analysis_at is None or now - self._last_analysis_at >= timedelta(seconds=2):
             await self.refresh_state()
 

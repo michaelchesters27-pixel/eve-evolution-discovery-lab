@@ -278,6 +278,7 @@ async def _record_policy_candidates(self: core.LiveTrader, state: dict[str, Any]
     inserted = 0
     existing = 0
     errors: list[str] = []
+    activated: list[dict[str, Any]] = []
     for trade in candidates:
         policy = dict(trade.get("policy_lab") or {})
         key = str(policy.get("policy_key") or trade.get("shadow_variant") or "unknown")
@@ -296,10 +297,20 @@ async def _record_policy_candidates(self: core.LiveTrader, state: dict[str, Any]
             if rows:
                 existing += 1
                 continue
+
+            decision_at = core.utc_now()
             descriptor = dict(state.get("setup_family_descriptor") or {})
             descriptor["policy_lab_key"] = key
-            await self.repo.client.insert(
-                "live_trader_opinions",
+            policy["timing_contract_version"] = hardening.TIMING_CONTRACT_VERSION
+            market_state = {
+                "market": state.get("market"),
+                "bias": state.get("bias"),
+                "liquidity": state.get("liquidity"),
+                "setup_family_descriptor": descriptor,
+                "policy_lab": policy,
+            }
+            row, timing = await hardening._insert_timed_forward_opinion(
+                self,
                 {
                     "observed_at": observed.isoformat(),
                     "symbol": self.symbol,
@@ -312,21 +323,24 @@ async def _record_policy_candidates(self: core.LiveTrader, state: dict[str, Any]
                     "episode_key": episode,
                     "learning_version": LEARNING_VERSION,
                     "independent_sample": False,
-                    "market_state": {
-                        "market": state.get("market"),
-                        "bias": state.get("bias"),
-                        "liquidity": state.get("liquidity"),
-                        "setup_family_descriptor": descriptor,
-                        "policy_lab": policy,
-                    },
                     "zones": state.get("zones") or {},
                     "trade_idea": trade,
                     "opinion_text": f"Research-only policy lab candidate: {key}. Never publish or execute.",
                     "status": "open",
                 },
-                return_rows=False,
+                observed=observed,
+                market_state=market_state,
+                decision_at=decision_at,
             )
+            if row is None or not timing.get("activation_at"):
+                errors.append(f"{key}: not_durably_activated")
+                continue
             inserted += 1
+            activated.append({
+                "policy_key": key,
+                "activation_at": timing.get("activation_at"),
+                "execution_start_at": timing.get("execution_start_at"),
+            })
         except Exception as exc:
             errors.append(str(exc)[:180])
             core.logger.warning("Live Trader policy lab record failed for %s: %s", key, exc)
@@ -338,6 +352,8 @@ async def _record_policy_candidates(self: core.LiveTrader, state: dict[str, Any]
         "candidates": len(candidates),
         "errors": errors[:3],
         "bucket": bucket.isoformat(),
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+        "activated": activated,
     }
 
 
@@ -353,7 +369,11 @@ async def _resolve_policy_outcomes(self: core.LiveTrader) -> dict[str, Any]:
         rows = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "id,observed_at,price,bias,horizon_minutes,market_state,trade_idea",
+                "select": (
+                    "id,observed_at,price,bias,horizon_minutes,market_state,trade_idea,"
+                    "market_observed_at,market_received_at,decision_at,publication_requested_at,"
+                    "publication_confirmed_at,activation_at,execution_start_at,timing_contract_version"
+                ),
                 "learning_version": f"eq.{LEARNING_VERSION}",
                 "status": "eq.open",
                 "observed_at": f"lte.{cutoff.isoformat()}",
@@ -365,15 +385,23 @@ async def _resolve_policy_outcomes(self: core.LiveTrader) -> dict[str, Any]:
         return {"status": "error", "reason": str(exc)[:240]}
 
     resolved = 0
+    waiting_for_horizon = 0
     for row in rows:
         observed = _parse_time(row.get("observed_at"))
         if observed is None:
             continue
         horizon_minutes = int(_num(row.get("horizon_minutes"), self.settings.live_trader_learning_horizon_minutes))
-        horizon = observed + timedelta(minutes=max(horizon_minutes, 1))
+        path_start, horizon, timing_verified, timing = hardening._execution_window(
+            row,
+            fallback_observed=observed,
+            horizon_minutes=horizon_minutes,
+        )
+        if timing_verified and now < horizon:
+            waiting_for_horizon += 1
+            continue
         try:
-            source_rows = await hardening._source_m1_rows(self, observed, horizon)
-            path = hardening._causal_m1_path(source_rows, observed, horizon)
+            source_rows = await hardening._source_m1_rows(self, path_start, horizon)
+            path = hardening._causal_m1_path(source_rows, path_start, horizon)
             endpoint = path.get("endpoint_price")
             endpoint_time = path.get("endpoint_time")
             endpoint_lag = path.get("endpoint_lag_seconds")
@@ -402,6 +430,7 @@ async def _resolve_policy_outcomes(self: core.LiveTrader) -> dict[str, Any]:
             market_state["policy_lab_resolution"] = {
                 "version": VERSION,
                 "resolved_at": now.isoformat(),
+                "path_start_at": path_start.isoformat(),
                 "horizon_at": horizon.isoformat(),
                 "resolved_price_time": endpoint_time.isoformat(),
                 "m1_path_bars": len(path.get("bars") or []),
@@ -409,6 +438,7 @@ async def _resolve_policy_outcomes(self: core.LiveTrader) -> dict[str, Any]:
                 "initial_gap_seconds": path.get("initial_gap_seconds"),
                 "gap_count": path.get("gap_count"),
                 "endpoint_lag_seconds": endpoint_lag,
+                **timing,
             }
             await self.repo.client.patch(
                 "live_trader_opinions",
@@ -427,7 +457,13 @@ async def _resolve_policy_outcomes(self: core.LiveTrader) -> dict[str, Any]:
             resolved += 1
         except Exception as exc:
             core.logger.warning("Live Trader policy lab resolution failed: %s", exc)
-    return {"status": "ok", "resolved": resolved, "eligible": len(rows)}
+    return {
+        "status": "ok",
+        "resolved": resolved,
+        "eligible": len(rows),
+        "waiting_for_activation_horizon": waiting_for_horizon,
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+    }
 
 
 def _max_drawdown(values: list[float]) -> float:
@@ -442,8 +478,12 @@ def _max_drawdown(values: list[float]) -> float:
 
 
 def _policy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    verified_rows = [
+        row for row in rows
+        if str(row.get("timing_contract_version") or "") == hardening.TIMING_CONTRACT_VERSION
+    ]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
+    for row in verified_rows:
         trade = dict(row.get("trade_idea") or {})
         policy = dict(trade.get("policy_lab") or {})
         key = str(policy.get("policy_key") or trade.get("shadow_variant") or "unknown")
@@ -501,6 +541,8 @@ def _policy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "version": VERSION,
         "learning_version": LEARNING_VERSION,
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+        "legacy_unverified_resolved": max(0, len(rows) - len(verified_rows)),
         "leader": leaderboard[0] if leaderboard else None,
         "leaderboard": leaderboard,
         "live_policy_unchanged": True,
@@ -523,7 +565,7 @@ async def _policy_lab_summary(self: core.LiveTrader) -> dict[str, Any]:
         rows = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "observed_at,entry_triggered,realised_r,trade_outcome,trade_idea",
+                "select": "observed_at,entry_triggered,realised_r,trade_outcome,trade_idea,timing_contract_version",
                 "learning_version": f"eq.{LEARNING_VERSION}",
                 "status": "eq.resolved",
                 "order": "observed_at.asc",
