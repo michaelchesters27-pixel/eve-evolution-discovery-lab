@@ -238,3 +238,26 @@ def test_trade_skill_concentration_failure_never_displays_supported_grade() -> N
     assert skill["support_label_consistent_with_all_quality_gates"] is True
     assert skill["max_single_day_trigger_share"] > 0.25
     assert "single_day_concentration" in skill["failed_quality_gates"]
+
+
+
+def test_trade_skill_fails_closed_if_quality_metadata_is_ever_contradictory(monkeypatch) -> None:
+    monkeypatch.setattr(
+        v83.quality,
+        "evaluate_published_paper",
+        lambda _rows, *, cohort_id: {
+            "grade": "FORWARD_NET_SUPPORTED",
+            "forward_net_supported": False,
+            "independent_days": 30,
+            "independent_weeks": 6,
+            "one_sided_95pct_day_cluster_lower_bound_r": 0.2,
+            "max_single_day_trigger_share": 0.10,
+            "failed_quality_gates": ["single_day_concentration"],
+        },
+    )
+
+    skill = v83._trade_skill_from_reviews([], cohort_id="coh_guard")
+
+    assert skill["forward_net_supported"] is False
+    assert skill["grade"] == "QUALIFICATION_INCONSISTENT"
+    assert skill["support_label_consistent_with_all_quality_gates"] is False
