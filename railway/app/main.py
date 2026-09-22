@@ -280,7 +280,7 @@ async def _finish_supervisor_stage_attempt(
                 },
                 "error": reason[:2000],
             },
-            filters={"id": f"eq.{stage_run_id}"},
+            filters={"id": f"eq.{stage_run_id}", "outcome": "eq.running"},
         )
     except Exception:
         logger.exception("Could not finalise bounded stage attempt %s", stage_run_id)
