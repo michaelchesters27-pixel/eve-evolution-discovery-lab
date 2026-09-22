@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.services import live_trader_execution_integrity_v39 as integrity
 from app.services import live_trader_execution_sequence_v41 as v41
 from app.services import live_trader_execution_sequence_v88 as v88
+from app.services import live_trader_execution_costs_v90 as v90
 from app.services import live_trader_learning_v2 as v2
 
 
@@ -84,10 +85,12 @@ def test_market_and_stop_orders_retain_v39_semantics() -> None:
     assert result["trade_outcome"] == "invalidated_before_entry"
 
 
-def test_shared_execution_schema_and_regrader_version_are_v88() -> None:
-    assert integrity.EXECUTION_SCHEMA == v88.EXECUTION_SCHEMA
-    assert integrity.REGRADER_VERSION == v88.REGRADER_VERSION
-    assert v41.EXECUTION_SCHEMA == v88.EXECUTION_SCHEMA
-    assert v41.REGRADER_VERSION == v88.REGRADER_VERSION
-    assert integrity._trade_path_result_v39 is v88._trade_path_result_v88
-    assert v2._trade_path_result is v88._trade_path_result_v88
+def test_v88_gross_scorer_is_wrapped_by_v90_cost_scorer() -> None:
+    assert integrity.EXECUTION_SCHEMA == v90.EXECUTION_SCHEMA
+    assert integrity.REGRADER_VERSION == v90.REGRADER_VERSION
+    assert v41.EXECUTION_SCHEMA == v90.EXECUTION_SCHEMA
+    assert v41.REGRADER_VERSION == v90.REGRADER_VERSION
+    assert v88.EXECUTION_SCHEMA == v90.EXECUTION_SCHEMA
+    assert v88.REGRADER_VERSION == v90.REGRADER_VERSION
+    assert integrity._trade_path_result_v39 is v90._trade_path_result_v90
+    assert v2._trade_path_result is v90._trade_path_result_v90
