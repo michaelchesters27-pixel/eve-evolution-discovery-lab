@@ -11,6 +11,30 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+
+def _apply_memory_ceiling_from_env() -> int | None:
+    raw = str(os.environ.get("EVE_BOUNDED_MEMORY_MB") or "").strip()
+    if not raw:
+        return None
+    try:
+        requested = int(raw)
+    except ValueError:
+        return None
+    limit_mb = max(512, min(4096, requested))
+    if sys.platform != "win32":
+        limit_bytes = limit_mb * 1024 * 1024
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+        except (ValueError, OSError):
+            # Production is Linux; if a local platform cannot apply RLIMIT_AS,
+            # telemetry still exposes the lack of enforcement.
+            return None
+    return limit_mb
+
+
+MEMORY_CEILING_MB = _apply_memory_ceiling_from_env()
+
+# Apply the address-space ceiling before importing the heavy research modules.
 from app.settings import get_settings
 from app.services.fabric_builder import FabricBuilder
 from app.services.evidence_director import EvidenceDirectedIntelligenceDirector as IntelligenceDirector
@@ -26,6 +50,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEMETRY_VERSION = "eve-bounded-stage-telemetry-v1"
+RESOURCE_VERSION = "eve-resource-bounded-workers-v96"
+
+STAGES: tuple[tuple[str, int], ...] = (
+    ("fabric", 1),
+    ("discovery", 2),
+    ("scientist", 3),
+    ("historical_academy", 4),
+    ("zone_replay", 5),
+    ("current_policy", 6),
+)
 
 _PROGRESS_COUNTERS = (
     "rows",
@@ -81,12 +115,14 @@ def _summary(value: Any) -> Any:
             "opportunities_found",
             "cursor_time",
         )
-        return {key: value.get(key) for key in keep if key in value}
+        result = {key: value.get(key) for key in keep if key in value}
+        result["resource_version"] = RESOURCE_VERSION
+        result["memory_ceiling_mb"] = MEMORY_CEILING_MB
+        return result
     return str(type(value).__name__)
 
 
 def _classify_stage_result(value: Any) -> str:
-    """Classify work honestly instead of treating every non-exception as progress."""
     if value is False or value is None:
         return "no_op"
     if value is True:
@@ -126,8 +162,6 @@ def _usage() -> resource.struct_rusage:
 
 
 def _max_rss_mb(usage: resource.struct_rusage) -> float:
-    # Linux ru_maxrss is KiB; macOS uses bytes. Production and CI are Linux,
-    # but keep the conversion correct for local macOS development too.
     raw = float(usage.ru_maxrss)
     return raw / (1024.0 * 1024.0) if sys.platform == "darwin" else raw / 1024.0
 
@@ -150,6 +184,13 @@ async def _write_stage_telemetry(
     error: str | None,
 ) -> None:
     try:
+        summary = result_summary if isinstance(result_summary, dict) else {"value": result_summary}
+        summary = {
+            **summary,
+            "resource_version": RESOURCE_VERSION,
+            "memory_ceiling_mb": MEMORY_CEILING_MB,
+            "pid": os.getpid(),
+        }
         await repo.client.insert(
             "bounded_research_stage_runs",
             {
@@ -164,7 +205,7 @@ async def _write_stage_telemetry(
                 "cpu_user_ms": round(cpu_user_ms, 3),
                 "cpu_system_ms": round(cpu_system_ms, 3),
                 "process_max_rss_mb": round(process_max_rss_mb, 3),
-                "result_summary": result_summary if isinstance(result_summary, dict) else {"value": result_summary},
+                "result_summary": summary,
                 "error": error,
             },
             return_rows=False,
@@ -197,6 +238,13 @@ async def _stage(
             logger.info("Bounded EVE stage %s completed; result exposes no measurable work counter: %s", name, summary)
         else:
             logger.error("Bounded EVE stage %s returned failure: %s", name, summary)
+    except MemoryError as exc:
+        result = None
+        summary = None
+        outcome = "failed"
+        operation_ok = False
+        error = f"memory_ceiling_exceeded_or_allocation_failed:{exc}"[:2000]
+        logger.exception("Bounded EVE stage %s hit its memory ceiling", name)
     except Exception as exc:
         result = None
         summary = None
@@ -235,26 +283,82 @@ async def _stage(
     )
     payload = {
         "ok": operation_ok,
+        "cycle_id": cycle_id,
+        "stage": name,
+        "ordinal": ordinal,
         "outcome": outcome,
         "result": summary,
         "elapsed_ms": round(elapsed_ms, 3),
         "cpu_user_ms": round((after.ru_utime - before.ru_utime) * 1000.0, 3),
         "cpu_system_ms": round((after.ru_stime - before.ru_stime) * 1000.0, 3),
         "process_max_rss_mb": round(_max_rss_mb(after), 3),
+        "memory_ceiling_mb": MEMORY_CEILING_MB,
+        "resource_version": RESOURCE_VERSION,
     }
     if error:
         payload["error"] = error
     return payload
 
 
-async def run_once() -> dict[str, Any]:
+async def _operation_for_stage(
+    stage_name: str,
+    settings: Any,
+    source: SourceRepository,
+    repo: DiscoveryRepository,
+) -> Callable[[], Awaitable[Any]]:
+    if stage_name == "fabric":
+        fabric = FabricBuilder(settings, source, repo)
+        return fabric.build_once
+
+    if stage_name == "discovery":
+        orchestrator = DiscoveryOrchestrator(settings, source, repo)
+        return orchestrator.run_once
+
+    if stage_name == "scientist":
+        orchestrator = DiscoveryOrchestrator(settings, source, repo)
+        intelligence = IntelligenceDirector(settings, repo, orchestrator.rows)
+
+        async def scientist_cycle() -> Any:
+            return await intelligence.run_science_once()
+
+        return scientist_cycle
+
+    if stage_name == "historical_academy":
+        historical = LiveTraderHistoricalLearner(settings, source, repo)
+        return historical.learn_cycle
+
+    if stage_name == "zone_replay":
+        live = LiveTrader(settings, repo)
+        replay = ZoneRetraceLivePolicyReplayer(live)
+        return replay.run_batch
+
+    if stage_name == "current_policy":
+        live = LiveTrader(settings, repo)
+        current_policy = CurrentPolicyZoneRetraceAcademy(live)
+        return current_policy.run_cycle
+
+    raise ValueError(f"Unknown bounded research stage: {stage_name}")
+
+
+async def run_named_stage(stage_name: str, cycle_id: str, ordinal: int) -> dict[str, Any]:
     settings = get_settings()
     source = SourceRepository(settings)
+    repo = DiscoveryRepository(settings)
+    operation = await _operation_for_stage(stage_name, settings, source, repo)
+    return await _stage(stage_name, ordinal, cycle_id, operation, repo)
+
+
+async def run_once() -> dict[str, Any]:
+    """Compatibility/test runner.
+
+    Production v96 invokes one fresh process per stage. This function retains the
+    old one-process sequence for local/admin regression tests only.
+    """
+    settings = get_settings()
     repo = DiscoveryRepository(settings)
     cycle_id = str(os.environ.get("EVE_BOUNDED_CYCLE_ID") or uuid.uuid4())
     cycle_started = _now()
     cycle_perf = time.perf_counter()
-
     try:
         await repo.client.insert(
             "bounded_research_cycles",
@@ -263,57 +367,36 @@ async def run_once() -> dict[str, Any]:
                 "worker_pid": os.getpid(),
                 "started_at": cycle_started.isoformat(),
                 "outcome": "running",
-                "result_summary": {"telemetry_version": TELEMETRY_VERSION},
+                "result_summary": {
+                    "telemetry_version": TELEMETRY_VERSION,
+                    "resource_version": RESOURCE_VERSION,
+                    "execution_mode": "compatibility_single_process",
+                },
             },
             return_rows=False,
         )
     except Exception:
         logger.exception("Could not persist bounded-worker cycle start telemetry")
 
-    orchestrator = DiscoveryOrchestrator(settings, source, repo)
-    intelligence = IntelligenceDirector(settings, repo, orchestrator.rows)
-    fabric = FabricBuilder(settings, source, repo)
-    live = LiveTrader(settings, repo)
-    historical = LiveTraderHistoricalLearner(settings, source, repo)
-    replay = ZoneRetraceLivePolicyReplayer(live)
-    current_policy = CurrentPolicyZoneRetraceAcademy(live)
-
     results: dict[str, Any] = {}
-
-    # Keep each expensive activity bounded to exactly one unit of work. The
-    # process exits after this sequence, releasing every historical row/cache.
-    results["fabric"] = await _stage("fabric", 1, cycle_id, fabric.build_once, repo)
-    results["discovery"] = await _stage("discovery", 2, cycle_id, orchestrator.run_once, repo)
-
-    async def scientist_cycle() -> Any:
-        rows = await orchestrator.rows()
-        return await intelligence.run_science_once(rows)
-
-    results["scientist"] = await _stage("scientist", 3, cycle_id, scientist_cycle, repo)
-    results["historical_academy"] = await _stage("historical_academy", 4, cycle_id, historical.learn_cycle, repo)
-    results["zone_replay"] = await _stage("zone_replay", 5, cycle_id, replay.run_batch, repo)
-    results["current_policy"] = await _stage("current_policy", 6, cycle_id, current_policy.run_cycle, repo)
+    for stage_name, ordinal in STAGES:
+        results[stage_name] = await run_named_stage(stage_name, cycle_id, ordinal)
 
     progressed = sum(1 for item in results.values() if item.get("outcome") == "progressed")
     no_op = sum(1 for item in results.values() if item.get("outcome") == "no_op")
     completed = sum(1 for item in results.values() if item.get("outcome") == "completed")
     failed = sum(1 for item in results.values() if item.get("outcome") == "failed")
-
-    if failed:
-        cycle_outcome = "failed"
-    elif progressed:
-        cycle_outcome = "completed_with_progress"
-    elif completed:
-        cycle_outcome = "completed_without_measured_progress"
-    else:
-        cycle_outcome = "completed_no_op"
-
+    cycle_outcome = (
+        "failed"
+        if failed
+        else "completed_with_progress"
+        if progressed
+        else "completed_without_measured_progress"
+        if completed
+        else "completed_no_op"
+    )
     cycle_finished = _now()
     elapsed_ms = (time.perf_counter() - cycle_perf) * 1000.0
-    compact = {
-        "telemetry_version": TELEMETRY_VERSION,
-        "stage_outcomes": {name: item.get("outcome") for name, item in results.items()},
-    }
     try:
         await repo.client.patch(
             "bounded_research_cycles",
@@ -326,31 +409,17 @@ async def run_once() -> dict[str, Any]:
                 "stages_completed": completed,
                 "stages_failed": failed,
                 "elapsed_ms": round(elapsed_ms, 3),
-                "result_summary": compact,
+                "result_summary": {
+                    "telemetry_version": TELEMETRY_VERSION,
+                    "resource_version": RESOURCE_VERSION,
+                    "stage_outcomes": {name: item.get("outcome") for name, item in results.items()},
+                },
                 "updated_at": cycle_finished.isoformat(),
             },
             filters={"cycle_id": f"eq.{cycle_id}"},
         )
     except Exception:
         logger.exception("Could not persist bounded-worker cycle completion telemetry")
-
-    try:
-        await repo.event(
-            "error" if failed else "info",
-            "bounded_worker",
-            (
-                f"Bounded research cycle {cycle_outcome}: "
-                f"{progressed} progressed, {no_op} no-op, {completed} completed without measured progress, {failed} failed."
-            ),
-            {
-                "cycle_id": cycle_id,
-                "telemetry_version": TELEMETRY_VERSION,
-                "outcome": cycle_outcome,
-                "stages": results,
-            },
-        )
-    except Exception:
-        logger.exception("Could not persist bounded-worker completion event")
 
     return {
         "ok": failed == 0,
@@ -366,7 +435,13 @@ async def run_once() -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    result = asyncio.run(run_once())
-    print(json.dumps(result, sort_keys=True, default=str))
+    stage_name = str(os.environ.get("EVE_BOUNDED_STAGE") or "").strip()
+    cycle_id = str(os.environ.get("EVE_BOUNDED_CYCLE_ID") or uuid.uuid4())
+    if stage_name:
+        ordinal = int(os.environ.get("EVE_BOUNDED_STAGE_ORDINAL") or "0")
+        result = asyncio.run(run_named_stage(stage_name, cycle_id, ordinal))
+    else:
+        result = asyncio.run(run_once())
+    print(json.dumps(result, sort_keys=True, default=str), flush=True)
     if not result.get("ok"):
         raise SystemExit(1)

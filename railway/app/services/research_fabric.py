@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
+from app.services import compact_research_rows_v96 as compact_rows
+
 LEGACY_DATASET = "legacy_15m"
 FABRIC_DATASET = "every_m5_fabric"
 FABRIC_VERSION = "eve-multitimeframe-fabric-v1"
@@ -141,7 +143,7 @@ async def _scan_fabric_rows(
     page = 1000
     while True:
         params = {
-            "select": FABRIC_RESEARCH_COLUMNS,
+            "select": compact_rows.FABRIC_SELECT,
             "symbol": f"eq.{symbol}",
             "snapshot_interval": f"eq.{FABRIC_SNAPSHOT_INTERVAL}",
             "source_interval": f"eq.{FABRIC_SOURCE_INTERVAL}",
@@ -156,7 +158,7 @@ async def _scan_fabric_rows(
         batch = await repo.client.get("m5_scientist_research", params=params)
         if not batch:
             break
-        rows.extend(batch)
+        rows.extend(compact_rows.compact_row(item) for item in batch)
         next_cursor = str(batch[-1].get("candle_time") or "")
         if not next_cursor or next_cursor == cursor:
             raise RuntimeError("M5 fabric keyset scan did not advance candle_time cursor")

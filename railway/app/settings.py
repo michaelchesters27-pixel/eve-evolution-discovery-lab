@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     bounded_research_startup_seconds: int = Field(default=30, ge=0, le=3600)
     bounded_research_interval_minutes: int = Field(default=360, ge=60, le=1440)
     bounded_research_timeout_seconds: int = Field(default=2700, ge=300, le=7200)
+    bounded_research_stage_timeout_seconds: int = Field(default=1500, ge=300, le=3600)
+    bounded_research_memory_mb: int = Field(default=1536, ge=512, le=4096)
+    bounded_research_overlap_retry_seconds: int = Field(default=60, ge=15, le=600)
 
     # Discovery-only every-M5 observation fabric.
     fabric_enabled: bool = True
@@ -117,6 +120,23 @@ class Settings(BaseSettings):
                 "A strategy may only be labelled with the timeframe used to build its source features."
             )
         self.research_timeframe = timeframe
+
+        # Exactly one heavy-research execution mode may own historical work.
+        # Bounded mode already runs discovery, fabric and Live Trader historical
+        # stages in disposable children, so resident copies must stay off.
+        if self.bounded_research_enabled:
+            conflicts: list[str] = []
+            if self.autonomous_enabled:
+                conflicts.append("AUTONOMOUS_ENABLED")
+            if self.fabric_enabled:
+                conflicts.append("FABRIC_ENABLED")
+            if self.live_trader_historical_workers_enabled:
+                conflicts.append("LIVE_TRADER_HISTORICAL_WORKERS_ENABLED")
+            if conflicts:
+                raise ValueError(
+                    "BOUNDED_RESEARCH_ENABLED=true is mutually exclusive with resident heavy workers: "
+                    + ", ".join(conflicts)
+                )
         return self
 
     @property

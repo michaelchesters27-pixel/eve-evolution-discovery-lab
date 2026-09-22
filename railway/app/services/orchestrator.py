@@ -91,6 +91,7 @@ class DiscoveryOrchestrator:
                 self.settings.source_symbol,
                 self.settings.source_snapshot_interval,
                 self.settings.source_candle_interval,
+                compact=True,
             )
             self._cache_at = utc_now()
         return self._rows_cache

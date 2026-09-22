@@ -10,6 +10,7 @@ from app.services import backtest_v3 as research
 from app.services import intelligence as v1
 from app.services import intelligence_v2 as scientist
 from app.services import mtf_reasoning as mtf
+from app.services import compact_research_rows_v96 as compact_rows
 from app.services.multitimeframe import as_utc, number, safe_pct
 
 EVIDENCE_MINER_VERSION = "eve-evidence-miner-v1"
@@ -59,7 +60,7 @@ def feature_specs() -> list[FeatureSpec]:
 
 
 def _stored_return(row: dict[str, Any], horizon: int) -> float | None:
-    outcome = (row.get("outcomes") or {}).get(str(horizon))
+    outcome = compact_rows.research_outcome(row, horizon)
     if not isinstance(outcome, dict) or outcome.get("close_return_pct") is None:
         return None
     value = number(outcome.get("close_return_pct"), math.nan)

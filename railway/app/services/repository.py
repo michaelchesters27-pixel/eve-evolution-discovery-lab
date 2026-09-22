@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from app.settings import Settings
+from app.services import compact_research_rows_v96 as compact_rows
 
 
 def utc_now_iso() -> str:
@@ -277,11 +278,16 @@ class DiscoveryRepository:
         symbol: str | None = None,
         snapshot_interval: str | None = None,
         source_interval: str | None = None,
-    ) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
+        *,
+        compact: bool = False,
+    ) -> list[Any]:
+        rows: list[Any] = []
         start = 0
         page = 1000
-        params = {"select": "*", "order": "candle_time.asc"}
+        params = {
+            "select": compact_rows.LEGACY_SELECT if compact else "*",
+            "order": "candle_time.asc",
+        }
         if symbol:
             params["symbol"] = f"eq.{symbol}"
         if snapshot_interval:
@@ -295,7 +301,10 @@ class DiscoveryRepository:
                 range_start=start,
                 range_end=start + page - 1,
             )
-            rows.extend(batch)
+            if compact:
+                rows.extend(compact_rows.compact_row(item) for item in batch)
+            else:
+                rows.extend(batch)
             if len(batch) < page:
                 break
             start += page
