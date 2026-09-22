@@ -7,6 +7,7 @@ from typing import Any
 from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_campaign_consensus_v66 as consensus
+from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_trade_lock_v28 as lock
 
 TIMING_CONTRACT_VERSION = hardening.TIMING_CONTRACT_VERSION
@@ -28,7 +29,15 @@ def _new_campaign_v89(self: core.LiveTrader, trade: dict[str, Any], price: float
     campaign["publication_requested_at"] = None
     campaign["publication_confirmed_at"] = None
     campaign["activation_at"] = None
+    campaign["activation_price"] = None
     campaign["pre_activation_price_events_eligible"] = False
+    campaign["execution_cost_model"] = cost_model.profile_from_settings(self.settings)
+    campaign["cost_model_version"] = cost_model.COST_MODEL_VERSION
+    campaign["manual_delay_seconds"] = int(campaign["execution_cost_model"].get("manual_delay_seconds") or 0)
+    published = dict(campaign.get("published_trade") or {})
+    published["execution_cost_model"] = dict(campaign["execution_cost_model"])
+    published["cost_model_version"] = cost_model.COST_MODEL_VERSION
+    campaign["published_trade"] = published
 
     # A market idea is not executable merely because the decision engine created
     # it. The trigger becomes valid only after the campaign write is confirmed.
@@ -51,8 +60,12 @@ def _advance_campaign_v89(
         activation = lock._parse_time(campaign.get("activation_at"))
         if activation is None or core.utc_now() < activation:
             # Do not expire, invalidate, trigger, hit TP or hit SL before the
-            # persisted publication has an activation timestamp.
+            # persisted publication plus the declared manual execution delay.
             return campaign
+        if allow_price_events and campaign.get("activation_price") is None and price > 0:
+            campaign["activation_price"] = round(price, 3)
+            campaign["activation_price_recorded_at"] = core.utc_now().isoformat()
+            self._live_campaign_dirty = True
     return _current_advance_campaign(self, campaign, price, allow_price_events=allow_price_events)
 
 
@@ -64,6 +77,8 @@ def _campaign_fingerprint_v89(campaign: dict[str, Any]) -> str:
             str(campaign.get("publication_requested_at") or ""),
             str(campaign.get("publication_confirmed_at") or ""),
             str(campaign.get("activation_at") or ""),
+            str(campaign.get("activation_price") or ""),
+            str(campaign.get("cost_model_version") or ""),
         ]
     )
     return hashlib.sha1(raw.encode()).hexdigest()
@@ -80,6 +95,10 @@ def _campaign_trade_v89(campaign: dict[str, Any]) -> dict[str, Any]:
             "publication_requested_at": campaign.get("publication_requested_at"),
             "publication_confirmed_at": campaign.get("publication_confirmed_at"),
             "activation_at": campaign.get("activation_at"),
+            "activation_price": campaign.get("activation_price"),
+            "manual_delay_seconds": campaign.get("manual_delay_seconds"),
+            "cost_model_version": campaign.get("cost_model_version"),
+            "execution_cost_model": dict(campaign.get("execution_cost_model") or {}),
             "pre_activation_price_events_eligible": False,
         }
     )
@@ -112,16 +131,22 @@ async def _persist_campaign_v89(self: core.LiveTrader, campaign: dict[str, Any])
 
     confirmed = core.utc_now()
     final = dict(persisted)
+    execution_cost_profile = dict(final.get("execution_cost_model") or cost_model.profile_from_settings(self.settings))
+    delay_seconds = int(execution_cost_profile.get("manual_delay_seconds") or 0)
+    activation = confirmed + timedelta(seconds=max(0, delay_seconds))
     final["publication_confirmed_at"] = confirmed.isoformat()
-    final["activation_at"] = confirmed.isoformat()
+    final["activation_at"] = activation.isoformat()
+    final["manual_delay_seconds"] = delay_seconds
+    final["execution_cost_model"] = execution_cost_profile
+    final["cost_model_version"] = cost_model.COST_MODEL_VERSION
     final["pre_activation_price_events_eligible"] = False
 
     order_type = str(final.get("order_type") or "").lower()
     status = str(final.get("status") or "").lower()
     if status == "pending":
-        final["expires_at"] = (confirmed + timedelta(minutes=lock.PENDING_EXPIRY_MINUTES)).isoformat()
+        final["expires_at"] = (activation + timedelta(minutes=lock.PENDING_EXPIRY_MINUTES)).isoformat()
     if order_type == "market" and status == "active":
-        final["triggered_at"] = confirmed.isoformat()
+        final["triggered_at"] = activation.isoformat()
 
     try:
         await self.repo.client.patch(
@@ -134,6 +159,10 @@ async def _persist_campaign_v89(self: core.LiveTrader, campaign: dict[str, Any])
                 "publication_confirmed_at": final.get("publication_confirmed_at"),
                 "activation_at": final.get("activation_at"),
                 "timing_contract_version": TIMING_CONTRACT_VERSION,
+                "cost_model_version": cost_model.COST_MODEL_VERSION,
+                "execution_cost_model": execution_cost_profile,
+                "manual_delay_seconds": delay_seconds,
+                "activation_price": final.get("activation_price"),
                 "expires_at": final.get("expires_at"),
                 "triggered_at": final.get("triggered_at"),
                 "campaign": final,
@@ -176,6 +205,8 @@ def _runtime_status_v89(self: core.LiveTrader) -> dict[str, Any]:
             "campaign_activation_requires_persisted_publication": True,
             "pre_publication_price_credit_allowed": False,
             "forward_replay_starts_at_first_full_m1_after_activation": True,
+            "manual_delay_seconds": int(getattr(self.settings, "live_trader_manual_delay_seconds", 15)),
+            "execution_cost_model_version": cost_model.COST_MODEL_VERSION,
         }
     )
     return status
