@@ -9,6 +9,7 @@ import websockets
 
 from app.services import live_trader as core
 from app.services import live_trader_execution_cost_model as cost_model
+from app.services import live_trader_evidence_identity as evidence_id
 from app.services import live_trader_learning_governor_v25 as governor
 from app.services import live_trader_learning_v2 as v2
 from app.services import live_trader_learning_v22 as v22
@@ -214,6 +215,11 @@ def _market_observation_time(state: dict[str, Any]) -> datetime | None:
 
 
 async def _calibration_v26(self: core.LiveTrader, signature: str) -> dict[str, Any]:
+    identity = evidence_id.production_identity(
+        self.settings,
+        learning_version=LEARNING_NAMESPACE,
+        evaluation_stage="production_forward_learning",
+    )
     try:
         rows = await self.repo.client.get(
             "live_trader_opinions",
@@ -221,6 +227,7 @@ async def _calibration_v26(self: core.LiveTrader, signature: str) -> dict[str, A
                 "select": "learning_success,episode_key,observed_at,market_state",
                 "setup_family": f"eq.{signature}",
                 "learning_version": f"eq.{LEARNING_NAMESPACE}",
+                "cohort_id": f"eq.{identity['cohort_id']}",
                 "independent_sample": "eq.true",
                 "status": "eq.resolved",
                 "order": "observed_at.desc",
@@ -234,6 +241,7 @@ async def _calibration_v26(self: core.LiveTrader, signature: str) -> dict[str, A
     learning["learning_version"] = LEARNING_NAMESPACE
     learning["engine_version"] = ENGINE_VERSION
     learning["outcome_schema"] = OUTCOME_SCHEMA
+    learning["evidence_identity"] = evidence_id.public_identity(identity)
     state = getattr(self, "_learning_governor_pending_state", None)
     if isinstance(state, dict):
         governor.apply_learning_governor(state, learning)
@@ -267,7 +275,13 @@ async def _record_v26(self: core.LiveTrader, state: dict[str, Any]) -> None:
     if not family:
         return
     episode = v22.episode_key(record_state)
+    identity = evidence_id.production_identity(
+        self.settings,
+        learning_version=LEARNING_NAMESPACE,
+        evaluation_stage="production_forward_learning",
+    )
     try:
+        await evidence_id.ensure_registered(self.repo, identity)
         existing = await self.repo.client.get(
             "live_trader_opinions",
             params={
@@ -275,6 +289,7 @@ async def _record_v26(self: core.LiveTrader, state: dict[str, Any]) -> None:
                 "setup_family": f"eq.{family}",
                 "episode_key": f"eq.{episode}",
                 "learning_version": f"eq.{LEARNING_NAMESPACE}",
+                "cohort_id": f"eq.{identity['cohort_id']}",
                 "limit": "1",
             },
         )
@@ -293,6 +308,7 @@ async def _record_v26(self: core.LiveTrader, state: dict[str, Any]) -> None:
                 "engine_version": ENGINE_VERSION,
                 "outcome_schema": OUTCOME_SCHEMA,
             },
+            "evidence_identity": evidence_id.public_identity(identity),
         }
         row, timing = await _insert_timed_forward_opinion(
             self,
@@ -309,9 +325,10 @@ async def _record_v26(self: core.LiveTrader, state: dict[str, Any]) -> None:
                 "learning_version": LEARNING_NAMESPACE,
                 "independent_sample": True,
                 "zones": record_state.get("zones") or {},
-                "trade_idea": record_state.get("trade") or {},
+                "trade_idea": evidence_id.attach_trade(dict(record_state.get("trade") or {}), identity),
                 "opinion_text": record_state.get("opinion") or "",
                 "status": "open",
+                **evidence_id.row_columns(identity),
             },
             observed=observed,
             market_state=market_state,
@@ -631,6 +648,12 @@ def _runtime_status_v26(self: core.LiveTrader) -> dict[str, Any]:
             "manual_execution_delay_seconds": int(getattr(self.settings, "live_trader_manual_delay_seconds", 15)),
             "execution_cost_model_version": cost_model.COST_MODEL_VERSION,
             "gross_and_net_r_separated": True,
+            "evidence_identity_version": evidence_id.IDENTITY_VERSION,
+            "production_forward_cohort_id": evidence_id.production_identity(
+                self.settings,
+                learning_version=LEARNING_NAMESPACE,
+                evaluation_stage="production_forward_learning",
+            )["cohort_id"],
             "socket_staleness_uses_feed_policy": True,
         }
     )

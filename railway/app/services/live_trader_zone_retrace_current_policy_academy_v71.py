@@ -9,6 +9,8 @@ from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_clear_bias_gate_v45 as clear_gate
 from app.services import live_trader_execution_integrity_v39 as integrity
+from app.services import live_trader_execution_cost_model as cost_model
+from app.services import live_trader_evidence_identity as evidence_id
 from app.services import live_trader_historical_learning_v29 as academy
 from app.services import live_trader_london_session_gate_v46 as session_gate
 from app.services import live_trader_zone_retrace_integrity_v64 as v64
@@ -37,6 +39,34 @@ _prior_load_specialist_row = v64._load_specialist_row
 _prior_audited_specialist = v64._audited_specialist
 
 
+def _academy_policy_definition() -> dict[str, Any]:
+    return {
+        **evidence_id.production_policy_definition(),
+        "evaluation_contract_version": "eve-live-current-policy-historical-proxy-contract-v1",
+        "academy_version": ACADEMY_VERSION,
+        "entry_policy": ENTRY_POLICY,
+        "minimum_zone_quality": MIN_ZONE_QUALITY,
+        "maximum_zone_distance_atr": MAX_ZONE_DISTANCE_ATR,
+        "minimum_scorable_coverage": MIN_SCORABLE_COVERAGE,
+        "promotion_min_opportunities": MIN_PROMOTION_OPPORTUNITIES,
+        "promotion_min_triggered": MIN_PROMOTION_TRIGGERED,
+        "promotion_min_net_expectancy_r": MIN_PROMOTION_EXPECTANCY_R,
+        "historical_news_gate_replayed": False,
+        "historical_resolution": "causal_source_m1_ohlc_proxy",
+    }
+
+
+def _academy_identity(settings: Any) -> dict[str, Any]:
+    return evidence_id.build_identity(
+        policy_kind="historical_current_policy_proxy",
+        policy_key=ACADEMY_VERSION,
+        policy_definition=_academy_policy_definition(),
+        settings=settings,
+        learning_version=ACADEMY_VERSION,
+        evaluation_stage="historical_current_policy_proxy",
+    )
+
+
 def _num(value: Any, default: float = 0.0) -> float:
     return core.number(value, default)
 
@@ -62,8 +92,8 @@ def _decision_time(row: dict[str, Any]) -> datetime | None:
     return candle + timedelta(minutes=5) if candle is not None else None
 
 
-def _opportunity_key(symbol: str, observed: datetime, side: str) -> str:
-    raw = f"{symbol}|{observed.isoformat()}|{side}|{ACADEMY_VERSION}"
+def _opportunity_key(symbol: str, observed: datetime, side: str, cohort_id: str) -> str:
+    raw = f"{symbol}|{observed.isoformat()}|{side}|{ACADEMY_VERSION}|{cohort_id}"
     return hashlib.sha1(raw.encode()).hexdigest()
 
 
@@ -175,10 +205,11 @@ def _current_policy_contract(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _load_current_policy_state(self: core.LiveTrader) -> dict[str, Any]:
+    identity = _academy_identity(self.settings)
     try:
         rows = await self.repo.client.get(
-            "live_trader_zone_retrace_current_policy_state",
-            params={"select": "*", "symbol": f"eq.{self.symbol}", "limit": "1"},
+            "live_trader_zone_retrace_current_policy_cohort_state",
+            params={"select": "*", "cohort_id": f"eq.{identity['cohort_id']}", "limit": "1"},
         )
         return dict(rows[0] or {}) if rows else {}
     except Exception:
@@ -213,11 +244,12 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
         self.last_error: str | None = None
         self.rows_scanned_runtime = 0
         self.opportunities_runtime = 0
+        self.evidence_identity = _academy_identity(owner.settings)
 
     async def _state(self) -> dict[str, Any]:
         rows = await self.repo.client.get(
-            "live_trader_zone_retrace_current_policy_state",
-            params={"select": "*", "symbol": f"eq.{self.symbol}", "limit": "1"},
+            "live_trader_zone_retrace_current_policy_cohort_state",
+            params={"select": "*", "cohort_id": f"eq.{self.evidence_identity['cohort_id']}", "limit": "1"},
         )
         return dict(rows[0] or {}) if rows else {}
 
@@ -323,9 +355,15 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
         m1_rows = await self._m1_window(observed, source_end)
         search_path = hardening._causal_m1_path(m1_rows, observed, search_end)
 
+        opportunity_key = _opportunity_key(
+            self.symbol,
+            observed,
+            str(opportunity.get("side") or ""),
+            str(self.evidence_identity["cohort_id"]),
+        )
         base = {
-            "opportunity_key": _opportunity_key(self.symbol, observed, str(opportunity.get("side") or "")),
-            "independence_key": _opportunity_key(self.symbol, observed, str(opportunity.get("side") or "")),
+            "opportunity_key": opportunity_key,
+            "independence_key": opportunity_key,
             "symbol": self.symbol,
             "observed_at": observed.isoformat(),
             "session": opportunity.get("session"),
@@ -335,6 +373,7 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
             "source_zone": opportunity.get("source_zone"),
             "clear_bias_gate": opportunity.get("clear_bias_gate"),
             "academy_version": ACADEMY_VERSION,
+            **evidence_id.row_columns(self.evidence_identity),
         }
 
         if not v68._path_complete(search_path):
@@ -372,6 +411,11 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
                 "path_complete": True,
                 "trade_outcome": "no_live_policy_entry",
                 "realised_r": 0.0,
+                "gross_realised_r": 0.0,
+                "estimated_cost_r": 0.0,
+                "net_realised_r": 0.0,
+                "cost_model_version": cost_model.COST_MODEL_VERSION,
+                "execution_costs": {"version": cost_model.COST_MODEL_VERSION, "cost_applied": False, "reason": "No entry; no capital exposed."},
                 "learning_success": None,
                 "details": {
                     "entry_policy": ENTRY_POLICY,
@@ -413,6 +457,7 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
             }
 
         trade = dict(entry.get("trade") or {})
+        trade["execution_cost_model"] = cost_model.profile_from_settings(self.settings)
         # Re-apply the production target cap at the final scoring point so no
         # future upstream target-policy change can silently bypass the academy.
         trade = v49._apply_target_cap(trade)
@@ -428,8 +473,13 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
             "status": "scored",
             "path_complete": True,
             "trade_outcome": result.get("trade_outcome"),
-            "realised_r": result.get("realised_r"),
-            "learning_success": result.get("learning_success"),
+            "realised_r": result.get("net_realised_r"),
+            "gross_realised_r": result.get("gross_realised_r"),
+            "estimated_cost_r": result.get("estimated_cost_r"),
+            "net_realised_r": result.get("net_realised_r"),
+            "cost_model_version": result.get("cost_model_version"),
+            "execution_costs": result.get("execution_costs"),
+            "learning_success": result.get("net_learning_success"),
             "details": {
                 "entry_policy": ENTRY_POLICY,
                 "entry_search_diagnostics": diagnostics,
@@ -454,9 +504,10 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
         rows = await self.repo.client.get(
             "live_trader_zone_retrace_current_policy_opportunities",
             params={
-                "select": "status,entry_at,path_complete,realised_r,learning_success",
+                "select": "status,entry_at,path_complete,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,learning_success",
                 "symbol": f"eq.{self.symbol}",
                 "academy_version": f"eq.{ACADEMY_VERSION}",
+                "cohort_id": f"eq.{self.evidence_identity['cohort_id']}",
                 "limit": "5000",
             },
         )
@@ -466,12 +517,15 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
         unscorable = opportunities - scorable
         triggered_rows = [row for row in scorable_rows if row.get("entry_at")]
         triggered = len(triggered_rows)
-        total_r = sum(_num(row.get("realised_r")) for row in scorable_rows if row.get("realised_r") is not None)
-        wins = sum(1 for row in triggered_rows if _num(row.get("realised_r")) > 0)
-        losses = sum(1 for row in triggered_rows if _num(row.get("realised_r")) < 0)
-        breakeven = sum(1 for row in triggered_rows if row.get("realised_r") is not None and _num(row.get("realised_r")) == 0)
-        expectancy_opportunity = total_r / scorable if scorable else None
-        expectancy_triggered = total_r / triggered if triggered else None
+        total_gross_r = sum(_num(row.get("gross_realised_r")) for row in scorable_rows if row.get("gross_realised_r") is not None)
+        total_net_r = sum(_num(row.get("net_realised_r")) for row in scorable_rows if row.get("net_realised_r") is not None)
+        wins = sum(1 for row in triggered_rows if _num(row.get("net_realised_r")) > 0)
+        losses = sum(1 for row in triggered_rows if _num(row.get("net_realised_r")) < 0)
+        breakeven = sum(1 for row in triggered_rows if row.get("net_realised_r") is not None and _num(row.get("net_realised_r")) == 0)
+        gross_expectancy_opportunity = total_gross_r / scorable if scorable else None
+        net_expectancy_opportunity = total_net_r / scorable if scorable else None
+        gross_expectancy_triggered = total_gross_r / triggered if triggered else None
+        net_expectancy_triggered = total_net_r / triggered if triggered else None
         trigger_rate = triggered / scorable if scorable else None
         coverage = scorable / opportunities if opportunities else 0.0
         promoted = bool(
@@ -480,12 +534,14 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
             and coverage >= MIN_SCORABLE_COVERAGE
             and scorable >= MIN_PROMOTION_OPPORTUNITIES
             and triggered >= MIN_PROMOTION_TRIGGERED
-            and expectancy_opportunity is not None
-            and expectancy_opportunity > MIN_PROMOTION_EXPECTANCY_R
+            and net_expectancy_opportunity is not None
+            and net_expectancy_opportunity > MIN_PROMOTION_EXPECTANCY_R
         )
         status = "caught_up_promoted" if caught_up and promoted else "caught_up_not_promoted" if caught_up else "scanning"
         previous = await self._state()
         payload = {
+            "cohort_id": self.evidence_identity["cohort_id"],
+            **evidence_id.row_columns(self.evidence_identity),
             "symbol": self.symbol,
             "academy_version": ACADEMY_VERSION,
             "status": status,
@@ -499,9 +555,16 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
             "wins": wins,
             "losses": losses,
             "breakeven": breakeven,
-            "total_r": round(total_r, 3),
-            "expectancy_per_opportunity_r": round(expectancy_opportunity, 4) if expectancy_opportunity is not None else None,
-            "expectancy_per_triggered_r": round(expectancy_triggered, 4) if expectancy_triggered is not None else None,
+            "total_r": round(total_net_r, 3),
+            "total_gross_r": round(total_gross_r, 3),
+            "total_net_r": round(total_net_r, 3),
+            "expectancy_per_opportunity_r": round(net_expectancy_opportunity, 4) if net_expectancy_opportunity is not None else None,
+            "expectancy_per_triggered_r": round(net_expectancy_triggered, 4) if net_expectancy_triggered is not None else None,
+            "gross_expectancy_per_opportunity_r": round(gross_expectancy_opportunity, 4) if gross_expectancy_opportunity is not None else None,
+            "net_expectancy_per_opportunity_r": round(net_expectancy_opportunity, 4) if net_expectancy_opportunity is not None else None,
+            "gross_expectancy_per_triggered_r": round(gross_expectancy_triggered, 4) if gross_expectancy_triggered is not None else None,
+            "net_expectancy_per_triggered_r": round(net_expectancy_triggered, 4) if net_expectancy_triggered is not None else None,
+            "cost_model_version": cost_model.COST_MODEL_VERSION,
             "trigger_rate": round(trigger_rate, 4) if trigger_rate is not None else None,
             "caught_up": caught_up,
             "promoted": promoted,
@@ -517,14 +580,17 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
                 "promotion_min_opportunities": MIN_PROMOTION_OPPORTUNITIES,
                 "promotion_min_triggered": MIN_PROMOTION_TRIGGERED,
                 "promotion_min_expectancy_r": MIN_PROMOTION_EXPECTANCY_R,
+                "promotion_metric": "net_expectancy_per_opportunity_r",
+                "cost_model_version": cost_model.COST_MODEL_VERSION,
+                "evidence_identity": evidence_id.public_identity(self.evidence_identity),
                 "historical_news_gate_replayed": False,
             },
             "updated_at": core.utc_now().isoformat(),
         }
         await self.repo.client.upsert(
-            "live_trader_zone_retrace_current_policy_state",
+            "live_trader_zone_retrace_current_policy_cohort_state",
             payload,
-            on_conflict="symbol",
+            on_conflict="cohort_id",
             return_rows=False,
         )
         self.last_state = dict(payload)
@@ -534,6 +600,7 @@ class CurrentPolicyZoneRetraceAcademy(v68.ZoneRetraceLivePolicyReplayer):
         return payload
 
     async def run_cycle(self) -> bool:
+        await evidence_id.ensure_registered(self.repo, self.evidence_identity)
         state = await self._state()
         coverage_start = await self._m1_coverage_start()
         if coverage_start is None:
@@ -645,6 +712,7 @@ async def _learning_summary_v71(self: core.LiveTrader) -> dict[str, Any]:
     summary["zone_retrace_current_policy_academy"] = state or {
         "academy_version": ACADEMY_VERSION,
         "status": "waiting_for_first_scan",
+        "evidence_identity": evidence_id.public_identity(_academy_identity(self.settings)),
     }
     return summary
 
@@ -664,6 +732,8 @@ def _runtime_status_v71(self: core.LiveTrader) -> dict[str, Any]:
             "zone_retrace_current_policy_promoted": state.get("promoted"),
             "zone_retrace_live_promotion_authority": ACADEMY_VERSION,
             "zone_retrace_compatibility_replay_authoritative": False,
+            "zone_retrace_current_policy_identity_version": evidence_id.IDENTITY_VERSION,
+            "zone_retrace_current_policy_cohort_id": state.get("cohort_id") or _academy_identity(self.settings)["cohort_id"],
         }
     )
     return status

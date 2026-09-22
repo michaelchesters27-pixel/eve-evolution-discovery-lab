@@ -8,6 +8,7 @@ from typing import Any
 from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_execution_cost_model as cost_model
+from app.services import live_trader_evidence_identity as evidence_id
 from app.services import live_trader_historical_learning_v29 as academy
 from app.services import live_trader_historical_runtime_v30 as runtime
 from app.services import live_trader_learning_v2 as v2
@@ -422,6 +423,8 @@ class HistoricalExecutionRegrader:
             core.logger.warning("Live Trader v3.9 could not resync Historical Academy counters: %s", exc)
 
     async def learn_cycle(self) -> bool:
+        identity = evidence_id.historical_regrade_identity(self.settings)
+        await evidence_id.ensure_registered(self.repo, identity)
         state = await self._state()
         if bool(state.get("completed")) and str(state.get("version") or "") == REGRADER_VERSION:
             self.owner._execution_regrade_ready_v39 = True
@@ -546,6 +549,7 @@ class HistoricalExecutionRegrader:
                 "horizon_at": horizon_at.isoformat(),
                 "gross_r_preserved": True,
                 "net_r_used_for_learning": True,
+                "evidence_identity": evidence_id.public_identity(identity),
             }
             await self.repo.client.patch(
                 "live_trader_historical_learning",
@@ -558,6 +562,7 @@ class HistoricalExecutionRegrader:
                     "net_learning_success": result.get("net_learning_success"),
                     "cost_model_version": result.get("cost_model_version"),
                     "execution_costs": result.get("execution_costs"),
+                    **evidence_id.row_columns(identity),
                     "learning_success": success,
                     "challenger_results": rescored_challengers,
                     "best_challenger": best_challenger,
