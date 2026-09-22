@@ -131,11 +131,11 @@ def test_policy_lab_cannot_qualify_on_positive_gross_but_negative_net() -> None:
                 "cost_model_version": cost_model.COST_MODEL_VERSION,
                 "trade_outcome": "expired_win",
                 "timing_contract_version": v85.hardening.TIMING_CONTRACT_VERSION,
-                "trade_idea": {"policy_lab": {"policy_key": "gross_only_illusion"}},
+                "trade_idea": {"policy_lab": {"policy_key": "directional_quality_market"}},
             }
         )
     stats = v85._policy_stats(rows)
-    leader = stats["leader"]
+    leader = next(item for item in stats["leaderboard"] if item["policy_key"] == "directional_quality_market")
     assert leader["gross_expectancy_r"] == 0.2
     assert leader["net_expectancy_r"] == -0.05
     assert leader["forward_candidate"] is False
