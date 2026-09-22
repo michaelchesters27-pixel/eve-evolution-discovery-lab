@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zlib
 from typing import Any
 
 VERSION = "eve-compact-research-row-v1"
@@ -85,6 +86,8 @@ OBSERVATION_FIELDS: tuple[str, ...] = (
 
 BASE_INDEX = {name: index for index, name in enumerate(BASE_FIELDS)}
 OBS_INDEX = {name: index for index, name in enumerate(OBSERVATION_FIELDS)}
+OUTCOME_HORIZONS: tuple[str, ...] = ("5", "15", "30", "60", "240")
+OUTCOME_INDEX = {name: index for index, name in enumerate(OUTCOME_HORIZONS)}
 
 LEGACY_SELECT = ",".join(
     field
@@ -105,27 +108,28 @@ class CompactResearchRow:
     horizon triples.
     """
 
-    __slots__ = ("_values", "_observations", "_outcome_hot", "canonical_outcomes_json", "_extras")
+    __slots__ = ("_values", "_observations", "_outcome_hot", "_canonical_outcomes_zlib", "_extras")
 
     def __init__(self, row: dict[str, Any]) -> None:
         self._values = tuple(row.get(field) for field in BASE_FIELDS)
         outcomes = row.get("outcomes") if isinstance(row.get("outcomes"), dict) else {}
-        self.canonical_outcomes_json = json.dumps(
+        canonical = json.dumps(
             outcomes or {},
             sort_keys=True,
             separators=(",", ":"),
             default=str,
-        )
-        hot: dict[str, tuple[Any, Any, Any]] = {}
-        for horizon, outcome in (outcomes or {}).items():
+        ).encode()
+        self._canonical_outcomes_zlib = zlib.compress(canonical, level=1)
+        hot: list[Any] = [None] * (len(OUTCOME_HORIZONS) * 3)
+        for horizon, index in OUTCOME_INDEX.items():
+            outcome = (outcomes or {}).get(horizon)
             if not isinstance(outcome, dict):
                 continue
-            hot[str(horizon)] = (
-                outcome.get("max_up_atr"),
-                outcome.get("max_down_atr"),
-                outcome.get("close_return_pct"),
-            )
-        self._outcome_hot = hot
+            base = index * 3
+            hot[base] = outcome.get("max_up_atr")
+            hot[base + 1] = outcome.get("max_down_atr")
+            hot[base + 2] = outcome.get("close_return_pct")
+        self._outcome_hot = tuple(hot)
         self._observations = [None] * len(OBSERVATION_FIELDS)
         self._extras: dict[str, Any] | None = None
 
@@ -138,7 +142,7 @@ class CompactResearchRow:
             return self._observations[obs_index]
         if key == "outcomes":
             try:
-                return json.loads(self.canonical_outcomes_json)
+                return json.loads(zlib.decompress(self._canonical_outcomes_zlib).decode())
             except json.JSONDecodeError:
                 return {}
         if self._extras is not None and key in self._extras:
@@ -167,13 +171,17 @@ class CompactResearchRow:
         return self._extras is not None and key in self._extras
 
     def outcome(self, horizon: int | str) -> dict[str, Any] | None:
-        value = self._outcome_hot.get(str(horizon))
-        if value is None:
+        index = OUTCOME_INDEX.get(str(horizon))
+        if index is None:
+            return None
+        base = index * 3
+        values = self._outcome_hot[base : base + 3]
+        if all(value is None for value in values):
             return None
         return {
-            "max_up_atr": value[0],
-            "max_down_atr": value[1],
-            "close_return_pct": value[2],
+            "max_up_atr": values[0],
+            "max_down_atr": values[1],
+            "close_return_pct": values[2],
         }
 
 
@@ -192,7 +200,7 @@ def research_outcome(row: Any, horizon: int | str) -> dict[str, Any] | None:
 def fingerprint_outcomes(row: Any) -> Any:
     if isinstance(row, CompactResearchRow):
         try:
-            return json.loads(row.canonical_outcomes_json)
+            return json.loads(zlib.decompress(row._canonical_outcomes_zlib).decode())
         except json.JSONDecodeError:
             return {}
     return row.get("outcomes") if hasattr(row, "get") else {}
