@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from app.services import live_trader as core
 from app.services import live_trader_historical_runtime_v30 as runtime
 from app.services import live_trader_red_folder_news_confirmation_v36 as confirm
+from app.services import live_trader_news_confirmation_workflow_v95 as workflow
 from app.services import live_trader_trade_lock_v28 as lock
 
 
@@ -44,7 +45,19 @@ def test_confirmed_week_preserves_real_calendar_status() -> None:
         "new_trade_blocked": False,
         "forward_learning_blocked": False,
     }
-    row = {"week_start": "2026-08-23", "confirmed_at": "2026-08-23T08:00:00+00:00"}
+    digest = workflow._inventory_digest([])
+    row = {
+        "week_start": "2026-08-23",
+        "confirmed_at": "2026-08-23T08:00:00+00:00",
+        "calendar_checked_at": "2026-08-23T08:00:00+00:00",
+        "confirmation_version": workflow.VERSION,
+        "confirmation_method": workflow.CONFIRMATION_METHOD,
+        "confirmed_event_count": 0,
+        "confirmed_event_digest": digest,
+        "_current_event_count": 0,
+        "_current_event_digest": digest,
+        "_current_event_ids": [],
+    }
     result = confirm._apply_confirmation(base, row, utc(2026, 8, 23, 8))
 
     assert result["status"] == "armed"
