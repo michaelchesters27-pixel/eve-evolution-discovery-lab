@@ -20,10 +20,9 @@ _current_runtime_status = core.LiveTrader.runtime_status
 
 
 def _published_identity(self: core.LiveTrader) -> dict[str, Any]:
-    return evidence_id.production_identity(
+    return evidence_id.published_campaign_identity(
         self.settings,
         learning_version=PUBLISHED_CAMPAIGN_LEARNING_VERSION,
-        evaluation_stage="published_paper_campaign",
     )
 
 
