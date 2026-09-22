@@ -685,7 +685,7 @@ class LiveTraderNewsRemoveEventRequest(BaseModel):
 
 class LiveTraderNewsWeekConfirmRequest(BaseModel):
     calendar_checked: bool = False
-    expected_event_count: int = Field(ge=0, le=200)
+    expected_event_count: int = Field(ge=0)
     source_reference: str = Field(min_length=3, max_length=500)
     note: str = Field(default="", max_length=1000)
 
