@@ -2,6 +2,76 @@
 -- Enforce that every attributed evidence row is bound immutably to the exact
 -- policy/scorer/stage tuple registered by its cohort. Legacy rows stay legacy.
 
+
+alter table public.live_trader_evaluation_cohorts
+  drop constraint if exists uq_live_trader_cohort_binding_v98;
+alter table public.live_trader_evaluation_cohorts
+  add constraint uq_live_trader_cohort_binding_v98
+  unique (cohort_id, policy_id, scorer_id, evaluation_stage, identity_version);
+
+alter table public.live_trader_opinions
+  drop constraint if exists fk_live_trader_opinions_identity_tuple_v98;
+alter table public.live_trader_opinions
+  add constraint fk_live_trader_opinions_identity_tuple_v98
+  foreign key (cohort_id, policy_id, scorer_id, evaluation_stage, evidence_identity_version)
+  references public.live_trader_evaluation_cohorts
+    (cohort_id, policy_id, scorer_id, evaluation_stage, identity_version)
+  on delete restrict;
+
+alter table public.live_trader_campaigns
+  drop constraint if exists fk_live_trader_campaigns_identity_tuple_v98;
+alter table public.live_trader_campaigns
+  add constraint fk_live_trader_campaigns_identity_tuple_v98
+  foreign key (cohort_id, policy_id, scorer_id, evaluation_stage, evidence_identity_version)
+  references public.live_trader_evaluation_cohorts
+    (cohort_id, policy_id, scorer_id, evaluation_stage, identity_version)
+  on delete restrict;
+
+alter table public.live_trader_trade_reviews
+  drop constraint if exists fk_live_trader_trade_reviews_identity_tuple_v98;
+alter table public.live_trader_trade_reviews
+  add constraint fk_live_trader_trade_reviews_identity_tuple_v98
+  foreign key (cohort_id, policy_id, scorer_id, evaluation_stage, evidence_identity_version)
+  references public.live_trader_evaluation_cohorts
+    (cohort_id, policy_id, scorer_id, evaluation_stage, identity_version)
+  on delete restrict;
+
+alter table public.live_trader_historical_learning
+  drop constraint if exists fk_live_trader_historical_identity_tuple_v98;
+alter table public.live_trader_historical_learning
+  add constraint fk_live_trader_historical_identity_tuple_v98
+  foreign key (cohort_id, policy_id, scorer_id, evaluation_stage, evidence_identity_version)
+  references public.live_trader_evaluation_cohorts
+    (cohort_id, policy_id, scorer_id, evaluation_stage, identity_version)
+  on delete restrict;
+
+alter table public.live_trader_manual_fills
+  drop constraint if exists fk_live_trader_manual_fills_identity_tuple_v98;
+alter table public.live_trader_manual_fills
+  add constraint fk_live_trader_manual_fills_identity_tuple_v98
+  foreign key (cohort_id, policy_id, scorer_id, evaluation_stage, evidence_identity_version)
+  references public.live_trader_evaluation_cohorts
+    (cohort_id, policy_id, scorer_id, evaluation_stage, identity_version)
+  on delete restrict;
+
+alter table public.live_trader_zone_retrace_current_policy_opportunities
+  drop constraint if exists fk_live_trader_current_opps_identity_tuple_v98;
+alter table public.live_trader_zone_retrace_current_policy_opportunities
+  add constraint fk_live_trader_current_opps_identity_tuple_v98
+  foreign key (cohort_id, policy_id, scorer_id, evaluation_stage, evidence_identity_version)
+  references public.live_trader_evaluation_cohorts
+    (cohort_id, policy_id, scorer_id, evaluation_stage, identity_version)
+  on delete restrict;
+
+alter table public.live_trader_zone_retrace_current_policy_cohort_state
+  drop constraint if exists fk_live_trader_current_state_identity_tuple_v98;
+alter table public.live_trader_zone_retrace_current_policy_cohort_state
+  add constraint fk_live_trader_current_state_identity_tuple_v98
+  foreign key (cohort_id, policy_id, scorer_id, evaluation_stage, evidence_identity_version)
+  references public.live_trader_evaluation_cohorts
+    (cohort_id, policy_id, scorer_id, evaluation_stage, identity_version)
+  on delete restrict;
+
 create or replace function public.guard_live_trader_evidence_attribution_v98()
 returns trigger
 language plpgsql
