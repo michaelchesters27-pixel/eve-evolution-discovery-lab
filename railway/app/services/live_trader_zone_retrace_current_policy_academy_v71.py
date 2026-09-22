@@ -160,8 +160,11 @@ def _current_policy_contract(payload: dict[str, Any]) -> dict[str, Any]:
     coverage = scorable / opportunities if opportunities else 0.0
     caught_up = bool(state.get("caught_up"))
     verified = bool(caught_up and opportunities > 0 and coverage >= MIN_SCORABLE_COVERAGE)
-    promoted = bool(state.get("promoted")) and verified
-    screening_candidate = bool(dict(state.get("policy") or {}).get("historical_screening_candidate"))
+    screening_candidate = bool(
+        dict(state.get("policy") or {}).get("historical_screening_candidate")
+        or state.get("promoted")  # legacy state can only be interpreted as a historical screening flag
+    ) and verified
+    promoted = False
     evidence = _live_policy_evidence(state)
 
     specialist.update(
