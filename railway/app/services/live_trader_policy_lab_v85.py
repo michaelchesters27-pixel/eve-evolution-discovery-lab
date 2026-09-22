@@ -453,8 +453,11 @@ async def _resolve_policy_outcomes(self: core.LiveTrader) -> dict[str, Any]:
             row,
             fallback_observed=observed,
             horizon_minutes=horizon_minutes,
+            allow_legacy_fallback=False,
         )
-        if timing_verified and now < horizon:
+        if not timing_verified:
+            continue
+        if now < horizon:
             waiting_for_horizon += 1
             continue
         try:
