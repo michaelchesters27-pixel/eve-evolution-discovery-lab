@@ -6,7 +6,11 @@ from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_campaign_consensus_v66 as consensus
 from app.services import live_trader_evidence_identity as evidence_id
+from app.services import live_trader_historical_runtime_v30 as historical_runtime
 from app.services import live_trader_trade_lock_v28 as lock
+from app.services import live_trader_trade_outcomes_v38 as outcomes
+from app.services import live_trader_zone_retrace_integrity_v64 as v64
+from app.services import live_trader_zone_retrace_specialist_v58 as v58
 
 VERSION = "eve-live-evidence-provenance-v91"
 PUBLISHED_CAMPAIGN_LEARNING_VERSION = "eve-live-published-paper-campaign-v1"
@@ -50,12 +54,17 @@ async def _persist_campaign_v91(self: core.LiveTrader, campaign: dict[str, Any])
     # Never retroactively pretend a legacy campaign belongs to the new
     # prospective cohort. Only campaigns created through v91 carry the marker.
     if str(campaign.get("evidence_identity_version") or "") == evidence_id.IDENTITY_VERSION:
-        identity = _published_identity(self)
-        if str(campaign.get("cohort_id") or "") != str(identity.get("cohort_id") or ""):
-            raise RuntimeError(
-                "Live Trader refused to persist a campaign under a different policy/scorer cohort than the one it was created with."
-            )
-        await evidence_id.ensure_registered(self.repo, identity)
+        current = _published_identity(self)
+        # A campaign created under the current contract must be registered before
+        # its first durable write. An older identified campaign surviving a deploy
+        # keeps its original immutable IDs through completion; it is never relabelled
+        # into the new cohort merely because code or scorer assumptions changed.
+        if (
+            str(campaign.get("policy_id") or "") == str(current.get("policy_id") or "")
+            and str(campaign.get("scorer_id") or "") == str(current.get("scorer_id") or "")
+            and str(campaign.get("cohort_id") or "") == str(current.get("cohort_id") or "")
+        ):
+            await evidence_id.ensure_registered(self.repo, current)
     return await _current_persist_campaign(self, campaign)
 
 
@@ -118,4 +127,14 @@ consensus._persist_campaign_v66 = _persist_campaign_v91
 
 core.LiveTrader.refresh_state = _refresh_state_v91  # type: ignore[method-assign]
 core.LiveTrader.runtime_status = _runtime_status_v91  # type: ignore[method-assign]
+
+# Preserve the established compatibility contract: older safety modules expose
+# aliases to the newest production refresh wrapper.
+lock._refresh_state_v28 = _refresh_state_v91
+historical_runtime._refresh_state_v30 = _refresh_state_v91
+outcomes._refresh_v38 = _refresh_state_v91
+v58._refresh_state_v58 = _refresh_state_v91
+v64.v58._refresh_state_v58 = _refresh_state_v91
+v64.historical_runtime._refresh_state_v30 = _refresh_state_v91
+v64.outcomes._refresh_v38 = _refresh_state_v91
 
