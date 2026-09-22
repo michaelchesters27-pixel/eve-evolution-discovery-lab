@@ -251,7 +251,7 @@ async def run_once() -> dict[str, Any]:
     settings = get_settings()
     source = SourceRepository(settings)
     repo = DiscoveryRepository(settings)
-    cycle_id = str(uuid.uuid4())
+    cycle_id = str(os.environ.get("EVE_BOUNDED_CYCLE_ID") or uuid.uuid4())
     cycle_started = _now()
     cycle_perf = time.perf_counter()
 
