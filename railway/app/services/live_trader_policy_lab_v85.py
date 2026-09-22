@@ -27,6 +27,8 @@ MIN_ZONE_QUALITY = 55.0
 RESOLVE_LIMIT = 16
 RESOLVE_INTERVAL_SECONDS = 45.0
 SUMMARY_CACHE_SECONDS = 60.0
+SUMMARY_VERSION = "eve-live-policy-lab-complete-summary-v93"
+SUMMARY_RPC = "get_live_trader_policy_lab_complete_summary_v93"
 MIN_CANDIDATE_TRIGGERED = 30
 MIN_CANDIDATE_EXPECTANCY_R = 0.10
 
@@ -666,6 +668,145 @@ def _policy_stats(
     }
 
 
+def _policy_stats_from_complete_summary(
+    payload: dict[str, Any],
+    current_cohorts: dict[str, str],
+) -> dict[str, Any]:
+    if str(payload.get("version") or "") != SUMMARY_VERSION:
+        raise RuntimeError(f"Unexpected Policy Lab summary version: {payload.get('version')}")
+    if payload.get("complete") is not True or payload.get("rolling") is not False:
+        raise RuntimeError("Policy Lab summary RPC did not return a complete full-cohort summary")
+
+    raw_cohorts = list(payload.get("cohorts") or [])
+    by_cohort = {str(item.get("cohort_id") or ""): dict(item) for item in raw_cohorts}
+    expected = {str(value) for value in current_cohorts.values()}
+    if set(by_cohort) != expected:
+        missing = sorted(expected - set(by_cohort))
+        unexpected = sorted(set(by_cohort) - expected)
+        raise RuntimeError(f"Policy Lab complete summary cohort mismatch missing={missing} unexpected={unexpected}")
+
+    leaderboard: list[dict[str, Any]] = []
+    for key in POLICY_KEYS:
+        cohort_id = str(current_cohorts[key])
+        aggregate = by_cohort[cohort_id]
+        daily = [dict(item) for item in list(aggregate.get("daily") or [])]
+        assessment = quality.evaluate_policy_lab_daily_summary(
+            daily,
+            policy_key=key,
+            cohort_id=cohort_id,
+        )
+        triggered = int(_num(aggregate.get("triggered")))
+        daily_triggered = int(_num(assessment.get("triggered")))
+        if daily_triggered != triggered:
+            raise RuntimeError(
+                f"Policy Lab daily aggregate mismatch for {key}: daily={daily_triggered} total={triggered}"
+            )
+
+        wins = int(_num(aggregate.get("wins")))
+        losses = int(_num(aggregate.get("losses")))
+        total_gross_r = _num(aggregate.get("total_gross_r"))
+        total_net_r = _num(aggregate.get("total_net_r"))
+        if abs(total_net_r - _num(assessment.get("total_net_r"))) > 1e-6:
+            raise RuntimeError(
+                f"Policy Lab net-R aggregate mismatch for {key}: daily={assessment.get('total_net_r')} total={total_net_r}"
+            )
+        gross_expectancy = total_gross_r / triggered if triggered else None
+
+        leaderboard.append(
+            {
+                "policy_key": key,
+                "cohort_id": cohort_id,
+                "resolved": int(_num(aggregate.get("resolved"))),
+                "triggered": triggered,
+                "wins_net": wins,
+                "losses_net": losses,
+                "wins": wins,
+                "losses": losses,
+                "breakeven": int(_num(aggregate.get("breakeven"))),
+                "total_gross_r": round(total_gross_r, 3),
+                "total_net_r": round(total_net_r, 3),
+                "total_r": round(total_net_r, 3),
+                "gross_expectancy_r": round(gross_expectancy, 3) if gross_expectancy is not None else None,
+                "net_expectancy_r": assessment.get("net_expectancy_r"),
+                "expectancy_r": assessment.get("net_expectancy_r"),
+                "win_rate_net": round(wins / triggered, 3) if triggered else None,
+                "win_rate": round(wins / triggered, 3) if triggered else None,
+                "max_drawdown_net_r": round(_num(aggregate.get("max_drawdown_net_r")), 3),
+                "max_drawdown_r": round(_num(aggregate.get("max_drawdown_net_r")), 3),
+                "independent_days": assessment.get("independent_days"),
+                "independent_weeks": assessment.get("independent_weeks"),
+                "max_single_day_trigger_share": assessment.get("max_single_day_trigger_share"),
+                "multiplicity_adjusted_one_sided_lower_bound_r": assessment.get(
+                    "multiplicity_adjusted_one_sided_lower_bound_r"
+                ),
+                "screening_pass_30_and_mean_only": assessment.get("screening_pass_30_and_mean_only"),
+                "fresh_confirmation_candidate": assessment.get("fresh_confirmation_candidate"),
+                "forward_candidate": assessment.get("forward_candidate"),
+                "quality_gates": assessment.get("quality_gates"),
+                "failed_quality_gates": assessment.get("failed_quality_gates"),
+                "minimum_triggered": quality.POLICY_LAB_MIN_TRIGGERED,
+                "minimum_independent_days": quality.POLICY_LAB_MIN_INDEPENDENT_DAYS,
+                "minimum_independent_weeks": quality.POLICY_LAB_MIN_INDEPENDENT_WEEKS,
+                "minimum_net_expectancy_r": quality.POLICY_LAB_MIN_NET_EXPECTANCY_R,
+                "minimum_expectancy_r": quality.POLICY_LAB_MIN_NET_EXPECTANCY_R,
+                "family_wise_alpha": quality.FAMILY_ALPHA,
+                "simultaneous_policy_count": quality.POLICY_LAB_COMPARISONS,
+                "evidence_quality_protocol_version": quality.POLICY_LAB_PROTOCOL_VERSION,
+                "summary_version": SUMMARY_VERSION,
+                "summary_scope": "complete_current_cohort",
+                "summary_complete": True,
+                "summary_rolling": False,
+                "summary_api_row_cap_applies": False,
+                "fresh_confirmation_required": True,
+                "selection_cohort_may_confirm_winner": False,
+                "cost_model_version": cost_model.COST_MODEL_VERSION,
+                "publication_authority": False,
+            }
+        )
+
+    leaderboard.sort(
+        key=lambda item: (
+            bool(item.get("fresh_confirmation_candidate")),
+            _num(item.get("multiplicity_adjusted_one_sided_lower_bound_r"), -999.0),
+            _num(item.get("net_expectancy_r"), -999.0),
+            int(item.get("independent_days") or 0),
+            int(item.get("triggered") or 0),
+        ),
+        reverse=True,
+    )
+    return {
+        "version": VERSION,
+        "learning_version": LEARNING_VERSION,
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+        "cost_model_version": cost_model.COST_MODEL_VERSION,
+        "evidence_quality_protocol_version": quality.POLICY_LAB_PROTOCOL_VERSION,
+        "evidence_quality_protocol": quality.policy_lab_protocol_definition(),
+        "summary_version": SUMMARY_VERSION,
+        "summary_completeness": {
+            "scope": str(payload.get("summary_scope") or "complete_current_cohorts"),
+            "complete": True,
+            "rolling": False,
+            "api_row_cap_applies": False,
+            "source": str(payload.get("source") or "server_side_sql_aggregation"),
+            "generated_at": payload.get("generated_at"),
+        },
+        "legacy_unverified_resolved": int(_num(payload.get("excluded_unverified_resolved"))),
+        "leader": leaderboard[0] if leaderboard else None,
+        "leaderboard": leaderboard,
+        "all_declared_policies_reported": len(leaderboard) == len(POLICY_KEYS),
+        "live_policy_unchanged": True,
+        "automatic_promotion": False,
+        "fresh_confirmation_required": True,
+        "selection_cohort_may_confirm_winner": False,
+        "purpose": (
+            "Research seven execution/gating policies in parallel using causal cost-adjusted M1 outcomes. "
+            "Current-cohort summary statistics are complete server-side SQL aggregates, not a capped client prefix. "
+            "A raw 30-trade/+0.10R mean is only a screening flag; independent day/week coverage, concentration control "
+            "and multiplicity-adjusted clustered uncertainty are still required before fresh confirmation."
+        ),
+    }
+
+
 async def _ensure_current_policy_identities(self: core.LiveTrader) -> dict[str, dict[str, Any]]:
     identities = {key: _policy_identity(self, key) for key in POLICY_KEYS}
     registered = getattr(self, "_policy_lab_registered_cohorts_v92", set())
@@ -690,21 +831,27 @@ async def _policy_lab_summary(self: core.LiveTrader) -> dict[str, Any]:
         if now - cached_at < timedelta(seconds=SUMMARY_CACHE_SECONDS):
             return dict(cached)
     try:
-        rows = await self.repo.client.get(
-            "live_trader_opinions",
-            params={
-                "select": "observed_at,entry_triggered,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,trade_outcome,trade_idea,timing_contract_version,cohort_id,policy_id,scorer_id",
-                "learning_version": f"eq.{LEARNING_VERSION}",
-                "status": "eq.resolved",
-                "order": "observed_at.asc",
-                "limit": "5000",
+        payload = await self.repo.client.rpc(
+            SUMMARY_RPC,
+            {
+                "p_learning_version": LEARNING_VERSION,
+                "p_cohort_ids": [current_cohorts[key] for key in POLICY_KEYS],
+                "p_timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+                "p_cost_model_version": cost_model.COST_MODEL_VERSION,
             },
         )
-    except Exception as exc:
-        result = {"version": VERSION, "status": "error", "reason": str(exc)[:240]}
-    else:
-        result = _policy_stats(list(rows), current_cohorts)
+        if not isinstance(payload, dict):
+            raise RuntimeError("Policy Lab complete summary RPC returned a non-object payload")
+        result = _policy_stats_from_complete_summary(dict(payload), current_cohorts)
         result["current_cohort_ids"] = current_cohorts
+    except Exception as exc:
+        result = {
+            "version": VERSION,
+            "summary_version": SUMMARY_VERSION,
+            "status": "error",
+            "summary_complete": False,
+            "reason": str(exc)[:240],
+        }
     self._policy_lab_summary_at_v85 = now
     self._policy_lab_summary_v85 = dict(result)
     return result
@@ -724,6 +871,9 @@ async def _refresh_state_v85(self: core.LiveTrader, *, force_rows: bool = False)
         "evidence_quality_protocol_version": quality.POLICY_LAB_PROTOCOL_VERSION,
         "current_cohort_ids": {key: str(identity["cohort_id"]) for key, identity in identities.items()},
         "fresh_confirmation_required": True,
+        "summary_version": SUMMARY_VERSION,
+        "summary_scope": "complete_current_cohorts",
+        "summary_api_row_cap_applies": False,
     }
     self._latest_state = state
     return state
@@ -750,6 +900,10 @@ def _runtime_status_v85(self: core.LiveTrader) -> dict[str, Any]:
             "policy_lab_min_independent_days": quality.POLICY_LAB_MIN_INDEPENDENT_DAYS,
             "policy_lab_min_independent_weeks": quality.POLICY_LAB_MIN_INDEPENDENT_WEEKS,
             "policy_lab_family_wise_alpha": quality.FAMILY_ALPHA,
+            "policy_lab_summary_version": SUMMARY_VERSION,
+            "policy_lab_summary_scope": "complete_current_cohorts",
+            "policy_lab_summary_complete_server_side": True,
+            "policy_lab_summary_api_row_cap_applies": False,
             "policy_lab_parallel_forward_research": True,
             "policy_lab_automatic_promotion": False,
             "policy_lab_fresh_confirmation_required": True,

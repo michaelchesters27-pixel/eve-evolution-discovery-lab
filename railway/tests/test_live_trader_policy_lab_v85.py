@@ -121,3 +121,114 @@ def test_policy_lab_requires_clustered_uncertainty_and_independent_weeks() -> No
     assert candidate["fresh_confirmation_candidate"] is True
     assert candidate["forward_candidate"] is True
     assert candidate["selection_cohort_may_confirm_winner"] is False
+
+
+
+def _complete_summary_payload(triggered: int = 6001) -> tuple[dict, dict[str, str]]:
+    cohorts = {key: f"coh_{index}" for index, key in enumerate(v85.POLICY_KEYS)}
+    daily = []
+    remaining = triggered
+    for day in range(1, 31):
+        count = min(201 if day == 1 else 200, remaining)
+        remaining -= count
+        daily.append(
+            {
+                "day": f"2026-08-{day:02d}",
+                "triggered": count,
+                "wins": count,
+                "losses": 0,
+                "breakeven": 0,
+                "gross_r": round(count * 0.2, 6),
+                "net_r": round(count * 0.2, 6),
+            }
+        )
+    assert remaining == 0
+    rows = []
+    for key in v85.POLICY_KEYS:
+        cohort_id = cohorts[key]
+        if key == "directional_quality_market":
+            rows.append(
+                {
+                    "cohort_id": cohort_id,
+                    "resolved": 7000,
+                    "triggered": triggered,
+                    "wins": triggered,
+                    "losses": 0,
+                    "breakeven": 0,
+                    "total_gross_r": round(triggered * 0.2, 6),
+                    "total_net_r": round(triggered * 0.2, 6),
+                    "max_drawdown_net_r": 0.0,
+                    "daily": daily,
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "cohort_id": cohort_id,
+                    "resolved": 0,
+                    "triggered": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "breakeven": 0,
+                    "total_gross_r": 0.0,
+                    "total_net_r": 0.0,
+                    "max_drawdown_net_r": 0.0,
+                    "daily": [],
+                }
+            )
+    return (
+        {
+            "version": v85.SUMMARY_VERSION,
+            "summary_scope": "complete_current_cohorts",
+            "complete": True,
+            "rolling": False,
+            "api_row_cap_applies": False,
+            "source": "server_side_sql_aggregation",
+            "cohorts": rows,
+            "excluded_unverified_resolved": 123,
+            "generated_at": "2026-09-22T10:30:00+00:00",
+        },
+        cohorts,
+    )
+
+
+def test_complete_summary_does_not_freeze_at_old_5000_row_prefix() -> None:
+    payload, cohorts = _complete_summary_payload(6001)
+    stats = v85._policy_stats_from_complete_summary(payload, cohorts)
+    target = next(item for item in stats["leaderboard"] if item["policy_key"] == "directional_quality_market")
+
+    assert target["triggered"] == 6001
+    assert target["resolved"] == 7000
+    assert target["summary_complete"] is True
+    assert target["summary_api_row_cap_applies"] is False
+    assert stats["summary_completeness"]["complete"] is True
+    assert stats["summary_completeness"]["rolling"] is False
+    assert stats["legacy_unverified_resolved"] == 123
+
+
+def test_complete_summary_fails_closed_when_a_current_cohort_is_missing() -> None:
+    payload, cohorts = _complete_summary_payload(6001)
+    payload["cohorts"] = payload["cohorts"][:-1]
+    try:
+        v85._policy_stats_from_complete_summary(payload, cohorts)
+    except RuntimeError as exc:
+        assert "cohort mismatch" in str(exc)
+    else:
+        raise AssertionError("Missing current cohort must not silently produce an incomplete leaderboard")
+
+
+def test_daily_sql_aggregate_preserves_clustered_quality_math() -> None:
+    payload, cohorts = _complete_summary_payload(6001)
+    aggregate = next(
+        item for item in payload["cohorts"]
+        if item["cohort_id"] == cohorts["directional_quality_market"]
+    )
+    assessment = v85.quality.evaluate_policy_lab_daily_summary(
+        aggregate["daily"],
+        policy_key="directional_quality_market",
+        cohort_id=aggregate["cohort_id"],
+    )
+    assert assessment["triggered"] == 6001
+    assert assessment["independent_days"] == 30
+    assert assessment["independent_weeks"] >= 4
+    assert assessment["fresh_confirmation_candidate"] is True

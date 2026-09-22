@@ -187,6 +187,148 @@ def day_cluster_bootstrap_lower_bound(
     return round(estimates[index], 5)
 
 
+def _daily_seed(label: str, daily: list[dict[str, Any]]) -> int:
+    canonical = "|".join(
+        [
+            PROTOCOL_VERSION,
+            label,
+            *[
+                (
+                    f"{str(item.get('day') or '')}:"
+                    f"{int(_num(item.get('triggered')))}:"
+                    f"{_num(item.get('net_r')):.8f}"
+                )
+                for item in sorted(daily, key=lambda row: str(row.get("day") or ""))
+            ],
+        ]
+    )
+    return int(hashlib.sha256(canonical.encode()).hexdigest()[:16], 16)
+
+
+def day_cluster_bootstrap_lower_bound_from_daily(
+    daily: list[dict[str, Any]],
+    *,
+    alpha: float,
+    label: str,
+    draws: int = BOOTSTRAP_DRAWS,
+) -> float | None:
+    clusters = [
+        {
+            "day": str(item.get("day") or ""),
+            "triggered": max(0, int(_num(item.get("triggered")))),
+            "net_r": _num(item.get("net_r")),
+        }
+        for item in daily
+        if str(item.get("day") or "") and int(_num(item.get("triggered"))) > 0
+    ]
+    if len(clusters) < 2 or draws < 100:
+        return None
+
+    rng = random.Random(_daily_seed(label, clusters))
+    estimates: list[float] = []
+    for _ in range(draws):
+        total = 0.0
+        count = 0
+        for _slot in range(len(clusters)):
+            item = clusters[rng.randrange(len(clusters))]
+            total += float(item["net_r"])
+            count += int(item["triggered"])
+        if count:
+            estimates.append(total / count)
+
+    if not estimates:
+        return None
+    estimates.sort()
+    index = int(math.floor(max(0.0, min(1.0, alpha)) * (len(estimates) - 1)))
+    return round(estimates[index], 5)
+
+
+def evidence_shape_from_daily(daily: list[dict[str, Any]]) -> dict[str, Any]:
+    clusters = [
+        {
+            "day": str(item.get("day") or ""),
+            "triggered": max(0, int(_num(item.get("triggered")))),
+            "net_r": _num(item.get("net_r")),
+        }
+        for item in daily
+        if str(item.get("day") or "") and int(_num(item.get("triggered"))) > 0
+    ]
+    clusters.sort(key=lambda item: item["day"])
+    n = sum(int(item["triggered"]) for item in clusters)
+    total = sum(float(item["net_r"]) for item in clusters)
+    days = [str(item["day"]) for item in clusters]
+    weeks = sorted({_week_key(day) for day in days})
+    max_day_count = max((int(item["triggered"]) for item in clusters), default=0)
+    max_day_share = max_day_count / n if n else 0.0
+    absolute_total = sum(abs(float(item["net_r"])) for item in clusters)
+    max_abs_day_share = (
+        max((abs(float(item["net_r"])) for item in clusters), default=0.0) / absolute_total
+        if absolute_total > 0
+        else 0.0
+    )
+    return {
+        "triggered": n,
+        "total_net_r": round(total, 5),
+        "net_expectancy_r": round(total / n, 5) if n else None,
+        "independent_days": len(days),
+        "independent_weeks": len(weeks),
+        "max_single_day_trigger_share": round(max_day_share, 5),
+        "max_single_day_absolute_r_share": round(max_abs_day_share, 5),
+        "first_day": days[0] if days else None,
+        "last_day": days[-1] if days else None,
+    }
+
+
+def evaluate_policy_lab_daily_summary(
+    daily: list[dict[str, Any]],
+    *,
+    policy_key: str,
+    cohort_id: str | None,
+) -> dict[str, Any]:
+    protocol = policy_lab_protocol_definition()
+    shape = evidence_shape_from_daily(daily)
+    lower = day_cluster_bootstrap_lower_bound_from_daily(
+        daily,
+        alpha=FAMILY_ALPHA / POLICY_LAB_COMPARISONS,
+        label=f"policy_lab|{policy_key}|{cohort_id or 'none'}",
+    )
+    screening_pass = bool(
+        shape["triggered"] >= POLICY_LAB_MIN_TRIGGERED
+        and shape["net_expectancy_r"] is not None
+        and shape["net_expectancy_r"] >= POLICY_LAB_MIN_NET_EXPECTANCY_R
+    )
+    gates = {
+        "minimum_triggered": shape["triggered"] >= POLICY_LAB_MIN_TRIGGERED,
+        "minimum_independent_days": shape["independent_days"] >= POLICY_LAB_MIN_INDEPENDENT_DAYS,
+        "minimum_independent_weeks": shape["independent_weeks"] >= POLICY_LAB_MIN_INDEPENDENT_WEEKS,
+        "minimum_net_expectancy": (
+            shape["net_expectancy_r"] is not None
+            and shape["net_expectancy_r"] >= POLICY_LAB_MIN_NET_EXPECTANCY_R
+        ),
+        "single_day_concentration": shape["max_single_day_trigger_share"] <= POLICY_LAB_MAX_SINGLE_DAY_TRIGGER_SHARE,
+        "multiplicity_adjusted_lower_bound_positive": lower is not None and lower > 0.0,
+    }
+    confirmation_candidate = bool(all(gates.values()))
+    return {
+        "protocol_version": POLICY_LAB_PROTOCOL_VERSION,
+        "cohort_id": cohort_id,
+        **shape,
+        "screening_pass_30_and_mean_only": screening_pass,
+        "multiplicity_adjusted_one_sided_lower_bound_r": lower,
+        "family_wise_alpha": FAMILY_ALPHA,
+        "per_policy_alpha": round(FAMILY_ALPHA / POLICY_LAB_COMPARISONS, 8),
+        "simultaneous_policy_count": POLICY_LAB_COMPARISONS,
+        "quality_gates": gates,
+        "failed_quality_gates": [name for name, passed in gates.items() if not passed],
+        "fresh_confirmation_candidate": confirmation_candidate,
+        "forward_candidate": confirmation_candidate,
+        "fresh_confirmation_required": True,
+        "automatic_promotion": False,
+        "selection_cohort_may_confirm_winner": False,
+        "protocol": protocol,
+    }
+
+
 def evidence_shape(
     rows: list[dict[str, Any]],
     *,
