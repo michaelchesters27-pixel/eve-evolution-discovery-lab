@@ -88,5 +88,22 @@ def test_losing_scan_claim_does_not_execute_archive_cycle() -> None:
     finally:
         v73._original_run_cycle = original
 
-    assert result is True
+    assert result["ok"] is True
+    assert result["status"] == "no_op"
+    assert result["reason"] == "scan_lease_not_acquired"
+    assert result["rows"] == 0
     assert executed is False
+
+
+
+def test_lease_denied_result_is_classified_as_no_op() -> None:
+    from app import bounded_worker
+
+    result = {
+        "ok": True,
+        "status": "no_op",
+        "reason": "scan_lease_not_acquired",
+        "lease_claimed": False,
+        "rows": 0,
+    }
+    assert bounded_worker._classify_stage_result(result) == "no_op"
