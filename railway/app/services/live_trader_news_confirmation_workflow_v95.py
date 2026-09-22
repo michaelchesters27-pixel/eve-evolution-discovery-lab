@@ -10,7 +10,9 @@ from app.services import live_trader_red_folder_all_day_v37 as all_day
 from app.services import live_trader_red_folder_news_confirmation_v36 as confirmation
 from app.services import live_trader_red_folder_news_v35 as news
 
-VERSION = "eve-live-news-confirmation-workflow-v95"
+VERSION = "eve-live-news-confirmation-workflow-v96-complete-inventory"
+INVENTORY_VERSION = "eve-live-news-inventory-v96"
+INVENTORY_SOURCE = "server_side_sql_aggregation"
 ATTESTATION_TOKEN = "I_HAVE_CHECKED_FOREX_FACTORY"
 CONFIRMATION_METHOD = "explicit_operator_forex_factory_attestation"
 
@@ -52,26 +54,53 @@ def _inventory_digest(items: list[dict[str, Any]]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _rpc_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+        return dict(value[0])
+    return {}
+
+
 async def _week_inventory(self: core.LiveTrader, at: datetime) -> dict[str, Any]:
     start, end = _week_bounds(at)
-    rows = await self.repo.client.get(
-        "live_trader_news_events",
-        params={
-            "select": "event_id,currency,event_name,scheduled_at,event_class,pre_minutes,post_minutes,source,enabled",
-            "symbol": f"eq.{self.symbol}",
-            "currency": "in.(USD,ALL)",
-            "enabled": "eq.true",
-            "and": f"(scheduled_at.gte.{start.isoformat()},scheduled_at.lt.{end.isoformat()})",
-            "order": "scheduled_at.asc,event_name.asc",
-            "limit": "200",
+    raw = await self.repo.client.rpc(
+        "get_live_trader_news_inventory_v96",
+        {
+            "p_symbol": self.symbol,
+            "p_week_start": start.isoformat(),
+            "p_week_end": end.isoformat(),
         },
     )
-    items = _normalise_inventory(list(rows or []))
+    payload = _rpc_object(raw)
+    events = payload.get("events")
+    if (
+        str(payload.get("version") or "") != INVENTORY_VERSION
+        or payload.get("complete") is not True
+        or str(payload.get("source") or "") != INVENTORY_SOURCE
+        or not isinstance(events, list)
+    ):
+        raise RuntimeError("Weekly news inventory RPC did not prove a complete server-side inventory.")
+
+    reported_count = int(core.number(payload.get("event_count"), -1))
+    items = _normalise_inventory([dict(row) for row in events if isinstance(row, dict)])
+    if reported_count < 0 or reported_count != len(events) or len(items) != reported_count:
+        raise RuntimeError(
+            "Weekly news inventory RPC returned an incomplete or malformed inventory; confirmation remains closed-safe."
+        )
+
+    event_ids = [item["event_id"] for item in items]
+    if len(event_ids) != len(set(event_ids)):
+        raise RuntimeError("Weekly news inventory contains duplicate event IDs; confirmation remains closed-safe.")
+
     return {
+        "inventory_version": INVENTORY_VERSION,
+        "inventory_source": INVENTORY_SOURCE,
+        "inventory_complete": True,
         "week_start": confirmation._week_start(at).isoformat(),
         "week_end": (confirmation._week_start(at) + timedelta(days=6)).isoformat(),
-        "event_count": len(items),
-        "event_ids": [item["event_id"] for item in items],
+        "event_count": reported_count,
+        "event_ids": event_ids,
         "event_digest": _inventory_digest(items),
         "events": items,
     }
@@ -223,8 +252,8 @@ async def _confirm_current_week_v95(
     if expected_event_count is None:
         raise ValueError("Expected current-week event count is required for confirmation.")
     expected = int(expected_event_count)
-    if expected < 0 or expected > 200:
-        raise ValueError("Expected event count must be between 0 and 200.")
+    if expected < 0:
+        raise ValueError("Expected event count must be zero or greater.")
 
     reference = " ".join(str(source_reference or "").split())
     if not reference:
@@ -312,6 +341,8 @@ async def _workflow_status_v95(self: core.LiveTrader, *, force: bool = True) -> 
             "explicit_calendar_checked_attestation_required": True,
             "expected_event_count_must_match": True,
             "event_inventory_hash_must_remain_unchanged": True,
+            "complete_server_side_inventory_required": True,
+            "row_cap_applies": False,
             "calendar_change_after_confirmation_fails_closed": True,
         },
     }
@@ -363,6 +394,9 @@ def _runtime_status_v95(self: core.LiveTrader) -> dict[str, Any]:
             "news_confirmation_automatic": False,
             "news_confirmation_explicit_attestation_required": True,
             "news_confirmation_inventory_digest_required": True,
+            "news_confirmation_complete_inventory_required": True,
+            "news_confirmation_inventory_version": INVENTORY_VERSION,
+            "news_confirmation_row_cap_applies": False,
             "news_confirmation_state": (
                 news_status.get("week_confirmation_state")
                 if isinstance(news_status, dict)
