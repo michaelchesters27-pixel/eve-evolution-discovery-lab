@@ -188,3 +188,113 @@ def test_runtime_is_actually_patched_to_hardened_loop() -> None:
     assert core.LiveTrader.run_forever is hardening._run_forever_v26
     assert core.LiveTrader._maybe_record_opinion is hardening._record_v26
     assert core.LiveTrader._maybe_resolve_opinions is hardening._resolve_v26
+
+
+
+class ActivationPatchFailureClient(FakeClient):
+    async def patch(self, _table: str, _values: dict, *, filters: dict):
+        raise RuntimeError("simulated activation persistence failure")
+
+
+def test_failed_activation_patch_can_never_be_scored_as_current_evidence(monkeypatch) -> None:
+    engine = trader()
+    engine.repo.client = ActivationPatchFailureClient()
+    record_time = datetime(2026, 8, 21, 12, 43, 7, tzinfo=timezone.utc)
+    monkeypatch.setattr(hardening.core, "utc_now", lambda: record_time)
+
+    asyncio.run(hardening._record_v26(engine, state()))
+
+    assert len(engine.repo.client.inserted) == 1
+    stranded = engine.repo.client.inserted[0]
+    assert stranded["timing_contract_version"] == hardening.TIMING_CONTRACT_VERSION
+    assert stranded["publication_confirmed_at"] is None
+    assert stranded["activation_at"] is None
+    assert stranded["execution_start_at"] is None
+
+    engine.repo.client.rows = [dict(stranded)]
+    resolve_time = record_time + timedelta(hours=2)
+    monkeypatch.setattr(hardening.core, "utc_now", lambda: resolve_time)
+    source_called = False
+
+    async def forbidden_source(*_args, **_kwargs):
+        nonlocal source_called
+        source_called = True
+        return []
+
+    monkeypatch.setattr(hardening, "_source_m1_rows", forbidden_source)
+    asyncio.run(hardening._resolve_v26(engine, 4580.0))
+
+    assert source_called is False
+    assert stranded.get("status") == "open"
+
+
+def test_current_timing_contract_requires_complete_causal_chain() -> None:
+    observed = datetime(2026, 8, 21, 12, 43, 0, tzinfo=timezone.utc)
+    row = {
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+        "market_observed_at": observed.isoformat(),
+        "market_received_at": "2026-08-21T12:43:05+00:00",
+        "decision_at": "2026-08-21T12:43:07+00:00",
+        "publication_requested_at": "2026-08-21T12:43:07+00:00",
+        "publication_confirmed_at": "2026-08-21T12:43:08+00:00",
+        "activation_at": None,
+        "execution_start_at": None,
+    }
+    _, _, verified, timing = hardening._execution_window(
+        row,
+        fallback_observed=observed,
+        horizon_minutes=60,
+        allow_legacy_fallback=False,
+    )
+
+    assert verified is False
+    assert timing["legacy_timing_fallback_used"] is False
+    assert timing["timing_failure_reason"].startswith("missing_current_timing_fields:")
+
+
+def test_current_timing_contract_rejects_non_causal_timestamp_order() -> None:
+    observed = datetime(2026, 8, 21, 12, 43, 0, tzinfo=timezone.utc)
+    row = {
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+        "market_observed_at": observed.isoformat(),
+        "market_received_at": "2026-08-21T12:43:05+00:00",
+        "decision_at": "2026-08-21T12:43:10+00:00",
+        "publication_requested_at": "2026-08-21T12:43:09+00:00",
+        "publication_confirmed_at": "2026-08-21T12:43:11+00:00",
+        "activation_at": "2026-08-21T12:43:26+00:00",
+        "execution_start_at": "2026-08-21T12:44:00+00:00",
+    }
+    _, _, verified, timing = hardening._execution_window(
+        row,
+        fallback_observed=observed,
+        horizon_minutes=60,
+        allow_legacy_fallback=False,
+    )
+
+    assert verified is False
+    assert timing["timing_failure_reason"] == "non_causal_current_timing_order"
+
+
+def test_legacy_timing_fallback_is_explicit_only() -> None:
+    observed = datetime(2026, 8, 21, 12, 43, 0, tzinfo=timezone.utc)
+    row = {"timing_contract_version": None}
+
+    _, _, verified, closed = hardening._execution_window(
+        row,
+        fallback_observed=observed,
+        horizon_minutes=60,
+        allow_legacy_fallback=False,
+    )
+    assert verified is False
+    assert closed["legacy_timing_fallback_used"] is False
+
+    start, horizon, verified, legacy = hardening._execution_window(
+        row,
+        fallback_observed=observed,
+        horizon_minutes=60,
+        allow_legacy_fallback=True,
+    )
+    assert verified is False
+    assert legacy["legacy_timing_fallback_used"] is True
+    assert start == observed
+    assert horizon == observed + timedelta(minutes=60)

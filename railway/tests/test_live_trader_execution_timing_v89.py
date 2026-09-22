@@ -35,9 +35,13 @@ def test_execution_window_excludes_pre_activation_and_partial_minute() -> None:
     observed = datetime(2026, 9, 22, 8, 0, 0, tzinfo=timezone.utc)
     row = {
         "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+        "market_observed_at": observed.isoformat(),
+        "market_received_at": "2026-09-22T08:00:05+00:00",
+        "decision_at": "2026-09-22T08:00:06+00:00",
+        "publication_requested_at": "2026-09-22T08:00:07+00:00",
+        "publication_confirmed_at": "2026-09-22T08:00:08+00:00",
         "activation_at": "2026-09-22T08:00:15+00:00",
         "execution_start_at": "2026-09-22T08:01:00+00:00",
-        "market_observed_at": observed.isoformat(),
     }
     start, horizon, verified, timing = hardening._execution_window(
         row,

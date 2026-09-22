@@ -17,8 +17,8 @@ from app.services.repository import SourceRepository
 
 ENGINE_VERSION = "eve-live-learning-engine-v2.6"
 LEARNING_NAMESPACE = "eve-live-learning-family-v1"
-OUTCOME_SCHEMA = "causal-m1-path-v3-activation-cost"
-TIMING_CONTRACT_VERSION = "eve-live-execution-timing-v2-cost-delay"
+OUTCOME_SCHEMA = "causal-m1-path-v4-fail-closed-activation-cost"
+TIMING_CONTRACT_VERSION = "eve-live-execution-timing-v3-fail-closed"
 OBSERVATION_POLICY = (
     "Market observation time identifies the data used by the decision, but executable outcome evidence starts only "
     "after the decision has been durably persisted. Receipt, decision, publication-request, publication-confirmation "
@@ -162,17 +162,64 @@ def _execution_window(
     *,
     fallback_observed: datetime,
     horizon_minutes: int,
+    allow_legacy_fallback: bool = True,
 ) -> tuple[datetime, datetime, bool, dict[str, Any]]:
     contract = str(row.get("timing_contract_version") or "")
+    market_received = _parse_time(row.get("market_received_at"))
+    decision = _parse_time(row.get("decision_at"))
+    publication_requested = _parse_time(row.get("publication_requested_at"))
+    publication_confirmed = _parse_time(row.get("publication_confirmed_at"))
     activation = _parse_time(row.get("activation_at"))
     execution_start = _parse_time(row.get("execution_start_at"))
-    verified = contract == TIMING_CONTRACT_VERSION and activation is not None
+
+    required = {
+        "market_received_at": market_received,
+        "decision_at": decision,
+        "publication_requested_at": publication_requested,
+        "publication_confirmed_at": publication_confirmed,
+        "activation_at": activation,
+        "execution_start_at": execution_start,
+    }
+    missing = [name for name, value in required.items() if value is None]
+    timing_failure_reason: str | None = None
+    verified = contract == TIMING_CONTRACT_VERSION and not missing
+
     if verified:
-        start = execution_start or _first_full_m1_at_or_after(activation)
+        assert market_received is not None
+        assert decision is not None
+        assert publication_requested is not None
+        assert publication_confirmed is not None
+        assert activation is not None
+        assert execution_start is not None
+        if not (
+            market_received <= decision
+            <= publication_requested
+            <= publication_confirmed
+            <= activation
+            <= execution_start
+        ):
+            verified = False
+            timing_failure_reason = "non_causal_current_timing_order"
+        elif execution_start != _first_full_m1_at_or_after(activation):
+            verified = False
+            timing_failure_reason = "execution_start_not_first_full_m1_after_activation"
+    elif contract == TIMING_CONTRACT_VERSION:
+        timing_failure_reason = "missing_current_timing_fields:" + ",".join(missing)
+    else:
+        timing_failure_reason = "legacy_or_unknown_timing_contract"
+
+    legacy_fallback_used = bool(not verified and allow_legacy_fallback and contract != TIMING_CONTRACT_VERSION)
+    if verified:
+        assert activation is not None and execution_start is not None
+        start = execution_start
         horizon = activation + timedelta(minutes=max(horizon_minutes, 1))
     else:
+        # The timestamps are returned for diagnostics only. Current forward,
+        # shadow and Policy Lab resolvers pass allow_legacy_fallback=False and
+        # must not score this window when verified is false.
         start = fallback_observed
         horizon = fallback_observed + timedelta(minutes=max(horizon_minutes, 1))
+
     return start, horizon, verified, {
         "timing_contract_version": contract or None,
         "market_observed_at": row.get("market_observed_at") or fallback_observed.isoformat(),
@@ -183,6 +230,9 @@ def _execution_window(
         "activation_at": row.get("activation_at"),
         "execution_start_at": (execution_start.isoformat() if execution_start is not None else None),
         "executable_timing_verified": verified,
+        "timing_failure_reason": timing_failure_reason,
+        "legacy_timing_fallback_allowed": allow_legacy_fallback,
+        "legacy_timing_fallback_used": legacy_fallback_used,
         "pre_activation_price_events_excluded": verified,
         "partial_activation_minute_excluded": verified,
     }
@@ -230,6 +280,10 @@ async def _calibration_v26(self: core.LiveTrader, signature: str) -> dict[str, A
                 "cohort_id": f"eq.{identity['cohort_id']}",
                 "independent_sample": "eq.true",
                 "status": "eq.resolved",
+                "timing_contract_version": f"eq.{TIMING_CONTRACT_VERSION}",
+                "publication_confirmed_at": "not.is.null",
+                "activation_at": "not.is.null",
+                "execution_start_at": "not.is.null",
                 "order": "observed_at.desc",
                 "limit": "500",
             },
@@ -433,8 +487,11 @@ async def _resolve_v26(self: core.LiveTrader, _live_price: float) -> None:
                 row,
                 fallback_observed=observed,
                 horizon_minutes=horizon_minutes,
+                allow_legacy_fallback=False,
             )
-            if timing_verified and now < horizon:
+            if not timing_verified:
+                continue
+            if now < horizon:
                 continue
 
             source_rows = await _source_m1_rows(self, path_start, horizon)
@@ -645,6 +702,8 @@ def _runtime_status_v26(self: core.LiveTrader) -> dict[str, Any]:
             "execution_timing_contract_version": TIMING_CONTRACT_VERSION,
             "pre_publication_price_credit_allowed": False,
             "partial_activation_minute_credit_allowed": False,
+            "execution_timing_fail_closed": True,
+            "legacy_timing_fallback_allowed_for_current_evidence": False,
             "manual_execution_delay_seconds": int(getattr(self.settings, "live_trader_manual_delay_seconds", 15)),
             "execution_cost_model_version": cost_model.COST_MODEL_VERSION,
             "gross_and_net_r_separated": True,

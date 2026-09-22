@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 from app.services import live_trader_execution_cost_model as cost_model
@@ -138,3 +139,66 @@ def test_shadow_research_prefers_nearest_quality_matching_zone() -> None:
     zone = v83._matching_zone(state, "bullish")
     assert zone is not None
     assert zone["distance_atr"] == 1.0
+
+
+
+class _ShadowResolverClient:
+    def __init__(self, row: dict) -> None:
+        self.row = row
+        self.patched = False
+
+    async def get(self, _table: str, *, params: dict | None = None, **_kwargs):
+        return [dict(self.row)]
+
+    async def patch(self, _table: str, _values: dict, *, filters: dict):
+        self.patched = True
+        return []
+
+
+class _ShadowResolverSettings:
+    live_trader_learning_horizon_minutes = 60
+
+
+class _ShadowResolverEngine:
+    def __init__(self, row: dict) -> None:
+        self.repo = type("Repo", (), {"client": _ShadowResolverClient(row)})()
+        self.settings = _ShadowResolverSettings()
+        self._shadow_last_resolution_v83 = None
+
+
+def test_shadow_resolver_never_scores_unactivated_current_timing(monkeypatch) -> None:
+    row = {
+        "id": "shadow-1",
+        "observed_at": "2026-09-22T08:00:00+00:00",
+        "price": 4300.0,
+        "horizon_minutes": 60,
+        "market_state": {},
+        "trade_idea": {"order_type": "buy_limit", "side": "BUY", "entry": 4290.0, "stop": 4280.0, "target": 4305.0},
+        "market_observed_at": "2026-09-22T08:00:00+00:00",
+        "market_received_at": "2026-09-22T08:00:01+00:00",
+        "decision_at": "2026-09-22T08:00:02+00:00",
+        "publication_requested_at": "2026-09-22T08:00:03+00:00",
+        "publication_confirmed_at": None,
+        "activation_at": None,
+        "execution_start_at": None,
+        "timing_contract_version": v83.hardening.TIMING_CONTRACT_VERSION,
+    }
+    engine = _ShadowResolverEngine(row)
+    monkeypatch.setattr(
+        v83.core,
+        "utc_now",
+        lambda: datetime(2026, 9, 22, 10, 0, tzinfo=timezone.utc),
+    )
+    source_called = False
+
+    async def forbidden_source(*_args, **_kwargs):
+        nonlocal source_called
+        source_called = True
+        return []
+
+    monkeypatch.setattr(v83.hardening, "_source_m1_rows", forbidden_source)
+    result = asyncio.run(v83._resolve_shadow_outcomes(engine))
+
+    assert result["resolved"] == 0
+    assert source_called is False
+    assert engine.repo.client.patched is False
