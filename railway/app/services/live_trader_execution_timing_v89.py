@@ -157,6 +157,8 @@ async def _persist_campaign_v89(self: core.LiveTrader, campaign: dict[str, Any])
 
 
 def _campaign_publication_is_current_v89(campaign: dict[str, Any], state: dict[str, Any]) -> bool:
+    if str(campaign.get("timing_contract_version") or "") != TIMING_CONTRACT_VERSION:
+        return _current_campaign_publication_is_current(campaign, state)
     activation = lock._parse_time(campaign.get("activation_at"))
     observed = hardening._market_observation_time(state)
     if activation is None or observed is None:
@@ -190,5 +192,6 @@ consensus._persist_campaign_v66 = _persist_campaign_v89
 # evidence. Import locally to avoid changing the established wrapper chain.
 from app.services import live_trader_execution_integrity_v39 as integrity  # noqa: E402
 
+_current_campaign_publication_is_current = integrity._campaign_publication_is_current
 integrity._campaign_publication_is_current = _campaign_publication_is_current_v89
 core.LiveTrader.runtime_status = _runtime_status_v89  # type: ignore[method-assign]
