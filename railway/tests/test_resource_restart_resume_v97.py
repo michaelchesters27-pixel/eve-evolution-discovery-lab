@@ -126,3 +126,65 @@ def test_resource_summary_detects_ceiling_breach() -> None:
         memory_ceiling_mb=2048,
     )
     assert summary["resource_budget_status"] == "breached"
+
+
+
+def test_restore_prefers_successful_retry_after_failed_attempt_same_stage() -> None:
+    rows = [
+        {
+            "id": 20,
+            "cycle_id": "cycle-retry",
+            "stage_name": "scientist",
+            "ordinal": 3,
+            "outcome": "failed",
+            "operation_ok": False,
+            "elapsed_ms": 420000,
+            "cpu_user_ms": 30000,
+            "cpu_system_ms": 1000,
+            "process_max_rss_mb": 1500,
+            "result_summary": {"reason": "timeout"},
+        },
+        {
+            "id": 21,
+            "cycle_id": "cycle-retry",
+            "stage_name": "scientist",
+            "ordinal": 3,
+            "outcome": "progressed",
+            "operation_ok": True,
+            "elapsed_ms": 180000,
+            "cpu_user_ms": 25000,
+            "cpu_system_ms": 900,
+            "process_max_rss_mb": 1200,
+            "result_summary": {"actions": ["new_evidence"]},
+        },
+    ]
+
+    restored = resources.restored_stage_results(rows)
+
+    assert set(restored) == {"scientist"}
+    assert restored["scientist"]["stage_run_id"] == 21
+    assert restored["scientist"]["outcome"] == "progressed"
+    assert restored["scientist"]["restored_from_durable_telemetry"] is True
+
+
+def test_resource_accounting_includes_failed_and_successful_retry_attempts() -> None:
+    attempts = {
+        "20": {
+            "elapsed_ms": 420000,
+            "cpu_user_ms": 30000,
+            "cpu_system_ms": 1000,
+            "process_max_rss_mb": 1500,
+        },
+        "21": {
+            "elapsed_ms": 180000,
+            "cpu_user_ms": 25000,
+            "cpu_system_ms": 900,
+            "process_max_rss_mb": 1200,
+        },
+    }
+
+    assert resources.active_compute_ms(attempts) == 600000
+    summary = resources.resource_summary(attempts, memory_ceiling_mb=1536)
+    assert summary["max_stage_rss_mb"] == 1500
+    assert summary["total_stage_cpu_ms"] == 56900
+    assert summary["resource_budget_status"] == "near_ceiling"
