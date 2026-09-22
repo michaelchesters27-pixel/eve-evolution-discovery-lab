@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import sys
+import uuid
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -38,23 +42,73 @@ live_trader_task: asyncio.Task[Any] | None = None
 bounded_research_task: asyncio.Task[Any] | None = None
 
 
+def _bounded_child_summary(output: str) -> dict[str, Any] | None:
+    for line in reversed(output.splitlines()):
+        candidate = line.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("cycle_id"):
+            return payload
+    return None
+
+
+async def _mark_bounded_supervisor_failure(cycle_id: str, reason: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        await discovery_repo.client.patch(
+            "bounded_research_cycles",
+            {
+                "finished_at": now,
+                "outcome": "failed",
+                "stages_failed": 1,
+                "result_summary": {
+                    "telemetry_version": "eve-bounded-stage-telemetry-v1",
+                    "supervisor_failure": reason[:1000],
+                },
+                "updated_at": now,
+            },
+            filters={"cycle_id": f"eq.{cycle_id}"},
+        )
+    except Exception:
+        logger.exception("Could not persist bounded supervisor failure telemetry")
+    try:
+        await discovery_repo.event(
+            "error",
+            "bounded_research_supervisor",
+            "Bounded research child did not complete normally.",
+            {"cycle_id": cycle_id, "reason": reason[:2000]},
+        )
+    except Exception:
+        logger.exception("Could not persist bounded supervisor failure event")
+
+
 async def _bounded_research_loop() -> None:
     """Run expensive autonomous research in a disposable child process.
 
     The web/live process stays small. Each child performs one bounded research
-    cycle, persists its work to Supabase, exits, and returns its heap to the OS.
+    cycle, persists stage-level work telemetry to Supabase, exits, and returns
+    its heap to the OS.
     """
     if settings.bounded_research_startup_seconds:
         await asyncio.sleep(settings.bounded_research_startup_seconds)
     while True:
         process: asyncio.subprocess.Process | None = None
+        cycle_id = str(uuid.uuid4())
+        timed_out = False
         try:
+            env = dict(os.environ)
+            env["EVE_BOUNDED_CYCLE_ID"] = cycle_id
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
                 "app.bounded_worker",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env=env,
             )
             try:
                 stdout, _ = await asyncio.wait_for(
@@ -62,18 +116,44 @@ async def _bounded_research_loop() -> None:
                     timeout=settings.bounded_research_timeout_seconds,
                 )
             except asyncio.TimeoutError:
+                timed_out = True
                 logger.error(
-                    "Bounded research worker exceeded %ss; terminating it safely",
+                    "Bounded research cycle %s exceeded %ss; terminating it safely",
+                    cycle_id,
                     settings.bounded_research_timeout_seconds,
                 )
                 process.kill()
                 stdout, _ = await process.communicate()
+
             output = stdout.decode("utf-8", errors="replace") if stdout else ""
-            if process.returncode == 0:
-                logger.info("Bounded research worker finished successfully: %s", output[-6000:])
+            summary = _bounded_child_summary(output)
+            if timed_out:
+                await _mark_bounded_supervisor_failure(
+                    cycle_id,
+                    f"timeout_after_{settings.bounded_research_timeout_seconds}s",
+                )
+            elif process.returncode == 0 and summary is not None:
+                logger.info(
+                    "Bounded research cycle %s finished with outcome=%s progressed=%s no_op=%s completed=%s failed=%s",
+                    cycle_id,
+                    summary.get("outcome"),
+                    summary.get("progressed"),
+                    summary.get("no_op"),
+                    summary.get("completed"),
+                    summary.get("failed"),
+                )
+            elif process.returncode == 0:
+                logger.warning(
+                    "Bounded research cycle %s exited cleanly but emitted no structured completion summary: %s",
+                    cycle_id,
+                    output[-6000:],
+                )
             else:
+                reason = f"child_exit_code_{process.returncode}"
+                await _mark_bounded_supervisor_failure(cycle_id, reason)
                 logger.error(
-                    "Bounded research worker exited with code %s: %s",
+                    "Bounded research cycle %s exited with code %s: %s",
+                    cycle_id,
                     process.returncode,
                     output[-6000:],
                 )
@@ -81,9 +161,11 @@ async def _bounded_research_loop() -> None:
             if process is not None and process.returncode is None:
                 process.kill()
                 await process.wait()
+                await _mark_bounded_supervisor_failure(cycle_id, "supervisor_cancelled_during_child")
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("Could not launch bounded research worker")
+            await _mark_bounded_supervisor_failure(cycle_id, f"launch_or_supervisor_exception:{exc}")
 
         await asyncio.sleep(settings.bounded_research_interval_minutes * 60)
 
