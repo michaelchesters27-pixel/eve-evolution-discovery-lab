@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from app.services import live_trader as core
+from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_historical_runtime_v30 as runtime
 from app.services import live_trader_red_folder_news_v35 as news
 from app.services import live_trader_trade_lock_v28 as lock
@@ -49,20 +50,28 @@ def _week_window(at: datetime) -> tuple[date, datetime, datetime]:
 
 
 def _campaign_realised_r(campaign: dict[str, Any]) -> float:
-    status = str(campaign.get("status") or "").lower()
-    if status == "lost":
-        return -1.0
-    if status != "won":
-        return 0.0
-    rr = _number(campaign.get("risk_reward"), 0.0)
-    if rr > 0:
-        return round(rr, 3)
-    entry = _number(campaign.get("entry"))
-    stop = _number(campaign.get("stop"))
-    target = _number(campaign.get("target"))
-    risk = abs(entry - stop)
-    reward = abs(target - entry)
-    return round(reward / risk, 3) if risk > 0 else 0.0
+    return round(cost_model.campaign_gross_r(campaign), 3)
+
+
+def _campaign_cost_evidence(campaign: dict[str, Any]) -> dict[str, Any]:
+    if str(campaign.get("cost_model_version") or "") != cost_model.COST_MODEL_VERSION:
+        return {
+            "gross_realised_r": _campaign_realised_r(campaign),
+            "estimated_cost_r": None,
+            "net_realised_r": None,
+            "cost_model_version": None,
+            "execution_costs": None,
+            "cost_verified": False,
+        }
+    costed = cost_model.campaign_cost_result(campaign, _campaign_realised_r(campaign))
+    return {
+        "gross_realised_r": costed.get("gross_realised_r"),
+        "estimated_cost_r": costed.get("estimated_cost_r"),
+        "net_realised_r": costed.get("net_realised_r"),
+        "cost_model_version": costed.get("cost_model_version"),
+        "execution_costs": costed.get("execution_costs"),
+        "cost_verified": costed.get("net_realised_r") is not None,
+    }
 
 
 def _context_snapshot(state: dict[str, Any]) -> dict[str, Any]:
@@ -152,6 +161,7 @@ async def _capture_publication_context(self: core.LiveTrader, state: dict[str, A
 def _review_payload(campaign: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     status = str(campaign.get("status") or "").lower()
     realised_r = _campaign_realised_r(campaign)
+    cost_evidence = _campaign_cost_evidence(campaign)
     learning = dict(campaign.get("outcome_learning_v38") or {})
     context_quality = str(learning.get("publication_context_quality") or "unknown")
     signal = "negative" if status == "lost" else "positive" if status == "won" else "neutral"
@@ -181,6 +191,11 @@ def _review_payload(campaign: dict[str, Any], state: dict[str, Any]) -> dict[str
         "side": campaign.get("side"),
         "risk_reward": campaign.get("risk_reward"),
         "realised_r": realised_r,
+        "gross_realised_r": cost_evidence.get("gross_realised_r"),
+        "estimated_cost_r": cost_evidence.get("estimated_cost_r"),
+        "net_realised_r": cost_evidence.get("net_realised_r"),
+        "cost_model_version": cost_evidence.get("cost_model_version"),
+        "execution_costs": cost_evidence.get("execution_costs"),
         "evidence_role": "execution_postmortem_not_second_independent_sample",
         "forward_family_policy": (
             "The existing forward-learning family/governor remains the authority for confidence and veto decisions. This review labels the exact locked-campaign execution outcome so losses can be diagnosed without double-counting the same live experience."
@@ -212,6 +227,7 @@ async def _ensure_review(self: core.LiveTrader, state: dict[str, Any]) -> None:
     family = campaign.get("setup_family")
     descriptor = dict(campaign.get("setup_family_descriptor") or {})
     review = _review_payload(campaign, state)
+    cost_evidence = _campaign_cost_evidence(campaign)
     try:
         await self.repo.client.upsert(
             "live_trader_trade_reviews",
@@ -223,6 +239,11 @@ async def _ensure_review(self: core.LiveTrader, state: dict[str, Any]) -> None:
                 "outcome": status,
                 "triggered": bool(campaign.get("triggered_at")),
                 "realised_r": _campaign_realised_r(campaign),
+                "gross_realised_r": cost_evidence.get("gross_realised_r"),
+                "estimated_cost_r": cost_evidence.get("estimated_cost_r"),
+                "net_realised_r": cost_evidence.get("net_realised_r"),
+                "cost_model_version": cost_evidence.get("cost_model_version"),
+                "execution_costs": cost_evidence.get("execution_costs"),
                 "setup_family": family,
                 "setup_family_descriptor": descriptor,
                 "publication_context": publication,
@@ -259,7 +280,7 @@ async def _weekly_outcomes(self: core.LiveTrader, *, force: bool = False) -> dic
         completed = await self.repo.client.get(
             "live_trader_campaigns",
             params={
-                "select": "id,status,side,order_type,entry,stop,target,risk_reward,created_at,triggered_at,completed_at,result,campaign",
+                "select": "id,status,side,order_type,entry,stop,target,risk_reward,created_at,triggered_at,completed_at,result,cost_model_version,gross_realised_r,estimated_cost_r,net_realised_r,execution_costs,campaign",
                 "symbol": f"eq.{self.symbol}",
                 "completed_at": f"gte.{start_utc.isoformat()}",
                 "and": f"(completed_at.lt.{end_utc.isoformat()})",
@@ -280,7 +301,7 @@ async def _weekly_outcomes(self: core.LiveTrader, *, force: bool = False) -> dic
         reviews = await self.repo.client.get(
             "live_trader_trade_reviews",
             params={
-                "select": "campaign_id,outcome,realised_r,setup_family,review,completed_at",
+                "select": "campaign_id,outcome,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,setup_family,review,completed_at",
                 "symbol": f"eq.{self.symbol}",
                 "week_start": f"eq.{week_start.isoformat()}",
                 "order": "completed_at.desc",
@@ -310,9 +331,19 @@ async def _weekly_outcomes(self: core.LiveTrader, *, force: bool = False) -> dic
     invalidated = sum(1 for row in terminal_rows if str(row.get("status") or "").lower() == "invalidated")
     expired = sum(1 for row in terminal_rows if str(row.get("status") or "").lower() == "expired")
     triggered_finished = wins + losses
-    net_r = round(sum(_campaign_realised_r(row) for row in terminal_rows), 3)
+    gross_r = round(sum(_campaign_realised_r(row) for row in terminal_rows), 3)
+    cost_verified_triggered = [
+        row for row in terminal_rows
+        if str(row.get("status") or "").lower() in {"won", "lost"}
+        and str(row.get("cost_model_version") or "") == cost_model.COST_MODEL_VERSION
+        and row.get("net_realised_r") is not None
+    ]
+    verified_net_r = round(sum(_number(row.get("net_realised_r")) for row in cost_verified_triggered), 3)
+    legacy_triggered = max(0, triggered_finished - len(cost_verified_triggered))
     win_rate = round((wins / triggered_finished) * 100.0, 1) if triggered_finished else None
-    result_label = "PROFIT" if net_r > 0 else "LOSS" if net_r < 0 else "FLAT"
+    result_label = (
+        "PROFIT" if verified_net_r > 0 else "LOSS" if verified_net_r < 0 else "FLAT"
+    ) if cost_verified_triggered else "UNVERIFIED"
     review_rows = list(reviews or [])
     loss_reviews = sum(1 for row in review_rows if str((row or {}).get("outcome") or "") == "lost")
 
@@ -328,7 +359,10 @@ async def _weekly_outcomes(self: core.LiveTrader, *, force: bool = False) -> dic
                 "stop": row.get("stop"),
                 "target": row.get("target"),
                 "risk_reward": row.get("risk_reward"),
-                "realised_r": _campaign_realised_r(row),
+                "gross_realised_r": _campaign_realised_r(row),
+                "estimated_cost_r": row.get("estimated_cost_r"),
+                "net_realised_r": row.get("net_realised_r"),
+                "cost_model_version": row.get("cost_model_version"),
                 "completed_at": row.get("completed_at"),
                 "result": row.get("result"),
             }
@@ -366,7 +400,11 @@ async def _weekly_outcomes(self: core.LiveTrader, *, force: bool = False) -> dic
         "invalidated": invalidated,
         "expired": expired,
         "win_rate_pct": win_rate,
-        "net_r": net_r,
+        "gross_r": gross_r,
+        "cost_verified_net_r": verified_net_r if cost_verified_triggered else None,
+        "cost_verified_triggered": len(cost_verified_triggered),
+        "legacy_triggered_not_counted_in_net": legacy_triggered,
+        "cost_model_version": cost_model.COST_MODEL_VERSION,
         "result_label": result_label,
         "open_campaigns": len(opens),
         "open": opens,
@@ -374,12 +412,15 @@ async def _weekly_outcomes(self: core.LiveTrader, *, force: bool = False) -> dic
         "post_trade_reviews": len(review_rows),
         "loss_reviews": loss_reviews,
         "learning_policy": (
-            "Every finished locked campaign gets one idempotent execution review. Wins and losses are expressed in R, not cash P/L. "
-            "A target win contributes its published R:R, a stop loss contributes -1R, and invalidated/expired untriggered ideas contribute 0R. "
-            "Loss reviews are retained for execution diagnosis but are not double-counted as a second independent sample in EVE's forward family governor."
+            "Every finished locked campaign gets one idempotent execution review. Theoretical gross R remains visible, while "
+            "current-policy campaigns also carry stress-estimated spread, slippage, commission and manual-delay costs normalized by original risk. "
+            "Legacy gross-only campaigns are never mixed into the cost-verified net total."
         ),
         "cash_profit_known": False,
-        "cash_profit_note": "Cash P/L is not inferred because Live Trader does not know the actual stake/fill. Net R is the honest strategy-level weekly result.",
+        "cash_profit_note": (
+            "Cash P/L is not inferred because Live Trader does not know the actual stake/fill. Cost-verified net R is still a "
+            "stress estimate; actual MT5 fills belong in the separate manual-fill ledger."
+        ),
         "last_review_error": getattr(self, "_trade_review_last_error_v38", None),
     }
     self._weekly_outcomes_cache_at_v38 = now
@@ -418,6 +459,7 @@ def _runtime_status_v38(self: core.LiveTrader) -> dict[str, Any]:
             "weekly_trade_outcome_version": OUTCOME_VERSION,
             "post_trade_review_version": REVIEW_VERSION,
             "post_trade_review_last_error": getattr(self, "_trade_review_last_error_v38", None),
+            "trade_review_cost_model_version": cost_model.COST_MODEL_VERSION,
         }
     )
     return status
