@@ -78,6 +78,7 @@ def test_policy_lab_marks_only_mature_positive_forward_candidate() -> None:
                 "entry_triggered": True,
                 "realised_r": 1.5 if index % 2 == 0 else -1.0,
                 "trade_outcome": "target" if index % 2 == 0 else "stop",
+                "timing_contract_version": v85.hardening.TIMING_CONTRACT_VERSION,
                 "trade_idea": {"policy_lab": {"policy_key": "candidate"}},
             }
         )
