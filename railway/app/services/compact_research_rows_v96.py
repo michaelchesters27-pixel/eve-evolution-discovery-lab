@@ -132,12 +132,10 @@ class CompactResearchRow:
     def get(self, key: str, default: Any = None) -> Any:
         index = BASE_INDEX.get(key)
         if index is not None:
-            value = self._values[index]
-            return default if value is None and default is not None else value
+            return self._values[index]
         obs_index = OBS_INDEX.get(key)
         if obs_index is not None:
-            value = self._observations[obs_index]
-            return default if value is None and default is not None else value
+            return self._observations[obs_index]
         if key == "outcomes":
             try:
                 return json.loads(self.canonical_outcomes_json)
