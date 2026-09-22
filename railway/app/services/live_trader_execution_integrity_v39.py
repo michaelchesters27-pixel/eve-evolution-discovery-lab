@@ -7,6 +7,7 @@ from typing import Any
 
 from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
+from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_historical_learning_v29 as academy
 from app.services import live_trader_historical_runtime_v30 as runtime
 from app.services import live_trader_learning_v2 as v2
@@ -305,7 +306,12 @@ def _trade_idea_v39(
     )
 
 
-def _score_challengers_v39(challengers: dict[str, Any], bars: list[dict[str, Any]], endpoint: float) -> tuple[dict[str, Any], str]:
+def _score_challengers_v39(
+    challengers: dict[str, Any],
+    bars: list[dict[str, Any]],
+    endpoint: float,
+    execution_cost_profile: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str]:
     scored: dict[str, Any] = {}
     best_name: str | None = None
     best_r = float("-inf")
@@ -315,9 +321,13 @@ def _score_challengers_v39(challengers: dict[str, Any], bars: list[dict[str, Any
         if not trade:
             scored[name] = item
             continue
+        if execution_cost_profile and not isinstance(trade.get("execution_cost_model"), dict):
+            trade["execution_cost_model"] = dict(execution_cost_profile)
         result = _trade_path_result_v39(trade, bars, endpoint)
         scored[name] = {"trade": trade, **result}
-        realised = result.get("realised_r")
+        realised = result.get("net_realised_r")
+        if realised is None:
+            realised = result.get("realised_r")
         if realised is not None and bool(result.get("entry_triggered")) and _num(realised, -999.0) > best_r:
             best_r = _num(realised)
             best_name = str(name)
@@ -422,7 +432,8 @@ class HistoricalExecutionRegrader:
         params = {
             "select": (
                 "historical_episode_key,observed_at,path_complete,direction_correct,resolved_price,trade_idea,"
-                "trade_outcome,realised_r,learning_success,challenger_results,best_challenger,market_state"
+                "trade_outcome,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,net_learning_success,"
+                "cost_model_version,execution_costs,learning_success,challenger_results,best_challenger,market_state"
             ),
             "symbol": f"eq.{self.symbol}",
             "order": "observed_at.asc",
@@ -447,18 +458,28 @@ class HistoricalExecutionRegrader:
             starts = [stamp for stamp in starts if stamp is not None]
             if starts:
                 horizon = timedelta(minutes=max(1, int(self.settings.live_trader_learning_horizon_minutes)))
-                source_rows = await self._source_window(min(starts), max(starts) + horizon)
+                execution_cost_profile = cost_model.profile_from_settings(self.settings)
+                manual_delay = timedelta(seconds=int(execution_cost_profile.get("manual_delay_seconds") or 0))
+                source_rows = await self._source_window(
+                    min(starts),
+                    max(starts) + manual_delay + horizon + timedelta(minutes=1),
+                )
 
         rows_regraded = 0
         outcome_changes = 0
         challenger_changes = 0
         horizon_delta = timedelta(minutes=max(1, int(self.settings.live_trader_learning_horizon_minutes)))
+        execution_cost_profile = cost_model.profile_from_settings(self.settings)
+        manual_delay_delta = timedelta(seconds=int(execution_cost_profile.get("manual_delay_seconds") or 0))
 
         for row in complete_rows:
             observed = _parse_time(row.get("observed_at"))
             if observed is None:
                 continue
-            path = hardening._causal_m1_path(source_rows, observed, observed + horizon_delta)
+            activation = observed + manual_delay_delta
+            execution_start = cost_model.first_full_m1_at_or_after(activation)
+            horizon_at = activation + horizon_delta
+            path = hardening._causal_m1_path(source_rows, execution_start, horizon_at)
             endpoint = path.get("endpoint_price")
             endpoint_time = path.get("endpoint_time")
             endpoint_lag = path.get("endpoint_lag_seconds")
@@ -476,15 +497,32 @@ class HistoricalExecutionRegrader:
 
             bars = list(path.get("bars") or [])
             trade = dict(row.get("trade_idea") or {})
+            if str(trade.get("order_type") or "none").lower() != "none":
+                trade["execution_cost_model"] = dict(execution_cost_profile)
             result = _trade_path_result_v39(trade, bars, float(endpoint))
             success = result.get("learning_success")
             if success is None and str(trade.get("order_type") or "none") == "none":
                 success = row.get("direction_correct")
 
             challengers = dict(row.get("challenger_results") or {})
-            rescored_challengers, best_challenger = _score_challengers_v39(challengers, bars, float(endpoint))
-            old_tuple = (row.get("trade_outcome"), row.get("realised_r"), row.get("learning_success"))
-            new_tuple = (result.get("trade_outcome"), result.get("realised_r"), success)
+            rescored_challengers, best_challenger = _score_challengers_v39(
+                challengers,
+                bars,
+                float(endpoint),
+                execution_cost_profile,
+            )
+            old_tuple = (
+                row.get("trade_outcome"),
+                row.get("realised_r"),
+                row.get("net_realised_r"),
+                row.get("learning_success"),
+            )
+            new_tuple = (
+                result.get("trade_outcome"),
+                result.get("realised_r"),
+                result.get("net_realised_r"),
+                success,
+            )
             if old_tuple != new_tuple:
                 outcome_changes += 1
             if challengers and (rescored_challengers != challengers or best_challenger != row.get("best_challenger")):
@@ -501,12 +539,25 @@ class HistoricalExecutionRegrader:
                     "Same-M1 target credit is allowed only when exposure existed at the open or the candle close proves "
                     "a post-fill traversal through target; otherwise exposure carries forward."
                 ),
+                "cost_model_version": result.get("cost_model_version"),
+                "manual_delay_seconds": int(execution_cost_profile.get("manual_delay_seconds") or 0),
+                "activation_at": activation.isoformat(),
+                "execution_start_at": execution_start.isoformat(),
+                "horizon_at": horizon_at.isoformat(),
+                "gross_r_preserved": True,
+                "net_r_used_for_learning": True,
             }
             await self.repo.client.patch(
                 "live_trader_historical_learning",
                 {
                     "trade_outcome": result.get("trade_outcome"),
                     "realised_r": result.get("realised_r"),
+                    "gross_realised_r": result.get("gross_realised_r"),
+                    "estimated_cost_r": result.get("estimated_cost_r"),
+                    "net_realised_r": result.get("net_realised_r"),
+                    "net_learning_success": result.get("net_learning_success"),
+                    "cost_model_version": result.get("cost_model_version"),
+                    "execution_costs": result.get("execution_costs"),
                     "learning_success": success,
                     "challenger_results": rescored_challengers,
                     "best_challenger": best_challenger,
@@ -597,7 +648,8 @@ async def _learning_summary_v39(self: core.LiveTrader) -> dict[str, Any]:
     summary["execution_integrity"] = _regrade_status(self)
     summary["execution_learning_policy"] = (
         "Only the publication of a locked campaign may create a forward decision sample. Pending/active follow-through and terminal display states are not new decisions. "
-        "Causal M1 scoring now enforces the published pre-entry invalidation before entry, and Historical Academy evidence is being regraded under the same rule."
+        "Causal M1 scoring enforces pre-entry invalidation and conservative LIMIT ordering. Historical Academy evidence is also "
+        "regraded with the configured manual-execution delay and explicit spread/slippage/commission stress costs; gross R remains separately preserved."
     )
     return summary
 
