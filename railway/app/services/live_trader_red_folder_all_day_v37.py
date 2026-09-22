@@ -107,6 +107,9 @@ async def _load_calendar_with_all(self: core.LiveTrader, *, force: bool = False)
         result = news.news_status_from_rows(cached_rows, now)
         result["all_day_version"] = ALL_DAY_VERSION
         result["all_day_policy"] = ALL_DAY_POLICY
+        result["blackout_inventory_version"] = BLACKOUT_WINDOW_VERSION
+        result["blackout_inventory_complete"] = True
+        result["blackout_inventory_count"] = len(cached_rows)
         return result
 
     start = now - timedelta(hours=news.CALENDAR_LOOKBACK_HOURS)
