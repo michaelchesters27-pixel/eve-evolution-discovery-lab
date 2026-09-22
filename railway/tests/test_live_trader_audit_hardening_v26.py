@@ -16,7 +16,16 @@ class FakeClient:
         return list(self.rows)
 
     async def insert(self, _table: str, payload: dict, **_kwargs):
-        self.inserted.append(payload)
+        row = {**payload, "id": len(self.inserted) + 1}
+        self.inserted.append(row)
+        return [dict(row)]
+
+    async def patch(self, _table: str, values: dict, *, filters: dict):
+        target = int(str(filters["id"]).replace("eq.", ""))
+        for row in self.inserted:
+            if row.get("id") == target:
+                row.update(values)
+                return [dict(row)]
         return []
 
 
@@ -64,10 +73,11 @@ def trader() -> core.LiveTrader:
     item._last_recorded_signature = None
     item._last_opinion_at = None
     item._last_resolution_at = None
+    item.last_tick_received_at = "2026-08-21T12:43:05+00:00"
     return item
 
 
-def test_market_time_not_wall_clock_is_learning_clock(monkeypatch) -> None:
+def test_market_time_and_executable_time_are_separate(monkeypatch) -> None:
     engine = trader()
     monkeypatch.setattr(hardening.core, "utc_now", lambda: datetime(2026, 8, 21, 12, 43, 7, tzinfo=timezone.utc))
 
@@ -76,10 +86,16 @@ def test_market_time_not_wall_clock_is_learning_clock(monkeypatch) -> None:
     assert len(engine.repo.client.inserted) == 1
     payload = engine.repo.client.inserted[0]
     assert payload["observed_at"] == "2026-08-21T12:43:00+00:00"
-    assert payload["learning_version"] == hardening.LEARNING_NAMESPACE
-    clock = payload["market_state"]["learning_observation"]
-    assert clock["market_observed_at"] == "2026-08-21T12:43:00+00:00"
-    assert clock["recorded_at"] == "2026-08-21T12:43:07+00:00"
+    assert payload["market_observed_at"] == "2026-08-21T12:43:00+00:00"
+    assert payload["market_received_at"] == "2026-08-21T12:43:05+00:00"
+    assert payload["decision_at"] == "2026-08-21T12:43:07+00:00"
+    assert payload["publication_confirmed_at"] == "2026-08-21T12:43:07+00:00"
+    assert payload["activation_at"] == "2026-08-21T12:43:07+00:00"
+    assert payload["execution_start_at"] == "2026-08-21T12:44:00+00:00"
+    assert payload["timing_contract_version"] == hardening.TIMING_CONTRACT_VERSION
+    timing = payload["market_state"]["execution_timing"]
+    assert timing["pre_activation_price_events_eligible"] is False
+    assert timing["partial_activation_minute_eligible"] is False
 
 
 def test_stale_or_disconnected_feed_cannot_create_learning_sample(monkeypatch) -> None:
