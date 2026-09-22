@@ -12,6 +12,31 @@ FABRIC_VERSION = "eve-multitimeframe-fabric-v1"
 FABRIC_SNAPSHOT_INTERVAL = "5min"
 FABRIC_SOURCE_INTERVAL = "5min"
 
+
+SCIENTIST_DEVELOPMENT_SPLIT_VERSION = "eve-scientist-development-split-v97"
+
+
+class DevelopmentResearchRows(list):
+    """Development-only rows carrying the full dataset split metadata.
+
+    Scientist is forbidden from opening validation/confirmation/holdout during
+    hypothesis generation. Carrying the original full-year metadata lets the
+    generic split helper preserve the exact research contract without retaining
+    sealed rows in the Scientist process.
+    """
+
+    def __init__(self, rows: list[Any], metadata: dict[str, Any]) -> None:
+        super().__init__(rows)
+        self.development_partition = {
+            "version": SCIENTIST_DEVELOPMENT_SPLIT_VERSION,
+            "years": list(metadata.get("years") or []),
+            "method": str(metadata.get("method") or ""),
+            "total_rows": int(metadata.get("total_rows") or len(rows)),
+            "development_rows": int(metadata.get("development_rows") or len(rows)),
+            "development_before": metadata.get("development_before"),
+        }
+
+
 # Keep the six-year Scientist set compact. The canonical mtf_context JSON remains
 # on m5_research_snapshots for audit/live recognition. Historical Scientist reads
 # use m5_scientist_research, which exposes only deterministic causal relationships.
@@ -166,6 +191,66 @@ async def _scan_fabric_rows(
         if len(batch) < page:
             break
     return rows
+
+
+async def scientist_development_split(repo: Any, symbol: str) -> dict[str, Any]:
+    raw = await repo.client.rpc("get_scientist_fabric_split_v97", {"p_symbol": symbol})
+    if isinstance(raw, list) and len(raw) == 1 and isinstance(raw[0], dict):
+        raw = raw[0]
+    split = dict(raw or {}) if isinstance(raw, dict) else {}
+    if (
+        str(split.get("version") or "") != SCIENTIST_DEVELOPMENT_SPLIT_VERSION
+        or split.get("complete_server_side_split") is not True
+        or not isinstance(split.get("years"), list)
+    ):
+        raise RuntimeError("Scientist split RPC did not prove a complete server-side split")
+    return split
+
+
+async def load_scientist_development_rows(repo: Any, symbol: str) -> DevelopmentResearchRows:
+    split = await scientist_development_split(repo, symbol)
+    expected = int(split.get("development_rows") or 0)
+    if expected <= 0:
+        raise RuntimeError("Scientist development partition is empty")
+
+    before = str(split.get("development_before") or "").strip() or None
+    rows: list[Any] = []
+    cursor: str | None = None
+    page_size = 1000
+    while len(rows) < expected:
+        current_limit = min(page_size, expected - len(rows))
+        params = {
+            "select": compact_rows.FABRIC_SELECT,
+            "symbol": f"eq.{symbol}",
+            "snapshot_interval": f"eq.{FABRIC_SNAPSHOT_INTERVAL}",
+            "source_interval": f"eq.{FABRIC_SOURCE_INTERVAL}",
+            "outcome_complete": "eq.true",
+            "order": "candle_time.asc",
+            "limit": str(current_limit),
+        }
+        if cursor and before:
+            params["and"] = f"(candle_time.gt.{cursor},candle_time.lt.{before})"
+        elif cursor:
+            params["candle_time"] = f"gt.{cursor}"
+        elif before:
+            params["candle_time"] = f"lt.{before}"
+
+        batch = await repo.client.get("m5_scientist_research", params=params)
+        if not batch:
+            break
+        rows.extend(compact_rows.compact_row(item) for item in batch)
+        next_cursor = str(batch[-1].get("candle_time") or "")
+        if not next_cursor or next_cursor == cursor:
+            raise RuntimeError("Scientist development keyset scan did not advance candle_time cursor")
+        cursor = next_cursor
+        if len(batch) < current_limit:
+            break
+
+    if len(rows) != expected:
+        raise RuntimeError(
+            f"Scientist development partition incomplete: expected {expected} rows, received {len(rows)}"
+        )
+    return DevelopmentResearchRows(rows, split)
 
 
 async def load_fabric_rows(
