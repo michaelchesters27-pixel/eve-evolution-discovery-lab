@@ -36,7 +36,7 @@ async def _replay_current_opportunity_v73(
     return result
 
 
-async def _run_cycle_v73(self: v71.CurrentPolicyZoneRetraceAcademy) -> bool:
+async def _run_cycle_v73(self: v71.CurrentPolicyZoneRetraceAcademy) -> Any:
     claim_payload = await self.repo.client.rpc(
         "claim_live_trader_zone_retrace_current_policy_scan",
         {
@@ -48,9 +48,16 @@ async def _run_cycle_v73(self: v71.CurrentPolicyZoneRetraceAcademy) -> bool:
     )
     claim = v64._row_from_rpc(claim_payload)
     if not bool(claim.get("claimed")):
-        # Another Railway process owns this archive slice. Return as progress so
-        # the outer loop retries shortly rather than sleeping for the caught-up interval.
-        return True
+        # Lease denial means no archive work occurred. Report an explicit no-op
+        # instead of a truthy sentinel that the bounded worker could mislabel as
+        # measured progress.
+        return {
+            "ok": True,
+            "status": "no_op",
+            "reason": "scan_lease_not_acquired",
+            "lease_claimed": False,
+            "rows": 0,
+        }
 
     token = str(claim.get("claim_token") or "")
     if not token:
