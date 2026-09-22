@@ -234,8 +234,25 @@ async def _checkpoint_stage_attempt(stage_run_id: int, started_at: datetime) -> 
         },
         filters={"id": f"eq.{stage_run_id}", "outcome": "eq.running"},
     )
-    if not patched:
-        raise RuntimeError(f"bounded stage attempt {stage_run_id} checkpoint was not acknowledged")
+    if patched:
+        return
+
+    # The child can finalize the same attempt between the heartbeat's PATCH
+    # predicate check and its response. A terminal durable row is successful
+    # acknowledgement, not a lost checkpoint.
+    rows = await discovery_repo.client.get(
+        "bounded_research_stage_runs",
+        params={
+            "select": "id,outcome,operation_ok,finished_at",
+            "id": f"eq.{stage_run_id}",
+            "limit": "1",
+        },
+    )
+    if rows:
+        row = dict(rows[0])
+        if str(row.get("outcome") or "") != "running" and row.get("finished_at"):
+            return
+    raise RuntimeError(f"bounded stage attempt {stage_run_id} checkpoint was not acknowledged")
 
 
 async def _finish_supervisor_stage_attempt(
