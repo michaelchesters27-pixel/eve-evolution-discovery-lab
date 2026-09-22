@@ -166,3 +166,70 @@ grant execute on function public.get_live_trader_zone_replay_work_v97(text,text,
 
 comment on function public.get_live_trader_zone_replay_work_v97(text,text,integer) is
 'Fix 10 complete server-side eligible replay scan/aggregation. Returns only a bounded pending batch while preserving v68 replay semantics.';
+
+
+create or replace function public.get_scientist_fabric_split_v97(
+  p_symbol text
+)
+returns jsonb
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+with year_counts as (
+  select extract(year from candle_time)::integer as year, count(*)::integer as rows
+  from public.m5_research_snapshots
+  where symbol = p_symbol
+    and snapshot_interval = '5min'
+    and source_interval = '5min'
+    and outcome_complete is true
+  group by 1
+),
+stats as (
+  select
+    coalesce(array_agg(year order by year), '{}'::integer[]) as years,
+    coalesce(sum(rows), 0)::integer as total_rows,
+    count(*)::integer as year_count
+  from year_counts
+),
+boundary as (
+  select
+    s.*,
+    case
+      when s.year_count >= 6 then s.years[s.year_count - 2]
+      else null
+    end as validation_year
+  from stats s
+)
+select jsonb_build_object(
+  'version', 'eve-scientist-development-split-v97',
+  'complete_server_side_split', true,
+  'method', case when b.year_count >= 6 then 'calendar_year_four_stage' else 'chronological_fraction_four_stage' end,
+  'years', to_jsonb(b.years),
+  'total_rows', b.total_rows,
+  'development_rows',
+    case
+      when b.year_count >= 6 then coalesce((
+        select sum(y.rows)::integer
+        from year_counts y
+        where y.year < b.validation_year
+      ), 0)
+      else floor(b.total_rows * 0.50)::integer
+    end,
+  'development_before',
+    case
+      when b.year_count >= 6 then make_timestamptz(b.validation_year, 1, 1, 0, 0, 0, 'UTC')
+      else null
+    end
+)
+from boundary b;
+$$;
+
+revoke all on function public.get_scientist_fabric_split_v97(text)
+  from public, anon, authenticated;
+grant execute on function public.get_scientist_fabric_split_v97(text)
+  to service_role;
+
+comment on function public.get_scientist_fabric_split_v97(text) is
+'Fix 10 server-side split metadata allowing Scientist to load only the development partition it is permitted to use.';
