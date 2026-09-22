@@ -71,6 +71,7 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
         "version": VERSION,
         "status": "skipped",
         "learning_version": hardening.LEARNING_NAMESPACE,
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
     }
     observed = _recent_observation_time(state)
     if observed is None:
@@ -87,7 +88,7 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
         existing = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "id,observed_at,status",
+                "select": "id,observed_at,status,timing_contract_version,activation_at",
                 "learning_version": f"eq.{hardening.LEARNING_NAMESPACE}",
                 "setup_family": f"eq.{family}",
                 "episode_key": f"eq.{episode}",
@@ -95,10 +96,16 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
             },
         )
         if existing:
-            diagnostics.update({"status": "present", "episode_key": episode, "setup_family": family})
+            diagnostics.update({
+                "status": "present",
+                "episode_key": episode,
+                "setup_family": family,
+                "timing_contract_version": (existing[0] or {}).get("timing_contract_version"),
+                "activation_at": (existing[0] or {}).get("activation_at"),
+            })
             return diagnostics
 
-        recorded_at = core.utc_now()
+        decision_at = core.utc_now()
         market_state = {
             "market": state.get("market"),
             "bias": state.get("bias"),
@@ -107,15 +114,14 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
             "learning_observation": {
                 "policy": hardening.OBSERVATION_POLICY,
                 "market_observed_at": observed.isoformat(),
-                "recorded_at": recorded_at.isoformat(),
                 "engine_version": hardening.ENGINE_VERSION,
                 "outcome_schema": hardening.OUTCOME_SCHEMA,
                 "forward_recorder": VERSION,
                 "self_healing_fallback": True,
             },
         }
-        await self.repo.client.insert(
-            "live_trader_opinions",
+        row, timing = await hardening._insert_timed_forward_opinion(
+            self,
             {
                 "observed_at": observed.isoformat(),
                 "symbol": self.symbol,
@@ -128,20 +134,28 @@ async def _ensure_forward_observation(self: core.LiveTrader, state: dict[str, An
                 "episode_key": episode,
                 "learning_version": hardening.LEARNING_NAMESPACE,
                 "independent_sample": True,
-                "market_state": market_state,
                 "zones": state.get("zones") or {},
                 "trade_idea": state.get("trade") or {},
                 "opinion_text": state.get("opinion") or "",
                 "status": "open",
             },
-            return_rows=False,
+            observed=observed,
+            market_state=market_state,
+            decision_at=decision_at,
         )
+        if row is None or not timing.get("activation_at"):
+            diagnostics.update({"status": "error", "reason": "forward_observation_not_durably_activated"})
+            return diagnostics
         diagnostics.update(
             {
                 "status": "inserted",
                 "episode_key": episode,
                 "setup_family": family,
                 "observed_at": observed.isoformat(),
+                "decision_at": timing.get("decision_at"),
+                "publication_confirmed_at": timing.get("publication_confirmed_at"),
+                "activation_at": timing.get("activation_at"),
+                "execution_start_at": timing.get("execution_start_at"),
             }
         )
         return diagnostics
@@ -330,6 +344,7 @@ async def _record_shadow_variants(self: core.LiveTrader, state: dict[str, Any]) 
     inserted = 0
     existing_count = 0
     errors: list[str] = []
+    activated: list[dict[str, Any]] = []
     for trade in candidates:
         variant = str(trade.get("shadow_variant") or "unknown")
         family, episode = _shadow_ids(state, variant)
@@ -347,10 +362,26 @@ async def _record_shadow_variants(self: core.LiveTrader, state: dict[str, Any]) 
             if existing:
                 existing_count += 1
                 continue
+
+            decision_at = core.utc_now()
             descriptor = dict(state.get("setup_family_descriptor") or {})
             descriptor["shadow_variant"] = variant
-            await self.repo.client.insert(
-                "live_trader_opinions",
+            market_state = {
+                "market": state.get("market"),
+                "bias": state.get("bias"),
+                "liquidity": state.get("liquidity"),
+                "setup_family_descriptor": descriptor,
+                "shadow_research": {
+                    "version": VERSION,
+                    "variant": variant,
+                    "publication_authority": False,
+                    "visible_trade_gate_unchanged": True,
+                    "market_observed_at": observed.isoformat(),
+                    "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+                },
+            }
+            row, timing = await hardening._insert_timed_forward_opinion(
+                self,
                 {
                     "observed_at": observed.isoformat(),
                     "symbol": self.symbol,
@@ -363,27 +394,24 @@ async def _record_shadow_variants(self: core.LiveTrader, state: dict[str, Any]) 
                     "episode_key": episode,
                     "learning_version": SHADOW_VERSION,
                     "independent_sample": False,
-                    "market_state": {
-                        "market": state.get("market"),
-                        "bias": state.get("bias"),
-                        "liquidity": state.get("liquidity"),
-                        "setup_family_descriptor": descriptor,
-                        "shadow_research": {
-                            "version": VERSION,
-                            "variant": variant,
-                            "publication_authority": False,
-                            "visible_trade_gate_unchanged": True,
-                            "observed_at": observed.isoformat(),
-                        },
-                    },
                     "zones": state.get("zones") or {},
                     "trade_idea": trade,
                     "opinion_text": "Research-only shadow trade; never shown as a Live Trader recommendation.",
                     "status": "open",
                 },
-                return_rows=False,
+                observed=observed,
+                market_state=market_state,
+                decision_at=decision_at,
             )
+            if row is None or not timing.get("activation_at"):
+                errors.append(f"{variant}: not_durably_activated")
+                continue
             inserted += 1
+            activated.append({
+                "variant": variant,
+                "activation_at": timing.get("activation_at"),
+                "execution_start_at": timing.get("execution_start_at"),
+            })
         except Exception as exc:
             errors.append(str(exc)[:160])
             core.logger.warning("Live Trader v83 shadow record failed for %s: %s", variant, exc)
@@ -395,6 +423,8 @@ async def _record_shadow_variants(self: core.LiveTrader, state: dict[str, Any]) 
         "candidates": len(candidates),
         "errors": errors[:3],
         "bucket": bucket.isoformat(),
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+        "activated": activated,
     }
 
 
@@ -410,7 +440,11 @@ async def _resolve_shadow_outcomes(self: core.LiveTrader) -> dict[str, Any]:
         rows = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "id,observed_at,price,bias,horizon_minutes,market_state,trade_idea",
+                "select": (
+                    "id,observed_at,price,bias,horizon_minutes,market_state,trade_idea,"
+                    "market_observed_at,market_received_at,decision_at,publication_requested_at,"
+                    "publication_confirmed_at,activation_at,execution_start_at,timing_contract_version"
+                ),
                 "learning_version": f"eq.{SHADOW_VERSION}",
                 "status": "eq.open",
                 "observed_at": f"lte.{cutoff.isoformat()}",
@@ -422,15 +456,23 @@ async def _resolve_shadow_outcomes(self: core.LiveTrader) -> dict[str, Any]:
         return {"status": "error", "reason": str(exc)[:240]}
 
     resolved = 0
+    waiting_for_horizon = 0
     for row in rows:
         observed = _parse_time(row.get("observed_at"))
         if observed is None:
             continue
         horizon_minutes = int(_num(row.get("horizon_minutes"), self.settings.live_trader_learning_horizon_minutes))
-        horizon = observed + timedelta(minutes=max(horizon_minutes, 1))
+        path_start, horizon, timing_verified, timing = hardening._execution_window(
+            row,
+            fallback_observed=observed,
+            horizon_minutes=horizon_minutes,
+        )
+        if timing_verified and now < horizon:
+            waiting_for_horizon += 1
+            continue
         try:
-            source_rows = await hardening._source_m1_rows(self, observed, horizon)
-            path = hardening._causal_m1_path(source_rows, observed, horizon)
+            source_rows = await hardening._source_m1_rows(self, path_start, horizon)
+            path = hardening._causal_m1_path(source_rows, path_start, horizon)
             endpoint = path.get("endpoint_price")
             endpoint_time = path.get("endpoint_time")
             endpoint_lag = path.get("endpoint_lag_seconds")
@@ -459,6 +501,7 @@ async def _resolve_shadow_outcomes(self: core.LiveTrader) -> dict[str, Any]:
             market_state["shadow_resolution"] = {
                 "version": VERSION,
                 "resolved_at": now.isoformat(),
+                "path_start_at": path_start.isoformat(),
                 "horizon_at": horizon.isoformat(),
                 "resolved_price_time": endpoint_time.isoformat(),
                 "m1_path_bars": len(path.get("bars") or []),
@@ -466,6 +509,7 @@ async def _resolve_shadow_outcomes(self: core.LiveTrader) -> dict[str, Any]:
                 "initial_gap_seconds": path.get("initial_gap_seconds"),
                 "gap_count": path.get("gap_count"),
                 "endpoint_lag_seconds": endpoint_lag,
+                **timing,
             }
             await self.repo.client.patch(
                 "live_trader_opinions",
@@ -484,7 +528,13 @@ async def _resolve_shadow_outcomes(self: core.LiveTrader) -> dict[str, Any]:
             resolved += 1
         except Exception as exc:
             core.logger.warning("Live Trader v83 shadow resolution failed: %s", exc)
-    return {"status": "ok", "resolved": resolved, "eligible": len(rows)}
+    return {
+        "status": "ok",
+        "resolved": resolved,
+        "eligible": len(rows),
+        "waiting_for_activation_horizon": waiting_for_horizon,
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+    }
 
 
 def _trade_skill_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
@@ -538,12 +588,17 @@ def _trade_skill_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _shadow_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    triggered = [row for row in rows if row.get("entry_triggered") is True and row.get("realised_r") is not None]
+    verified_rows = [
+        row for row in rows
+        if str(row.get("timing_contract_version") or "") == hardening.TIMING_CONTRACT_VERSION
+    ]
+    triggered = [row for row in verified_rows if row.get("entry_triggered") is True and row.get("realised_r") is not None]
     total_r = sum(_num(row.get("realised_r")) for row in triggered)
     wins = sum(1 for row in triggered if _num(row.get("realised_r")) > 0)
     losses = sum(1 for row in triggered if _num(row.get("realised_r")) < 0)
     return {
-        "resolved": len(rows),
+        "resolved": len(verified_rows),
+        "legacy_unverified_resolved": max(0, len(rows) - len(verified_rows)),
         "triggered": len(triggered),
         "wins": wins,
         "losses": losses,
@@ -578,7 +633,7 @@ async def _trade_skill(self: core.LiveTrader) -> dict[str, Any]:
         shadow = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "entry_triggered,realised_r,trade_outcome,observed_at",
+                "select": "entry_triggered,realised_r,trade_outcome,observed_at,timing_contract_version",
                 "learning_version": f"eq.{SHADOW_VERSION}",
                 "status": "eq.resolved",
                 "order": "observed_at.desc",
