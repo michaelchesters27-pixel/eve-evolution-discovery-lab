@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
+
 from app.services import live_trader_policy_lab_v85 as v85
 
 
@@ -232,3 +235,73 @@ def test_daily_sql_aggregate_preserves_clustered_quality_math() -> None:
     assert assessment["independent_days"] == 30
     assert assessment["independent_weeks"] >= 4
     assert assessment["fresh_confirmation_candidate"] is True
+
+
+
+class _PolicyResolverClient:
+    def __init__(self, row: dict) -> None:
+        self.row = row
+        self.patched = False
+
+    async def get(self, _table: str, *, params: dict | None = None, **_kwargs):
+        return [dict(self.row)]
+
+    async def patch(self, _table: str, _values: dict, *, filters: dict):
+        self.patched = True
+        return []
+
+
+class _PolicyResolverSettings:
+    live_trader_learning_horizon_minutes = 60
+
+
+class _PolicyResolverEngine:
+    def __init__(self, row: dict) -> None:
+        self.repo = type("Repo", (), {"client": _PolicyResolverClient(row)})()
+        self.settings = _PolicyResolverSettings()
+        self._policy_lab_last_resolution_v85 = None
+
+
+def test_policy_lab_resolver_never_scores_unactivated_current_timing(monkeypatch) -> None:
+    row = {
+        "id": "policy-1",
+        "observed_at": "2026-09-22T08:00:00+00:00",
+        "price": 4300.0,
+        "horizon_minutes": 60,
+        "market_state": {},
+        "trade_idea": {
+            "order_type": "buy_limit",
+            "side": "BUY",
+            "entry": 4290.0,
+            "stop": 4280.0,
+            "target": 4305.0,
+            "policy_lab": {"policy_key": "directional_quality_market"},
+        },
+        "market_observed_at": "2026-09-22T08:00:00+00:00",
+        "market_received_at": "2026-09-22T08:00:01+00:00",
+        "decision_at": "2026-09-22T08:00:02+00:00",
+        "publication_requested_at": "2026-09-22T08:00:03+00:00",
+        "publication_confirmed_at": None,
+        "activation_at": None,
+        "execution_start_at": None,
+        "timing_contract_version": v85.hardening.TIMING_CONTRACT_VERSION,
+    }
+    engine = _PolicyResolverEngine(row)
+    monkeypatch.setattr(
+        v85.core,
+        "utc_now",
+        lambda: datetime(2026, 9, 22, 10, 0, tzinfo=timezone.utc),
+    )
+    source_called = False
+
+    async def forbidden_source(*_args, **_kwargs):
+        nonlocal source_called
+        source_called = True
+        return []
+
+    monkeypatch.setattr(v85.hardening, "_source_m1_rows", forbidden_source)
+    result = asyncio.run(v85._resolve_policy_outcomes(engine))
+
+    assert result["resolved"] == 0
+    assert source_called is False
+    assert engine.repo.client.patched is False
