@@ -185,7 +185,26 @@ def apply_cost_model(
     return result
 
 
-def campaign_cost_result(campaign: dict[str, Any], gross_r: float) -> dict[str, Any]:
+def campaign_gross_r(campaign: dict[str, Any]) -> float:
+    status = str(campaign.get("status") or "").lower()
+    if status == "lost":
+        return -1.0
+    if status != "won":
+        return 0.0
+    rr = _num(campaign.get("risk_reward"), 0.0)
+    if rr > 0:
+        return round(rr, 5)
+    entry = _num(campaign.get("entry"))
+    stop = _num(campaign.get("stop"))
+    target = _num(campaign.get("target"))
+    risk = abs(entry - stop)
+    reward = abs(target - entry)
+    return round(reward / risk, 5) if risk > 0 else 0.0
+
+
+def campaign_cost_result(campaign: dict[str, Any], gross_r: float | None = None) -> dict[str, Any]:
+    if gross_r is None:
+        gross_r = campaign_gross_r(campaign)
     trade = {
         "side": campaign.get("side"),
         "order_type": campaign.get("order_type"),
