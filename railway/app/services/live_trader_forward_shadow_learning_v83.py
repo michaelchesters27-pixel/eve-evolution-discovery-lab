@@ -8,6 +8,7 @@ from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_evidence_identity as evidence_id
+from app.services import live_trader_evidence_quality_v92 as quality
 from app.services import live_trader_learning_v2 as v2
 from app.services import live_trader_learning_v22 as v22
 from app.services import live_trader_london_session_gate_v46 as session_gate
@@ -600,7 +601,11 @@ async def _resolve_shadow_outcomes(self: core.LiveTrader) -> dict[str, Any]:
     }
 
 
-def _trade_skill_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
+def _trade_skill_from_reviews(
+    reviews: list[dict[str, Any]],
+    *,
+    cohort_id: str | None = None,
+) -> dict[str, Any]:
     verified = [
         row for row in reviews
         if str(row.get("cost_model_version") or "") == cost_model.COST_MODEL_VERSION
@@ -616,6 +621,7 @@ def _trade_skill_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
     breakeven = n - wins - losses
     win_rate = wins / n if n else 0.0
 
+    # Keep the legacy display score for continuity, but never use it as proof.
     performance = core.clamp((avg_r + 0.25) / 0.75, 0.0, 1.0)
     win_component = core.clamp(win_rate / 0.55, 0.0, 1.0)
     evidence = min(1.0, n / 30.0)
@@ -626,16 +632,7 @@ def _trade_skill_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
         score = min(score, 6.5)
     score = round(core.clamp(score, 0.0, 10.0), 2)
 
-    if n < 30:
-        grade = "UNPROVEN"
-    elif score < 4.0:
-        grade = "POOR"
-    elif score < 6.0:
-        grade = "DEVELOPING"
-    elif score < 7.5:
-        grade = "PROMISING"
-    else:
-        grade = "PROVEN"
+    quality_assessment = quality.evaluate_published_paper(verified, cohort_id=cohort_id)
 
     legacy_triggered = [
         row for row in reviews
@@ -645,7 +642,8 @@ def _trade_skill_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "version": VERSION,
         "score": score,
-        "grade": grade,
+        "score_is_not_edge_probability": True,
+        "grade": quality_assessment.get("grade"),
         "published_triggered": n,
         "legacy_triggered_not_counted": len(legacy_triggered),
         "wins": wins,
@@ -656,11 +654,22 @@ def _trade_skill_from_reviews(reviews: list[dict[str, Any]]) -> dict[str, Any]:
         "total_r": round(total_r, 3),
         "average_r": round(avg_r, 3) if n else None,
         "win_rate": round(win_rate, 3) if n else None,
-        "minimum_proven_sample": 30,
+        "independent_days": quality_assessment.get("independent_days"),
+        "independent_weeks": quality_assessment.get("independent_weeks"),
+        "one_sided_95pct_day_cluster_lower_bound_r": quality_assessment.get(
+            "one_sided_95pct_day_cluster_lower_bound_r"
+        ),
+        "forward_net_supported": quality_assessment.get("forward_net_supported"),
+        "failed_quality_gates": quality_assessment.get("failed_quality_gates"),
+        "evidence_quality_protocol_version": quality.PUBLISHED_PAPER_PROTOCOL_VERSION,
+        "minimum_screening_sample": quality.PUBLISHED_MIN_TRIGGERED,
+        "sample_count_alone_never_proves_edge": True,
+        "automatic_money_approval": False,
         "cost_model_version": cost_model.COST_MODEL_VERSION,
         "meaning": (
-            "Trade Skill counts only completed published forward campaigns with the current cost model. "
-            "Legacy gross-only reviews remain visible but cannot make the score look proven."
+            "Trade Skill counts only current-cohort, cost-verified completed paper campaigns. "
+            "Thirty trades is a screening milestone, not proof. Support requires independent day/week coverage "
+            "and a predeclared one-sided day-cluster uncertainty bound above zero. The display score is not a win probability."
         ),
     }
 
@@ -740,7 +749,10 @@ async def _trade_skill(self: core.LiveTrader) -> dict[str, Any]:
     except Exception:
         shadow = []
 
-    result = _trade_skill_from_reviews(list(reviews))
+    result = _trade_skill_from_reviews(
+        list(reviews),
+        cohort_id=str(published_identity.get("cohort_id") or "") or None,
+    )
     result["evidence_identity"] = evidence_id.public_identity(published_identity)
     result["shadow_research"] = _shadow_stats(list(shadow), current_shadow_cohorts)
     result["shadow_research"]["current_cohort_ids"] = sorted(current_shadow_cohorts)
@@ -786,6 +798,8 @@ def _runtime_status_v83(self: core.LiveTrader) -> dict[str, Any]:
         {
             "forward_shadow_learning_version": VERSION,
             "shadow_learning_version": SHADOW_VERSION,
+            "published_evidence_quality_protocol_version": quality.PUBLISHED_PAPER_PROTOCOL_VERSION,
+            "published_sample_count_alone_never_proves_edge": True,
             "forward_learning_self_healing": True,
             "shadow_trades_publication_authority": False,
             "visible_trade_gate_unchanged": True,
