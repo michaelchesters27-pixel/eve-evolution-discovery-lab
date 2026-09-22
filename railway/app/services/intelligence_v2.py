@@ -20,6 +20,7 @@ from app.services.research_fabric import (
     fabric_audit,
     latest_fabric_rows,
     load_fabric_rows,
+    load_scientist_development_rows,
     resolve_dataset_state,
 )
 
@@ -199,17 +200,17 @@ class IntelligenceDirector(v1.IntelligenceDirector):
                 minutes=self.settings.row_cache_minutes
             )
             if not self._fabric_rows_cache or v1.utc_now() >= fresh_until:
-                self._fabric_rows_cache = await load_fabric_rows(
+                self._fabric_rows_cache = await load_scientist_development_rows(
                     self.repo,
                     self.settings.source_symbol,
-                    complete_only=True,
                 )
                 research.enrich_market_observations(self._fabric_rows_cache)
                 self._fabric_cache_at = v1.utc_now()
             self.active_dataset = FABRIC_DATASET
             self.active_snapshot_interval = FABRIC_SNAPSHOT_INTERVAL
             self.active_source_interval = FABRIC_SOURCE_INTERVAL
-            self.dataset_rows = len(self._fabric_rows_cache)
+            partition = getattr(self._fabric_rows_cache, "development_partition", {})
+            self.dataset_rows = int(partition.get("total_rows") or len(self._fabric_rows_cache))
             return self._fabric_rows_cache
 
         rows = supplied_rows if supplied_rows is not None else await self.row_provider()
