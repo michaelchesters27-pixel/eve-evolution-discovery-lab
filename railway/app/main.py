@@ -842,11 +842,21 @@ async def download_mq5(package_id: str, _: None = Depends(require_package_access
 
 @app.post("/api/admin/run-cycle", dependencies=[Depends(require_admin)])
 async def run_cycle() -> dict[str, Any]:
+    if settings.bounded_research_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Direct heavy discovery execution is disabled while bounded research mode owns historical work.",
+        )
     return await orchestrator.run_once()
 
 
 @app.post("/api/admin/run-scientist", dependencies=[Depends(require_admin)])
 async def run_scientist() -> dict[str, Any]:
+    if settings.bounded_research_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Direct heavy Scientist execution is disabled while bounded research mode owns historical work.",
+        )
     return await intelligence.run_science_once(await orchestrator.rows())
 
 
@@ -862,6 +872,11 @@ async def run_live_trader_analysis() -> dict[str, Any]:
 
 @app.post("/api/admin/run-fabric", dependencies=[Depends(require_admin)])
 async def run_fabric() -> dict[str, Any]:
+    if settings.bounded_research_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Direct fabric execution is disabled while bounded research mode owns historical work.",
+        )
     return await fabric.build_once()
 
 
