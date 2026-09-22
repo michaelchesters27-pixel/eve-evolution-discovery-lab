@@ -175,3 +175,115 @@ def test_policy_lab_legacy_unverified_rows_cannot_qualify() -> None:
     assert len(stats["leaderboard"]) == len(v85.POLICY_KEYS)
     assert all(item["triggered"] == 0 for item in stats["leaderboard"])
     assert all(item["forward_candidate"] is False for item in stats["leaderboard"])
+
+
+
+def _campaign_for_live_price_test(*, side: str, order_type: str, status: str = "active") -> dict:
+    return {
+        "id": "causal-live-price",
+        "symbol": "XAU/USD",
+        "status": status,
+        "side": side,
+        "order_type": order_type,
+        "entry": 100.0,
+        "stop": 98.0 if side == "BUY" else 102.0,
+        "target": 103.0 if side == "BUY" else 97.0,
+        "invalidation_price": 98.0 if side == "BUY" else 102.0,
+        "created_at": "2026-09-22T08:00:07+00:00",
+        "triggered_at": "2026-09-22T08:00:24+00:00" if status == "active" else None,
+        "completed_at": None,
+        "result": None,
+        "timing_contract_version": hardening.TIMING_CONTRACT_VERSION,
+        "publication_requested_at": "2026-09-22T08:00:08+00:00",
+        "publication_confirmed_at": "2026-09-22T08:00:09+00:00",
+        "activation_at": "2026-09-22T08:00:24+00:00",
+        "activation_price": None,
+        "execution_cost_model": {
+            "manual_delay_seconds": 15,
+            "spread_price": 0.30,
+            "entry_slippage_price": 0.10,
+            "exit_slippage_price": 0.10,
+            "commission_price_equivalent": 0.07,
+        },
+    }
+
+
+def _live_engine(provider_at: str, received_at: str):
+    return SimpleNamespace(
+        last_tick_at=provider_at,
+        last_tick_received_at=received_at,
+        _live_campaign_dirty=False,
+        _live_campaign_new_v28=False,
+        _live_campaign=None,
+        settings=settings(),
+    )
+
+
+def test_live_market_buy_rejects_wall_clock_fresh_quote_observed_before_activation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        v89.core,
+        "utc_now",
+        lambda: datetime(2026, 9, 22, 8, 0, 30, tzinfo=timezone.utc),
+    )
+    engine = _live_engine("2026-09-22T08:00:00+00:00", "2026-09-22T08:00:01+00:00")
+    campaign = _campaign_for_live_price_test(side="BUY", order_type="market")
+
+    result = v89._advance_campaign_v89(engine, campaign, 104.0)
+
+    assert result["status"] == "active"
+    assert result["result"] is None
+    assert result["activation_price"] is None
+    assert result["last_price_event_timing"]["eligible"] is False
+    assert result["last_price_event_timing"]["rejection_reason"] == "provider_timestamp_pre_activation"
+
+
+def test_live_market_sell_rejects_pre_activation_quote(monkeypatch) -> None:
+    monkeypatch.setattr(
+        v89.core,
+        "utc_now",
+        lambda: datetime(2026, 9, 22, 8, 0, 30, tzinfo=timezone.utc),
+    )
+    engine = _live_engine("2026-09-22T08:00:20+00:00", "2026-09-22T08:00:21+00:00")
+    campaign = _campaign_for_live_price_test(side="SELL", order_type="market")
+
+    result = v89._advance_campaign_v89(engine, campaign, 96.0)
+
+    assert result["status"] == "active"
+    assert result["result"] is None
+    assert result["activation_price"] is None
+    assert result["last_price_event_timing"]["eligible"] is False
+
+
+def test_live_pending_order_rejects_pre_activation_trigger(monkeypatch) -> None:
+    monkeypatch.setattr(
+        v89.core,
+        "utc_now",
+        lambda: datetime(2026, 9, 22, 8, 0, 30, tzinfo=timezone.utc),
+    )
+    engine = _live_engine("2026-09-22T08:00:22+00:00", "2026-09-22T08:00:23+00:00")
+    campaign = _campaign_for_live_price_test(side="BUY", order_type="buy_limit", status="pending")
+    campaign["expires_at"] = "2026-09-22T11:00:24+00:00"
+
+    result = v89._advance_campaign_v89(engine, campaign, 99.5)
+
+    assert result["status"] == "pending"
+    assert result["triggered_at"] is None
+    assert result["activation_price"] is None
+
+
+def test_live_price_event_after_activation_can_advance_campaign(monkeypatch) -> None:
+    monkeypatch.setattr(
+        v89.core,
+        "utc_now",
+        lambda: datetime(2026, 9, 22, 8, 0, 30, tzinfo=timezone.utc),
+    )
+    engine = _live_engine("2026-09-22T08:00:25+00:00", "2026-09-22T08:00:26+00:00")
+    campaign = _campaign_for_live_price_test(side="BUY", order_type="market")
+
+    result = v89._advance_campaign_v89(engine, campaign, 104.0)
+
+    assert result["status"] == "won"
+    assert result["result"] == "WIN — TARGET HIT"
+    assert result["activation_price"] == 104.0
+    assert result["activation_price_provider_at"] == "2026-09-22T08:00:25+00:00"
+    assert result["activation_price_recorded_at"] == "2026-09-22T08:00:26+00:00"

@@ -18,7 +18,7 @@ from app.services.repository import SourceRepository
 ENGINE_VERSION = "eve-live-learning-engine-v2.6"
 LEARNING_NAMESPACE = "eve-live-learning-family-v1"
 OUTCOME_SCHEMA = "causal-m1-path-v4-fail-closed-activation-cost"
-TIMING_CONTRACT_VERSION = "eve-live-execution-timing-v3-fail-closed"
+TIMING_CONTRACT_VERSION = "eve-live-execution-timing-v4-live-price-causality"
 OBSERVATION_POLICY = (
     "Market observation time identifies the data used by the decision, but executable outcome evidence starts only "
     "after the decision has been durably persisted. Receipt, decision, publication-request, publication-confirmation "

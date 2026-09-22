@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import logging
 import os
 import resource
+import signal
 import sys
 import time
 import uuid
@@ -38,6 +40,27 @@ def _apply_memory_ceiling_from_env() -> int | None:
 
 
 MEMORY_CEILING_MB = _apply_memory_ceiling_from_env()
+
+
+def _arm_parent_death_signal() -> bool:
+    """On Linux, terminate the heavy child if its supervisor process disappears."""
+    if sys.platform != "linux" or not str(os.environ.get("EVE_BOUNDED_STAGE") or "").strip():
+        return False
+    parent_pid = os.getppid()
+    if parent_pid <= 1:
+        raise RuntimeError("bounded_worker_started_without_live_supervisor")
+    libc = ctypes.CDLL(None, use_errno=True)
+    # PR_SET_PDEATHSIG = 1. The kernel sends SIGTERM when the current parent dies.
+    if libc.prctl(1, signal.SIGTERM) != 0:
+        errno = ctypes.get_errno()
+        raise RuntimeError(f"could_not_arm_parent_death_signal_errno_{errno}")
+    # Close the race where the parent dies between getppid() and prctl().
+    if os.getppid() != parent_pid:
+        os.kill(os.getpid(), signal.SIGTERM)
+    return True
+
+
+PARENT_DEATH_SIGNAL_ARMED = _arm_parent_death_signal()
 
 # Apply the address-space ceiling before importing the heavy research modules.
 from app.settings import get_settings
@@ -130,7 +153,10 @@ def _classify_stage_result(value: Any) -> str:
     if value is False or value is None:
         return "no_op"
     if value is True:
-        return "progressed"
+        # A truthy sentinel proves only successful completion, not that any
+        # checkpoint/output changed. Progress requires an explicit action or
+        # positive work counter below.
+        return "completed"
     if not isinstance(value, dict):
         return "completed"
 
@@ -194,24 +220,42 @@ async def _write_stage_telemetry(
             "resource_version": RESOURCE_VERSION,
             "memory_ceiling_mb": MEMORY_CEILING_MB,
             "pid": os.getpid(),
+            "parent_death_signal_armed": PARENT_DEATH_SIGNAL_ARMED,
         }
+        payload = {
+            "cycle_id": cycle_id,
+            "stage_name": stage_name,
+            "ordinal": ordinal,
+            "outcome": outcome,
+            "operation_ok": operation_ok,
+            "started_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "heartbeat_at": finished_at.isoformat(),
+            "elapsed_ms": round(elapsed_ms, 3),
+            "cpu_user_ms": round(cpu_user_ms, 3),
+            "cpu_system_ms": round(cpu_system_ms, 3),
+            "process_max_rss_mb": round(process_max_rss_mb, 3),
+            "result_summary": summary,
+            "error": error,
+        }
+        existing_id = int(str(os.environ.get("EVE_BOUNDED_STAGE_RUN_ID") or "0") or "0")
+        if existing_id > 0:
+            patched = await repo.client.patch(
+                "bounded_research_stage_runs",
+                payload,
+                filters={
+                    "id": f"eq.{existing_id}",
+                    "cycle_id": f"eq.{cycle_id}",
+                    "stage_name": f"eq.{stage_name}",
+                },
+            )
+            if patched:
+                return existing_id
+            return None
+
         inserted = await repo.client.insert(
             "bounded_research_stage_runs",
-            {
-                "cycle_id": cycle_id,
-                "stage_name": stage_name,
-                "ordinal": ordinal,
-                "outcome": outcome,
-                "operation_ok": operation_ok,
-                "started_at": started_at.isoformat(),
-                "finished_at": finished_at.isoformat(),
-                "elapsed_ms": round(elapsed_ms, 3),
-                "cpu_user_ms": round(cpu_user_ms, 3),
-                "cpu_system_ms": round(cpu_system_ms, 3),
-                "process_max_rss_mb": round(process_max_rss_mb, 3),
-                "result_summary": summary,
-                "error": error,
-            },
+            payload,
             return_rows=True,
         )
         if inserted and isinstance(inserted[0], dict) and inserted[0].get("id") is not None:
@@ -230,6 +274,16 @@ async def _stage(
     repo: DiscoveryRepository,
 ) -> dict[str, Any]:
     started_at = _now()
+    durable_started_at = started_at
+    raw_durable_started = str(os.environ.get("EVE_BOUNDED_STAGE_ATTEMPT_STARTED_AT") or "").strip()
+    if raw_durable_started:
+        try:
+            parsed = datetime.fromisoformat(raw_durable_started.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            durable_started_at = parsed.astimezone(timezone.utc)
+        except ValueError:
+            durable_started_at = started_at
     started_perf = time.perf_counter()
     before = _usage()
     try:
@@ -272,7 +326,10 @@ async def _stage(
 
     finished_at = _now()
     after = _usage()
-    elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
+    elapsed_ms = max(
+        (time.perf_counter() - started_perf) * 1000.0,
+        max(0.0, (finished_at - durable_started_at).total_seconds() * 1000.0),
+    )
     stage_run_id = await _write_stage_telemetry(
         repo,
         cycle_id=cycle_id,
@@ -280,7 +337,7 @@ async def _stage(
         ordinal=ordinal,
         outcome=outcome,
         operation_ok=operation_ok,
-        started_at=started_at,
+        started_at=durable_started_at,
         finished_at=finished_at,
         elapsed_ms=elapsed_ms,
         cpu_user_ms=(after.ru_utime - before.ru_utime) * 1000.0,
@@ -289,6 +346,12 @@ async def _stage(
         result_summary=summary,
         error=error,
     )
+    telemetry_persisted = stage_run_id is not None
+    if not telemetry_persisted:
+        operation_ok = False
+        outcome = "failed"
+        error = "durable_stage_telemetry_not_acknowledged"
+
     payload = {
         "ok": operation_ok,
         "cycle_id": cycle_id,
@@ -303,6 +366,8 @@ async def _stage(
         "memory_ceiling_mb": MEMORY_CEILING_MB,
         "resource_version": RESOURCE_VERSION,
         "stage_run_id": stage_run_id,
+        "telemetry_persisted": telemetry_persisted,
+        "parent_death_signal_armed": PARENT_DEATH_SIGNAL_ARMED,
         "memory_ceiling_enforced": MEMORY_CEILING_MB is not None,
     }
     if error:

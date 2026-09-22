@@ -11,7 +11,7 @@ class FakeClient:
 
     async def insert(self, table: str, payload: dict, *, return_rows: bool = False):
         self.inserted.append((table, dict(payload)))
-        return []
+        return [{"id": len(self.inserted)}] if return_rows else []
 
 
 class FakeRepo:
@@ -26,6 +26,10 @@ class FakeRepo:
 def test_false_boolean_is_no_op_not_successful_progress() -> None:
     assert bounded_worker._classify_stage_result(False) == "no_op"
     assert bounded_worker._classify_stage_result(None) == "no_op"
+
+
+def test_bare_true_is_completion_not_measured_progress() -> None:
+    assert bounded_worker._classify_stage_result(True) == "completed"
 
 
 def test_caught_up_zero_row_dict_is_no_op() -> None:
@@ -79,3 +83,69 @@ def test_stage_persists_explicit_no_op_telemetry() -> None:
     assert payload["operation_ok"] is True
     assert payload["elapsed_ms"] >= 0
     assert payload["process_max_rss_mb"] > 0
+    assert result["telemetry_persisted"] is True
+
+
+
+def test_stage_fails_closed_when_terminal_telemetry_cannot_be_persisted() -> None:
+    class FailingClient(FakeClient):
+        async def insert(self, table: str, payload: dict, *, return_rows: bool = False):
+            raise RuntimeError("telemetry unavailable")
+
+    repo = FakeRepo()
+    repo.client = FailingClient()
+
+    async def operation():
+        return {"ok": True, "rows": 2}
+
+    result = asyncio.run(
+        bounded_worker._stage(
+            "fabric",
+            1,
+            "11111111-1111-1111-1111-111111111111",
+            operation,
+            repo,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["outcome"] == "failed"
+    assert result["telemetry_persisted"] is False
+    assert result["error"] == "durable_stage_telemetry_not_acknowledged"
+
+
+
+def test_precreated_stage_attempt_is_patched_not_reinserted(monkeypatch) -> None:
+    class PatchClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.patched: list[tuple[str, dict, dict]] = []
+
+        async def patch(self, table: str, values: dict, *, filters: dict):
+            self.patched.append((table, dict(values), dict(filters)))
+            return [{"id": 42, **values}]
+
+    repo = FakeRepo()
+    repo.client = PatchClient()
+    monkeypatch.setenv("EVE_BOUNDED_STAGE_RUN_ID", "42")
+
+    async def operation():
+        return {"ok": True, "rows": 3}
+
+    result = asyncio.run(
+        bounded_worker._stage(
+            "fabric",
+            1,
+            "11111111-1111-1111-1111-111111111111",
+            operation,
+            repo,
+        )
+    )
+
+    assert repo.client.inserted == []
+    assert len(repo.client.patched) == 1
+    assert repo.client.patched[0][2]["id"] == "eq.42"
+    assert result["ok"] is True
+    assert result["outcome"] == "progressed"
+    assert result["stage_run_id"] == 42
+    assert result["telemetry_persisted"] is True

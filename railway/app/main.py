@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import socket
 import sys
 import time
@@ -183,14 +184,166 @@ async def _read_bounded_child(
     return summary, "\n".join(tail)
 
 
+async def _start_stage_attempt(
+    cycle_id: str,
+    stage_name: str,
+    ordinal: int,
+) -> tuple[int, datetime] | None:
+    started_at = datetime.now(timezone.utc)
+    try:
+        inserted = await discovery_repo.client.insert(
+            "bounded_research_stage_runs",
+            {
+                "cycle_id": cycle_id,
+                "stage_name": stage_name,
+                "ordinal": ordinal,
+                "outcome": "running",
+                "operation_ok": False,
+                "started_at": started_at.isoformat(),
+                "finished_at": None,
+                "heartbeat_at": started_at.isoformat(),
+                "elapsed_ms": 0.0,
+                "cpu_user_ms": None,
+                "cpu_system_ms": None,
+                "process_max_rss_mb": None,
+                "result_summary": {
+                    "resource_version": resources.RESOURCE_VERSION,
+                    "memory_ceiling_mb": settings.bounded_research_memory_mb,
+                    "durable_attempt_started_before_compute": True,
+                },
+                "error": None,
+            },
+            return_rows=True,
+        )
+    except Exception:
+        logger.exception("Could not durably start bounded stage attempt %s", stage_name)
+        return None
+    if not inserted or not isinstance(inserted[0], dict) or inserted[0].get("id") is None:
+        return None
+    return int(inserted[0]["id"]), started_at
+
+
+async def _checkpoint_stage_attempt(stage_run_id: int, started_at: datetime) -> None:
+    now = datetime.now(timezone.utc)
+    elapsed_ms = max(0.0, (now - started_at).total_seconds() * 1000.0)
+    patched = await discovery_repo.client.patch(
+        "bounded_research_stage_runs",
+        {
+            "heartbeat_at": now.isoformat(),
+            "elapsed_ms": round(elapsed_ms, 3),
+        },
+        filters={"id": f"eq.{stage_run_id}", "outcome": "eq.running"},
+    )
+    if patched:
+        return
+
+    # The child can finalize the same attempt between the heartbeat's PATCH
+    # predicate check and its response. A terminal durable row is successful
+    # acknowledgement, not a lost checkpoint.
+    rows = await discovery_repo.client.get(
+        "bounded_research_stage_runs",
+        params={
+            "select": "id,outcome,operation_ok,finished_at",
+            "id": f"eq.{stage_run_id}",
+            "limit": "1",
+        },
+    )
+    if rows:
+        row = dict(rows[0])
+        if str(row.get("outcome") or "") != "running" and row.get("finished_at"):
+            return
+    raise RuntimeError(f"bounded stage attempt {stage_run_id} checkpoint was not acknowledged")
+
+
+async def _finish_supervisor_stage_attempt(
+    stage_run_id: int,
+    *,
+    outcome: str,
+    reason: str,
+    started_at: datetime,
+) -> float:
+    now = datetime.now(timezone.utc)
+    elapsed_ms = max(0.0, (now - started_at).total_seconds() * 1000.0)
+    try:
+        await discovery_repo.client.patch(
+            "bounded_research_stage_runs",
+            {
+                "outcome": outcome,
+                "operation_ok": False,
+                "finished_at": now.isoformat(),
+                "heartbeat_at": now.isoformat(),
+                "elapsed_ms": round(elapsed_ms, 3),
+                "result_summary": {
+                    "resource_version": resources.RESOURCE_VERSION,
+                    "memory_ceiling_mb": settings.bounded_research_memory_mb,
+                    "supervisor_failure": reason[:1000],
+                },
+                "error": reason[:2000],
+            },
+            filters={"id": f"eq.{stage_run_id}", "outcome": "eq.running"},
+        )
+    except Exception:
+        logger.exception("Could not finalise bounded stage attempt %s", stage_run_id)
+    return elapsed_ms
+
+
+async def _terminate_bounded_child(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        if sys.platform != "win32":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+    except ProcessLookupError:
+        return
+    except Exception:
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            return
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5.0)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    try:
+        if sys.platform != "win32":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        return
+    except Exception:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return
+    await process.wait()
+
+
 async def _bounded_lease_heartbeat(
     owner_id: str,
     lease_token: str,
-) -> bool:
+    stage_run_id: int,
+    started_at: datetime,
+) -> str | None:
     while True:
         await asyncio.sleep(settings.bounded_research_lease_renew_seconds)
-        if not await _renew_bounded_supervisor(owner_id, lease_token):
-            return False
+        try:
+            await _checkpoint_stage_attempt(stage_run_id, started_at)
+        except Exception as exc:
+            logger.exception("Bounded stage telemetry heartbeat failed")
+            return f"durable_stage_checkpoint_failed:{str(exc)[:500]}"
+        try:
+            renewed = await _renew_bounded_supervisor(owner_id, lease_token)
+        except Exception as exc:
+            logger.exception("Bounded research lease renewal raised")
+            return f"durable_supervisor_lease_renewal_failed:{str(exc)[:500]}"
+        if not renewed:
+            return "durable_supervisor_lease_lost_during_stage"
 
 
 async def _run_bounded_stage(
@@ -202,33 +355,53 @@ async def _run_bounded_stage(
     owner_id: str,
     lease_token: str,
 ) -> dict[str, Any]:
-    started = time.perf_counter()
+    attempt = await _start_stage_attempt(cycle_id, stage_name, ordinal)
+    if attempt is None:
+        return {
+            "ok": False,
+            "cycle_id": cycle_id,
+            "stage": stage_name,
+            "ordinal": ordinal,
+            "outcome": "failed",
+            "error": "durable_stage_attempt_start_failed_compute_not_started",
+            "elapsed_ms": 0.0,
+            "stage_run_id": None,
+            "resource_version": resources.RESOURCE_VERSION,
+        }
+
+    stage_run_id, started_at = attempt
     env = dict(os.environ)
     env.update(
         {
             "EVE_BOUNDED_CYCLE_ID": cycle_id,
             "EVE_BOUNDED_STAGE": stage_name,
             "EVE_BOUNDED_STAGE_ORDINAL": str(ordinal),
+            "EVE_BOUNDED_STAGE_RUN_ID": str(stage_run_id),
+            "EVE_BOUNDED_STAGE_ATTEMPT_STARTED_AT": started_at.isoformat(),
             "EVE_BOUNDED_MEMORY_MB": str(settings.bounded_research_memory_mb),
         }
     )
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "app.bounded_worker",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        env=env,
-    )
-    child_task = asyncio.create_task(
-        _read_bounded_child(process, cycle_id=cycle_id, stage_name=stage_name),
-        name=f"bounded-stage-read-{stage_name}",
-    )
-    heartbeat_task = asyncio.create_task(
-        _bounded_lease_heartbeat(owner_id, lease_token),
-        name=f"bounded-lease-heartbeat-{stage_name}",
-    )
+    process: asyncio.subprocess.Process | None = None
+    child_task: asyncio.Task[Any] | None = None
+    heartbeat_task: asyncio.Task[Any] | None = None
     try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "app.bounded_worker",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+            start_new_session=(sys.platform != "win32"),
+        )
+        child_task = asyncio.create_task(
+            _read_bounded_child(process, cycle_id=cycle_id, stage_name=stage_name),
+            name=f"bounded-stage-read-{stage_name}",
+        )
+        heartbeat_task = asyncio.create_task(
+            _bounded_lease_heartbeat(owner_id, lease_token, stage_run_id, started_at),
+            name=f"bounded-lease-heartbeat-{stage_name}",
+        )
         done, _ = await asyncio.wait(
             {child_task, heartbeat_task},
             timeout=max(1.0, timeout_seconds),
@@ -236,63 +409,140 @@ async def _run_bounded_stage(
         )
 
         if heartbeat_task in done:
-            lease_alive = heartbeat_task.result()
-            if not lease_alive and not child_task.done():
-                process.kill()
-                await process.wait()
-                child_task.cancel()
-                try:
-                    await child_task
-                except asyncio.CancelledError:
-                    pass
-                elapsed_ms = (time.perf_counter() - started) * 1000.0
-                return await _record_supervisor_stage_failure(
-                    cycle_id,
-                    stage_name,
-                    ordinal,
-                    "durable_supervisor_lease_lost_during_stage",
-                    elapsed_ms=elapsed_ms,
+            failure_reason = heartbeat_task.result()
+            if failure_reason:
+                await _terminate_bounded_child(process)
+                if child_task and not child_task.done():
+                    child_task.cancel()
+                    try:
+                        await child_task
+                    except asyncio.CancelledError:
+                        pass
+                elapsed_ms = await _finish_supervisor_stage_attempt(
+                    stage_run_id,
+                    outcome="interrupted",
+                    reason=failure_reason,
+                    started_at=started_at,
                 )
+                return {
+                    "ok": False,
+                    "cycle_id": cycle_id,
+                    "stage": stage_name,
+                    "ordinal": ordinal,
+                    "outcome": "failed",
+                    "error": failure_reason,
+                    "elapsed_ms": round(elapsed_ms, 3),
+                    "stage_run_id": stage_run_id,
+                    "resource_version": resources.RESOURCE_VERSION,
+                }
 
         if child_task in done:
             summary, tail = child_task.result()
-            elapsed_ms = (time.perf_counter() - started) * 1000.0
-            if process.returncode == 0 and isinstance(summary, dict):
+            if (
+                process.returncode == 0
+                and isinstance(summary, dict)
+                and summary.get("ok") is True
+                and summary.get("telemetry_persisted") is True
+                and int(summary.get("stage_run_id") or 0) == stage_run_id
+            ):
                 return summary
-            if isinstance(summary, dict):
-                return summary
-            reason = f"child_exit_code_{process.returncode}_without_structured_summary"
-            if tail:
-                reason += ":" + tail[-3000:]
-            return await _record_supervisor_stage_failure(
-                cycle_id,
-                stage_name,
-                ordinal,
-                reason,
-                elapsed_ms=elapsed_ms,
-            )
 
-        process.kill()
-        await process.wait()
-        child_task.cancel()
-        try:
-            await child_task
-        except asyncio.CancelledError:
-            pass
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        return await _record_supervisor_stage_failure(
-            cycle_id,
-            stage_name,
-            ordinal,
-            f"stage_timeout_after_{round(timeout_seconds,1)}s",
-            elapsed_ms=elapsed_ms,
+            reason = "child_completion_not_durably_acknowledged"
+            if isinstance(summary, dict) and summary.get("error"):
+                reason = str(summary.get("error"))[:2000]
+            elif process.returncode not in {0, None}:
+                reason = f"child_exit_code_{process.returncode}"
+            if tail:
+                reason += ":" + tail[-2000:]
+            elapsed_ms = await _finish_supervisor_stage_attempt(
+                stage_run_id,
+                outcome="failed",
+                reason=reason,
+                started_at=started_at,
+            )
+            return {
+                "ok": False,
+                "cycle_id": cycle_id,
+                "stage": stage_name,
+                "ordinal": ordinal,
+                "outcome": "failed",
+                "error": reason[:2000],
+                "elapsed_ms": round(elapsed_ms, 3),
+                "stage_run_id": stage_run_id,
+                "resource_version": resources.RESOURCE_VERSION,
+            }
+
+        await _terminate_bounded_child(process)
+        if child_task and not child_task.done():
+            child_task.cancel()
+            try:
+                await child_task
+            except asyncio.CancelledError:
+                pass
+        reason = f"stage_timeout_after_{round(timeout_seconds,1)}s"
+        elapsed_ms = await _finish_supervisor_stage_attempt(
+            stage_run_id,
+            outcome="interrupted",
+            reason=reason,
+            started_at=started_at,
         )
+        return {
+            "ok": False,
+            "cycle_id": cycle_id,
+            "stage": stage_name,
+            "ordinal": ordinal,
+            "outcome": "failed",
+            "error": reason,
+            "elapsed_ms": round(elapsed_ms, 3),
+            "stage_run_id": stage_run_id,
+            "resource_version": resources.RESOURCE_VERSION,
+        }
+    except asyncio.CancelledError:
+        if process is not None:
+            await _terminate_bounded_child(process)
+        if child_task and not child_task.done():
+            child_task.cancel()
+            try:
+                await child_task
+            except asyncio.CancelledError:
+                pass
+        await _finish_supervisor_stage_attempt(
+            stage_run_id,
+            outcome="interrupted",
+            reason="supervisor_cancelled_during_stage",
+            started_at=started_at,
+        )
+        raise
+    except Exception as exc:
+        if process is not None:
+            await _terminate_bounded_child(process)
+        reason = f"bounded_stage_supervisor_exception:{str(exc)[:1000]}"
+        elapsed_ms = await _finish_supervisor_stage_attempt(
+            stage_run_id,
+            outcome="interrupted",
+            reason=reason,
+            started_at=started_at,
+        )
+        return {
+            "ok": False,
+            "cycle_id": cycle_id,
+            "stage": stage_name,
+            "ordinal": ordinal,
+            "outcome": "failed",
+            "error": reason,
+            "elapsed_ms": round(elapsed_ms, 3),
+            "stage_run_id": stage_run_id,
+            "resource_version": resources.RESOURCE_VERSION,
+        }
     finally:
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except asyncio.CancelledError:
-            pass
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        if process is not None and process.returncode is None:
+            await _terminate_bounded_child(process)
 
 
 async def _load_running_cycle() -> dict[str, Any] | None:
@@ -334,18 +584,74 @@ async def _load_running_cycle() -> dict[str, Any] | None:
 
 
 async def _cycle_stage_attempts(cycle_id: str) -> list[dict[str, Any]]:
-    return list(
-        await discovery_repo.client.get(
-            "bounded_research_stage_runs",
-            params={
-                "select": "*",
-                "cycle_id": f"eq.{cycle_id}",
-                "order": "id.desc",
-                "limit": "200",
-            },
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    page_size = 200
+    while True:
+        page = list(
+            await discovery_repo.client.get(
+                "bounded_research_stage_runs",
+                params={
+                    "select": "*",
+                    "cycle_id": f"eq.{cycle_id}",
+                    "order": "id.desc",
+                    "limit": str(page_size),
+                    "offset": str(offset),
+                },
+            )
+            or []
         )
-        or []
-    )
+        rows.extend(dict(row) for row in page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        if str(row.get("outcome") or "") != "running":
+            continue
+        started_at = resources.parse_utc(row.get("started_at")) or now
+        elapsed_ms = max(
+            float(row.get("elapsed_ms") or 0.0),
+            min(
+                max(0.0, (now - started_at).total_seconds() * 1000.0),
+                float(settings.bounded_research_stage_timeout_seconds) * 1000.0,
+            ),
+        )
+        stage_run_id = int(row.get("id") or 0)
+        if stage_run_id <= 0:
+            continue
+        patched = await discovery_repo.client.patch(
+            "bounded_research_stage_runs",
+            {
+                "outcome": "interrupted",
+                "operation_ok": False,
+                "finished_at": now.isoformat(),
+                "heartbeat_at": now.isoformat(),
+                "elapsed_ms": round(elapsed_ms, 3),
+                "error": "restart_reconciled_unfinished_stage_attempt",
+                "result_summary": {
+                    **dict(row.get("result_summary") or {}),
+                    "resource_version": resources.RESOURCE_VERSION,
+                    "restart_reconciled": True,
+                    "conservative_elapsed_budget": True,
+                },
+            },
+            filters={"id": f"eq.{stage_run_id}", "outcome": "eq.running"},
+        )
+        if patched:
+            row.update(dict(patched[0]))
+        else:
+            row.update(
+                {
+                    "outcome": "interrupted",
+                    "operation_ok": False,
+                    "finished_at": now.isoformat(),
+                    "elapsed_ms": round(elapsed_ms, 3),
+                    "error": "restart_reconciled_unfinished_stage_attempt",
+                }
+            )
+    return rows
 
 
 async def _last_finalised_cycle() -> dict[str, Any] | None:

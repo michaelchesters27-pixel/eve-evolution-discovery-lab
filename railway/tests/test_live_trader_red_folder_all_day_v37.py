@@ -44,30 +44,39 @@ def test_all_day_event_blackout_is_active_for_entire_uk_day() -> None:
 
 
 class FakeClient:
-    def __init__(self) -> None:
-        self.params = None
+    def __init__(self, events: list[dict] | None = None) -> None:
+        self.rpc_call = None
+        self.events = list(events or [])
 
-    async def get(self, table: str, *, params: dict | None = None, **_kwargs):
-        assert table == "live_trader_news_events"
-        self.params = params
-        return []
+    async def rpc(self, function: str, payload: dict | None = None):
+        assert function == "get_live_trader_news_window_v98"
+        self.rpc_call = (function, dict(payload or {}))
+        return {
+            "version": all_day.BLACKOUT_WINDOW_VERSION,
+            "complete": True,
+            "source": "server_side_sql_aggregation",
+            "event_count": len(self.events),
+            "events": list(self.events),
+        }
 
 
 class FakeTrader:
     symbol = "XAU/USD"
 
-    def __init__(self) -> None:
-        self.repo = SimpleNamespace(client=FakeClient())
+    def __init__(self, events: list[dict] | None = None) -> None:
+        self.repo = SimpleNamespace(client=FakeClient(events))
 
 
-def test_base_calendar_loader_reads_usd_and_all_scope_events(monkeypatch) -> None:
+def test_base_calendar_loader_uses_complete_server_side_window(monkeypatch) -> None:
     trader = FakeTrader()
     monkeypatch.setattr(all_day.core, "utc_now", lambda: utc(2026, 8, 23, 8, 0))
 
     result = asyncio.run(all_day._load_calendar_with_all(trader, force=True))
 
-    assert trader.repo.client.params["currency"] == "in.(USD,ALL)"
+    assert trader.repo.client.rpc_call[0] == "get_live_trader_news_window_v98"
     assert result["available"] is True
+    assert result["blackout_inventory_complete"] is True
+    assert result["blackout_inventory_count"] == 0
     assert result["all_day_version"] == all_day.ALL_DAY_VERSION
 
 
@@ -75,3 +84,62 @@ def test_v36_uses_v37_base_calendar_loader() -> None:
     assert confirmation._current_calendar_loader is all_day._load_calendar_with_all
     assert news._decorate_event is all_day._decorate_event_v37
     assert core.LiveTrader.answer is workflow._answer_v95
+
+
+
+def test_complete_blackout_loader_blocks_active_event_after_former_100_row_boundary(monkeypatch) -> None:
+    now = utc(2026, 9, 22, 10, 0)
+    expired = [
+        {
+            "event_id": f"expired-{index:03d}",
+            "currency": "USD",
+            "event_name": f"Expired event {index}",
+            "scheduled_at": "2026-09-22T08:00:00+00:00",
+            "event_class": "high",
+            "pre_minutes": 1,
+            "post_minutes": 1,
+            "source": news.NEWS_SOURCE,
+        }
+        for index in range(100)
+    ]
+    active = {
+        "event_id": "active-101",
+        "currency": "USD",
+        "event_name": "Active event after old cap",
+        "scheduled_at": "2026-09-22T10:05:00+00:00",
+        "event_class": "high",
+        "pre_minutes": 30,
+        "post_minutes": 15,
+        "source": news.NEWS_SOURCE,
+    }
+    trader = FakeTrader(expired + [active])
+    monkeypatch.setattr(all_day.core, "utc_now", lambda: now)
+
+    result = asyncio.run(all_day._load_calendar_with_all(trader, force=True))
+
+    assert result["event_count"] == 101
+    assert result["blackout_inventory_count"] == 101
+    assert result["active"] is True
+    assert result["new_trade_blocked"] is True
+    assert result["active_event_ids"] == ["active-101"]
+
+
+def test_incomplete_blackout_inventory_fails_closed(monkeypatch) -> None:
+    trader = FakeTrader()
+
+    async def incomplete_rpc(_function: str, _payload: dict | None = None):
+        return {
+            "version": all_day.BLACKOUT_WINDOW_VERSION,
+            "complete": False,
+            "event_count": 0,
+            "events": [],
+        }
+
+    trader.repo.client.rpc = incomplete_rpc
+    monkeypatch.setattr(all_day.core, "utc_now", lambda: utc(2026, 9, 22, 10, 0))
+
+    result = asyncio.run(all_day._load_calendar_with_all(trader, force=True))
+
+    assert result["available"] is False
+    assert result["new_trade_blocked"] is True
+    assert result["forward_learning_blocked"] is True
