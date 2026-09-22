@@ -174,6 +174,28 @@ class LiveTraderChatRequest(BaseModel):
     message: str = Field(default="What are we doing?", max_length=4000)
 
 
+class LiveTraderNewsTimedEventRequest(BaseModel):
+    event_date: str = Field(min_length=10, max_length=10)
+    event_time: str = Field(min_length=4, max_length=8)
+    event_name: str = Field(min_length=1, max_length=180)
+
+
+class LiveTraderNewsAllDayEventRequest(BaseModel):
+    event_date: str = Field(min_length=10, max_length=10)
+    event_name: str = Field(min_length=1, max_length=180)
+
+
+class LiveTraderNewsRemoveEventRequest(BaseModel):
+    event_id: str = Field(min_length=1, max_length=128)
+
+
+class LiveTraderNewsWeekConfirmRequest(BaseModel):
+    calendar_checked: bool = False
+    expected_event_count: int = Field(ge=0, le=200)
+    source_reference: str = Field(min_length=3, max_length=500)
+    note: str = Field(default="", max_length=1000)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global worker_task, intelligence_task, fabric_task, live_trader_task, bounded_research_task
@@ -348,6 +370,44 @@ async def live_trader_learning() -> dict[str, Any]:
 @app.post("/api/live-trader/chat", dependencies=[Depends(require_research_access)])
 async def live_trader_chat(payload: LiveTraderChatRequest) -> dict[str, Any]:
     return await live_trader.answer(payload.message)
+
+
+@app.get("/api/admin/live-trader/news-calendar", dependencies=[Depends(require_admin)])
+async def live_trader_news_calendar_admin() -> dict[str, Any]:
+    return await live_trader.news_confirmation_status(force=True)
+
+
+@app.post("/api/admin/live-trader/news-events/timed", dependencies=[Depends(require_admin)])
+async def live_trader_news_add_timed_admin(payload: LiveTraderNewsTimedEventRequest) -> dict[str, Any]:
+    result = await live_trader.add_news_event(payload.event_date, payload.event_time, payload.event_name)
+    result["workflow"] = await live_trader.news_confirmation_status(force=True)
+    return result
+
+
+@app.post("/api/admin/live-trader/news-events/all-day", dependencies=[Depends(require_admin)])
+async def live_trader_news_add_all_day_admin(payload: LiveTraderNewsAllDayEventRequest) -> dict[str, Any]:
+    result = await live_trader.add_all_day_news_event(payload.event_date, payload.event_name)
+    result["workflow"] = await live_trader.news_confirmation_status(force=True)
+    return result
+
+
+@app.post("/api/admin/live-trader/news-events/remove", dependencies=[Depends(require_admin)])
+async def live_trader_news_remove_admin(payload: LiveTraderNewsRemoveEventRequest) -> dict[str, Any]:
+    result = await live_trader.remove_news_event(payload.event_id)
+    result["workflow"] = await live_trader.news_confirmation_status(force=True)
+    return result
+
+
+@app.post("/api/admin/live-trader/news-week/confirm", dependencies=[Depends(require_admin)])
+async def live_trader_news_confirm_week_admin(payload: LiveTraderNewsWeekConfirmRequest) -> dict[str, Any]:
+    result = await live_trader.confirm_news_week(
+        calendar_checked=payload.calendar_checked,
+        expected_event_count=payload.expected_event_count,
+        source_reference=payload.source_reference,
+        note=payload.note,
+    )
+    result["workflow"] = await live_trader.news_confirmation_status(force=True)
+    return result
 
 
 @app.get("/api/fabric", dependencies=[Depends(require_research_access)])
