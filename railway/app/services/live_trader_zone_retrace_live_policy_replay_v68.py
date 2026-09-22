@@ -27,6 +27,7 @@ MIN_SCORABLE_COVERAGE = 0.95
 MIN_PROMOTION_OPPORTUNITIES = 50
 MIN_PROMOTION_TRIGGERED = 30
 MIN_PROMOTION_EXPECTANCY_R = 0.10
+RESOURCE_WORK_VERSION = "eve-resource-bounded-zone-replay-v97"
 
 _current_run_forever = core.LiveTrader.run_forever
 _current_learning_summary = core.LiveTrader.learning_summary
@@ -245,45 +246,25 @@ class ZoneRetraceLivePolicyReplayer:
     async def stop(self) -> None:
         self._stop.set()
 
-    async def _eligible_rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for page in range(v58.HISTORICAL_PAGES):
-            offset = page * v58.HISTORICAL_PAGE_SIZE
-            batch = await self.repo.client.get(
-                "live_trader_historical_learning",
-                params={
-                    "select": "historical_episode_key,observed_at,independence_key,market_state,path_complete",
-                    "symbol": f"eq.{self.symbol}",
-                    "path_complete": "eq.true",
-                    "order": "observed_at.desc",
-                    "limit": str(v58.HISTORICAL_PAGE_SIZE),
-                    "offset": str(offset),
-                },
-            )
-            rows.extend(batch)
-            if len(batch) < v58.HISTORICAL_PAGE_SIZE:
-                break
-
-        independent: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            if not _eligible_episode(row):
-                continue
-            key = str(row.get("independence_key") or "")
-            if key and key not in independent:
-                independent[key] = dict(row)
-        return list(independent.values())
-
-    async def _processed_independence(self) -> set[str]:
-        rows = await self.repo.client.get(
-            "live_trader_zone_retrace_live_policy_replays",
-            params={
-                "select": "independence_key",
-                "symbol": f"eq.{self.symbol}",
-                "replay_version": f"eq.{REPLAY_VERSION}",
-                "limit": "1000",
+    async def _work_snapshot(self) -> dict[str, Any]:
+        raw = await self.repo.client.rpc(
+            "get_live_trader_zone_replay_work_v97",
+            {
+                "p_symbol": self.symbol,
+                "p_replay_version": REPLAY_VERSION,
+                "p_limit": REPLAY_BATCH_SIZE,
             },
         )
-        return {str(row.get("independence_key") or "") for row in rows if row.get("independence_key")}
+        if isinstance(raw, list) and len(raw) == 1 and isinstance(raw[0], dict):
+            raw = raw[0]
+        snapshot = dict(raw or {}) if isinstance(raw, dict) else {}
+        if (
+            str(snapshot.get("version") or "") != RESOURCE_WORK_VERSION
+            or snapshot.get("complete_server_side_scan") is not True
+            or not isinstance(snapshot.get("pending"), list)
+        ):
+            raise RuntimeError("zone replay work RPC did not prove a complete server-side scan")
+        return snapshot
 
     async def _m5_window(self, observed: datetime, horizon: datetime) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         select = (
@@ -600,32 +581,19 @@ class ZoneRetraceLivePolicyReplayer:
             return_rows=False,
         )
 
-    async def _aggregate(self, eligible: list[dict[str, Any]]) -> dict[str, Any]:
-        rows = await self.repo.client.get(
-            "live_trader_zone_retrace_live_policy_replays",
-            params={
-                "select": "independence_key,status,entry_at,path_complete,realised_r,learning_success",
-                "symbol": f"eq.{self.symbol}",
-                "replay_version": f"eq.{REPLAY_VERSION}",
-                "limit": "1000",
-            },
-        )
-        eligible_keys = {str(row.get("independence_key") or "") for row in eligible}
-        rows = [row for row in rows if str(row.get("independence_key") or "") in eligible_keys]
-        processed = len(rows)
-        scorable_rows = [row for row in rows if bool(row.get("path_complete")) and str(row.get("status") or "") in {"scored", "no_entry"}]
-        unscorable = processed - len(scorable_rows)
-        triggered_rows = [row for row in scorable_rows if row.get("entry_at")]
-        total_r = sum(_num(row.get("realised_r")) for row in scorable_rows if row.get("realised_r") is not None)
-        wins = sum(1 for row in triggered_rows if _num(row.get("realised_r")) > 0)
-        losses = sum(1 for row in triggered_rows if _num(row.get("realised_r")) < 0)
-        breakeven = sum(1 for row in triggered_rows if row.get("realised_r") is not None and _num(row.get("realised_r")) == 0)
-        scorable = len(scorable_rows)
-        triggered = len(triggered_rows)
+    async def _aggregate(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        eligible_count = int(_num(snapshot.get("eligible_episodes")))
+        processed = int(_num(snapshot.get("processed_episodes")))
+        scorable = int(_num(snapshot.get("scorable_episodes")))
+        unscorable = int(_num(snapshot.get("unscorable_episodes")))
+        triggered = int(_num(snapshot.get("triggered")))
+        wins = int(_num(snapshot.get("wins")))
+        losses = int(_num(snapshot.get("losses")))
+        breakeven = int(_num(snapshot.get("breakeven")))
+        total_r = _num(snapshot.get("total_r"))
         expectancy_opportunity = total_r / scorable if scorable else None
         expectancy_triggered = total_r / triggered if triggered else None
         trigger_rate = triggered / scorable if scorable else None
-        eligible_count = len(eligible)
         completed = bool(eligible_count > 0 and processed >= eligible_count)
         coverage = scorable / eligible_count if eligible_count else 0.0
         promoted = bool(
@@ -668,6 +636,9 @@ class ZoneRetraceLivePolicyReplayer:
                 "promotion_min_expectancy_r": MIN_PROMOTION_EXPECTANCY_R,
                 "historical_news_gate_replayed": False,
                 "same_entry_minute_policy": "stop_first",
+                "resource_work_version": RESOURCE_WORK_VERSION,
+                "complete_server_side_eligible_scan": True,
+                "historical_heap_scan_in_worker": False,
             },
             "updated_at": core.utc_now().isoformat(),
         }
@@ -684,18 +655,20 @@ class ZoneRetraceLivePolicyReplayer:
         return payload
 
     async def run_batch(self) -> bool:
-        eligible = await self._eligible_rows()
-        processed = await self._processed_independence()
-        missing = [row for row in eligible if str(row.get("independence_key") or "") not in processed]
-        if not missing:
-            await self._aggregate(eligible)
+        snapshot = await self._work_snapshot()
+        pending = [dict(row) for row in snapshot.get("pending") or [] if isinstance(row, dict)]
+        if not pending:
+            await self._aggregate(snapshot)
             return False
 
-        for row in missing[:REPLAY_BATCH_SIZE]:
+        for row in pending:
             result = await self._replay_episode(row)
             await self._store_result(result)
             await asyncio.sleep(0)
-        await self._aggregate(eligible)
+
+        # Re-read the complete server-side aggregate after durable writes so
+        # progress survives process exit/restart without rebuilding a Python heap.
+        await self._aggregate(await self._work_snapshot())
         return True
 
     async def run_forever(self) -> None:
@@ -710,8 +683,7 @@ class ZoneRetraceLivePolicyReplayer:
                 self.last_error = str(exc)[:500]
                 core.logger.exception("Zone Retracement live-policy replay failed")
                 try:
-                    eligible = await self._eligible_rows()
-                    await self._aggregate(eligible)
+                    await self._aggregate(await self._work_snapshot())
                 except Exception:
                     pass
                 delay = 15.0
