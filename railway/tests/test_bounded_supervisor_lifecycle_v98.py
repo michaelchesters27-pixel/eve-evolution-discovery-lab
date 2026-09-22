@@ -151,3 +151,48 @@ def test_supervisor_cancellation_terminates_child_and_persists_interruption(monk
 
     assert cleanup == [999999]
     assert finalised == [(77, "interrupted", "supervisor_cancelled_during_stage")]
+
+
+
+def test_checkpoint_accepts_attempt_already_finalized_by_child(monkeypatch) -> None:
+    class RaceClient:
+        async def patch(self, table: str, values: dict, *, filters: dict):
+            assert table == "bounded_research_stage_runs"
+            return []
+
+        async def get(self, table: str, *, params: dict | None = None, **_kwargs):
+            assert table == "bounded_research_stage_runs"
+            return [{
+                "id": 77,
+                "outcome": "progressed",
+                "operation_ok": True,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }]
+
+    monkeypatch.setattr(main, "discovery_repo", SimpleNamespace(client=RaceClient()))
+
+    asyncio.run(
+        main._checkpoint_stage_attempt(
+            77,
+            datetime.now(timezone.utc) - timedelta(seconds=5),
+        )
+    )
+
+
+def test_checkpoint_fails_when_attempt_is_missing(monkeypatch) -> None:
+    class MissingClient:
+        async def patch(self, table: str, values: dict, *, filters: dict):
+            return []
+
+        async def get(self, table: str, *, params: dict | None = None, **_kwargs):
+            return []
+
+    monkeypatch.setattr(main, "discovery_repo", SimpleNamespace(client=MissingClient()))
+
+    with pytest.raises(RuntimeError, match="checkpoint was not acknowledged"):
+        asyncio.run(
+            main._checkpoint_stage_attempt(
+                78,
+                datetime.now(timezone.utc) - timedelta(seconds=5),
+            )
+        )
