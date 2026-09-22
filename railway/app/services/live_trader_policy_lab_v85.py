@@ -9,6 +9,7 @@ from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_clear_bias_gate_v45 as clear_gate
 from app.services import live_trader_execution_cost_model as cost_model
+from app.services import live_trader_evidence_identity as evidence_id
 from app.services import live_trader_forward_shadow_learning_v83 as v83
 from app.services import live_trader_historical_runtime_v30 as historical_runtime
 from app.services import live_trader_learning_v2 as v2
@@ -31,6 +32,52 @@ MIN_CANDIDATE_EXPECTANCY_R = 0.10
 _current_refresh_state = core.LiveTrader.refresh_state
 _current_learning_summary = core.LiveTrader.learning_summary
 _current_runtime_status = core.LiveTrader.runtime_status
+
+
+POLICY_KEYS = (
+    "directional_quality_market",
+    "clear_bias_market",
+    "clear_bias_zone_3_5atr",
+    "clear_bias_zone_2_5atr",
+    "m5_m15_zone_3_5atr",
+    "quality_zone_touch_limit",
+    "directional_momentum_confirmation",
+)
+
+
+def _policy_definition(policy_key: str) -> dict[str, Any]:
+    rules = {
+        "directional_quality_market": "Directional bias plus nearest quality matching zone; no clear-bias or distance requirement.",
+        "clear_bias_market": "Current clear-bias gate passed; no zone-distance requirement.",
+        "clear_bias_zone_3_5atr": "Current clear-bias gate passed and matching zone within 3.5 ATR.",
+        "clear_bias_zone_2_5atr": "Current clear-bias gate passed and matching zone within 2.5 ATR.",
+        "m5_m15_zone_3_5atr": "M5 and M15 align with directional bias and matching zone within 3.5 ATR.",
+        "quality_zone_touch_limit": "First touch of nearest quality matching zone.",
+        "directional_momentum_confirmation": "Directional bias with 0.15 ATR momentum-confirmation stop entry.",
+    }
+    return {
+        "contract_version": "eve-live-policy-lab-contract-v1",
+        "policy_lab_version": VERSION,
+        "learning_version": LEARNING_VERSION,
+        "policy_key": policy_key,
+        "rule": rules.get(policy_key, "unknown"),
+        "target_r": TARGET_R,
+        "minimum_zone_quality": MIN_ZONE_QUALITY,
+        "clear_bias_gate_version": clear_gate.GATE_VERSION,
+        "publication_authority": False,
+        "automatic_promotion": False,
+    }
+
+
+def _policy_identity(self: core.LiveTrader, policy_key: str) -> dict[str, Any]:
+    return evidence_id.build_identity(
+        policy_kind="policy_lab_forward_research",
+        policy_key=policy_key,
+        policy_definition=_policy_definition(policy_key),
+        settings=self.settings,
+        learning_version=LEARNING_VERSION,
+        evaluation_stage="policy_lab_forward_research",
+    )
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -284,12 +331,15 @@ async def _record_policy_candidates(self: core.LiveTrader, state: dict[str, Any]
         policy = dict(trade.get("policy_lab") or {})
         key = str(policy.get("policy_key") or trade.get("shadow_variant") or "unknown")
         family, episode = _policy_episode(state, observed, key)
+        identity = _policy_identity(self, key)
         try:
+            await evidence_id.ensure_registered(self.repo, identity)
             rows = await self.repo.client.get(
                 "live_trader_opinions",
                 params={
                     "select": "id",
                     "learning_version": f"eq.{LEARNING_VERSION}",
+                    "cohort_id": f"eq.{identity['cohort_id']}",
                     "setup_family": f"eq.{family}",
                     "episode_key": f"eq.{episode}",
                     "limit": "1",
@@ -309,6 +359,7 @@ async def _record_policy_candidates(self: core.LiveTrader, state: dict[str, Any]
                 "liquidity": state.get("liquidity"),
                 "setup_family_descriptor": descriptor,
                 "policy_lab": policy,
+                "evidence_identity": evidence_id.public_identity(identity),
             }
             row, timing = await hardening._insert_timed_forward_opinion(
                 self,
@@ -325,9 +376,10 @@ async def _record_policy_candidates(self: core.LiveTrader, state: dict[str, Any]
                     "learning_version": LEARNING_VERSION,
                     "independent_sample": False,
                     "zones": state.get("zones") or {},
-                    "trade_idea": trade,
+                    "trade_idea": evidence_id.attach_trade(trade, identity),
                     "opinion_text": f"Research-only policy lab candidate: {key}. Never publish or execute.",
                     "status": "open",
+                    **evidence_id.row_columns(identity),
                 },
                 observed=observed,
                 market_state=market_state,
@@ -341,6 +393,7 @@ async def _record_policy_candidates(self: core.LiveTrader, state: dict[str, Any]
                 "policy_key": key,
                 "activation_at": timing.get("activation_at"),
                 "execution_start_at": timing.get("execution_start_at"),
+                "cohort_id": identity.get("cohort_id"),
             })
         except Exception as exc:
             errors.append(str(exc)[:180])
@@ -485,12 +538,22 @@ def _max_drawdown(values: list[float]) -> float:
     return round(abs(worst), 3)
 
 
-def _policy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    verified_rows = [
-        row for row in rows
-        if str(row.get("timing_contract_version") or "") == hardening.TIMING_CONTRACT_VERSION
-        and str(row.get("cost_model_version") or "") == cost_model.COST_MODEL_VERSION
-    ]
+def _policy_stats(
+    rows: list[dict[str, Any]],
+    current_cohorts: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    verified_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if str(row.get("timing_contract_version") or "") != hardening.TIMING_CONTRACT_VERSION:
+            continue
+        if str(row.get("cost_model_version") or "") != cost_model.COST_MODEL_VERSION:
+            continue
+        trade = dict(row.get("trade_idea") or {})
+        policy = dict(trade.get("policy_lab") or {})
+        key = str(policy.get("policy_key") or trade.get("shadow_variant") or "unknown")
+        if current_cohorts is not None and str(row.get("cohort_id") or "") != str(current_cohorts.get(key) or ""):
+            continue
+        verified_rows.append(row)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in verified_rows:
         trade = dict(row.get("trade_idea") or {})
@@ -583,6 +646,8 @@ def _policy_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 async def _policy_lab_summary(self: core.LiveTrader) -> dict[str, Any]:
     now = core.utc_now()
+    current_identities = {key: _policy_identity(self, key) for key in POLICY_KEYS}
+    current_cohorts = {key: str(identity["cohort_id"]) for key, identity in current_identities.items()}
     cached_at = getattr(self, "_policy_lab_summary_at_v85", None)
     cached = getattr(self, "_policy_lab_summary_v85", None)
     if isinstance(cached_at, datetime) and isinstance(cached, dict):
@@ -592,7 +657,7 @@ async def _policy_lab_summary(self: core.LiveTrader) -> dict[str, Any]:
         rows = await self.repo.client.get(
             "live_trader_opinions",
             params={
-                "select": "observed_at,entry_triggered,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,trade_outcome,trade_idea,timing_contract_version",
+                "select": "observed_at,entry_triggered,realised_r,gross_realised_r,estimated_cost_r,net_realised_r,cost_model_version,trade_outcome,trade_idea,timing_contract_version,cohort_id,policy_id,scorer_id",
                 "learning_version": f"eq.{LEARNING_VERSION}",
                 "status": "eq.resolved",
                 "order": "observed_at.asc",
@@ -602,7 +667,8 @@ async def _policy_lab_summary(self: core.LiveTrader) -> dict[str, Any]:
     except Exception as exc:
         result = {"version": VERSION, "status": "error", "reason": str(exc)[:240]}
     else:
-        result = _policy_stats(list(rows))
+        result = _policy_stats(list(rows), current_cohorts)
+        result["current_cohort_ids"] = current_cohorts
     self._policy_lab_summary_at_v85 = now
     self._policy_lab_summary_v85 = dict(result)
     return result
@@ -632,11 +698,14 @@ async def _learning_summary_v85(self: core.LiveTrader) -> dict[str, Any]:
 
 def _runtime_status_v85(self: core.LiveTrader) -> dict[str, Any]:
     status = dict(_current_runtime_status(self))
+    current_cohorts = {key: str(_policy_identity(self, key)["cohort_id"]) for key in POLICY_KEYS}
     status.update(
         {
             "policy_lab_version": VERSION,
             "policy_lab_learning_version": LEARNING_VERSION,
             "policy_lab_cost_model_version": cost_model.COST_MODEL_VERSION,
+            "policy_lab_identity_version": evidence_id.IDENTITY_VERSION,
+            "policy_lab_current_cohort_ids": current_cohorts,
             "policy_lab_parallel_forward_research": True,
             "policy_lab_automatic_promotion": False,
             "policy_lab_publication_authority": False,
