@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from app.services import live_trader_execution_integrity_v39 as integrity
 from app.services import live_trader_execution_sequence_v41 as sequence
 from app.services import live_trader_execution_sequence_v88 as current_sequence
+from app.services import live_trader_execution_costs_v90 as current_costs
 from app.services import live_trader_learning_v2 as v2
 
 
@@ -66,12 +67,14 @@ def test_regrader_current_version_state_resumes(monkeypatch) -> None:
     assert asyncio.run(sequence._state_v41(SimpleNamespace())) == expected
 
 
-def test_v41_contract_is_superseded_by_current_v88_scorer() -> None:
-    # v41 remains available for regression tests, but the package bootstrap now
-    # intentionally installs v88 as the shared production scorer.
-    assert integrity.EXECUTION_SCHEMA == current_sequence.EXECUTION_SCHEMA
-    assert integrity.REGRADER_VERSION == current_sequence.REGRADER_VERSION
-    assert sequence.EXECUTION_SCHEMA == current_sequence.EXECUTION_SCHEMA
-    assert sequence.REGRADER_VERSION == current_sequence.REGRADER_VERSION
-    assert integrity._trade_path_result_v39 is current_sequence._trade_path_result_v88
-    assert v2._trade_path_result is current_sequence._trade_path_result_v88
+def test_v41_contract_is_superseded_by_current_v90_cost_scorer() -> None:
+    # v41/v88 remain available for regression tests, but the package bootstrap
+    # intentionally installs v90 as the shared production scorer.
+    assert integrity.EXECUTION_SCHEMA == current_costs.EXECUTION_SCHEMA
+    assert integrity.REGRADER_VERSION == current_costs.REGRADER_VERSION
+    assert sequence.EXECUTION_SCHEMA == current_costs.EXECUTION_SCHEMA
+    assert sequence.REGRADER_VERSION == current_costs.REGRADER_VERSION
+    assert current_sequence.EXECUTION_SCHEMA == current_costs.EXECUTION_SCHEMA
+    assert current_sequence.REGRADER_VERSION == current_costs.REGRADER_VERSION
+    assert integrity._trade_path_result_v39 is current_costs._trade_path_result_v90
+    assert v2._trade_path_result is current_costs._trade_path_result_v90
