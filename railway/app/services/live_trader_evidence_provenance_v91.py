@@ -6,7 +6,6 @@ from app.services import live_trader as core
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_campaign_consensus_v66 as consensus
 from app.services import live_trader_evidence_identity as evidence_id
-from app.services import live_trader_execution_timing_v89 as timing
 from app.services import live_trader_trade_lock_v28 as lock
 
 VERSION = "eve-live-evidence-provenance-v91"
@@ -120,6 +119,3 @@ consensus._persist_campaign_v66 = _persist_campaign_v91
 core.LiveTrader.refresh_state = _refresh_state_v91  # type: ignore[method-assign]
 core.LiveTrader.runtime_status = _runtime_status_v91  # type: ignore[method-assign]
 
-# Preserve timing module compatibility aliases so downstream calls resolve the
-# newest provenance-aware persistence path.
-timing._current_campaign_trade = _campaign_trade_v91
