@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 os.environ.setdefault("SOURCE_SUPABASE_URL", "https://source.invalid")
+os.environ.setdefault("SOURCE_SUPABASE_READ_ONLY_KEY", "test-read-only-key-1234567890")
 os.environ.setdefault("DISCOVERY_SUPABASE_URL", "https://discovery.invalid")
 os.environ.setdefault("DISCOVERY_SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key-1234567890")
 os.environ.setdefault("ADMIN_TOKEN", "test-admin-token")
