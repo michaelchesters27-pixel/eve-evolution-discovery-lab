@@ -45,13 +45,21 @@ alter table public.live_trader_historical_learning
     (cohort_id, policy_id, scorer_id, evaluation_stage, identity_version)
   on delete restrict;
 
+alter table public.live_trader_evaluation_cohorts
+  drop constraint if exists uq_live_trader_cohort_manual_binding_v98;
+alter table public.live_trader_evaluation_cohorts
+  add constraint uq_live_trader_cohort_manual_binding_v98
+  unique (cohort_id, policy_id, scorer_id, identity_version);
+
 alter table public.live_trader_manual_fills
   drop constraint if exists fk_live_trader_manual_fills_identity_tuple_v98;
 alter table public.live_trader_manual_fills
-  add constraint fk_live_trader_manual_fills_identity_tuple_v98
-  foreign key (cohort_id, policy_id, scorer_id, evaluation_stage, evidence_identity_version)
+  drop constraint if exists fk_live_trader_manual_fills_campaign_tuple_v98;
+alter table public.live_trader_manual_fills
+  add constraint fk_live_trader_manual_fills_campaign_tuple_v98
+  foreign key (cohort_id, policy_id, scorer_id, evidence_identity_version)
   references public.live_trader_evaluation_cohorts
-    (cohort_id, policy_id, scorer_id, evaluation_stage, identity_version)
+    (cohort_id, policy_id, scorer_id, identity_version)
   on delete restrict;
 
 alter table public.live_trader_zone_retrace_current_policy_opportunities
@@ -135,7 +143,11 @@ begin
     raise exception 'Live Trader evidence policy/scorer tuple does not match cohort %', new.cohort_id;
   end if;
 
-  if new.evaluation_stage is distinct from v_cohort.evaluation_stage then
+  if tg_table_name = 'live_trader_manual_fills' then
+    if new.evaluation_stage is distinct from 'actual_manual_fill' then
+      raise exception 'Attributed manual fill must use actual_manual_fill evaluation stage';
+    end if;
+  elsif new.evaluation_stage is distinct from v_cohort.evaluation_stage then
     raise exception 'Live Trader evidence evaluation_stage does not match cohort %', new.cohort_id;
   end if;
 
