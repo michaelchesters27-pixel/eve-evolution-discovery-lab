@@ -11,6 +11,42 @@ from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_trade_lock_v28 as lock
 
 TIMING_CONTRACT_VERSION = hardening.TIMING_CONTRACT_VERSION
+
+def _live_price_event_timing(
+    self: core.LiveTrader,
+    campaign: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    activation = lock._parse_time(campaign.get("activation_at"))
+    provider_at = lock._parse_time(getattr(self, "last_tick_at", None))
+    received_at = lock._parse_time(getattr(self, "last_tick_received_at", None))
+    now = core.utc_now()
+    reason = None
+    if activation is None:
+        reason = "missing_activation"
+    elif now < activation:
+        reason = "activation_not_reached"
+    elif provider_at is None:
+        reason = "missing_provider_timestamp"
+    elif received_at is None:
+        reason = "missing_receipt_timestamp"
+    elif provider_at < activation:
+        reason = "provider_timestamp_pre_activation"
+    elif received_at < activation:
+        reason = "receipt_timestamp_pre_activation"
+    elif received_at < provider_at:
+        reason = "receipt_precedes_provider_timestamp"
+    elif received_at > now + timedelta(seconds=1):
+        reason = "receipt_timestamp_in_future"
+
+    return reason is None, {
+        "activation_at": activation.isoformat() if activation else None,
+        "provider_at": provider_at.isoformat() if provider_at else None,
+        "received_at": received_at.isoformat() if received_at else None,
+        "checked_at": now.isoformat(),
+        "eligible": reason is None,
+        "rejection_reason": reason,
+    }
+
 _current_new_campaign = lock._new_campaign
 _current_advance_campaign = lock._advance_campaign
 _current_campaign_trade = lock._campaign_trade
@@ -56,17 +92,37 @@ def _advance_campaign_v89(
     *,
     allow_price_events: bool = True,
 ) -> dict[str, Any] | None:
+    effective_allow_price_events = allow_price_events
     if str(campaign.get("timing_contract_version") or "") == TIMING_CONTRACT_VERSION:
         activation = lock._parse_time(campaign.get("activation_at"))
         if activation is None or core.utc_now() < activation:
             # Do not expire, invalidate, trigger, hit TP or hit SL before the
             # persisted publication plus the declared manual execution delay.
             return campaign
-        if allow_price_events and campaign.get("activation_price") is None and price > 0:
-            campaign["activation_price"] = round(price, 3)
-            campaign["activation_price_recorded_at"] = core.utc_now().isoformat()
+
+        causal, timing = _live_price_event_timing(self, campaign)
+        campaign["last_price_event_timing"] = timing
+        if allow_price_events and not causal:
+            # A quote can be wall-clock fresh while still having been observed
+            # before activation. Never let cached/out-of-order provider data
+            # trigger, invalidate, hit TP/SL, or set activation price.
+            effective_allow_price_events = False
+            campaign["rejected_pre_activation_price_events"] = int(
+                core.number(campaign.get("rejected_pre_activation_price_events"), 0)
+            ) + 1
             self._live_campaign_dirty = True
-    advanced = _current_advance_campaign(self, campaign, price, allow_price_events=allow_price_events)
+
+        if effective_allow_price_events and campaign.get("activation_price") is None and price > 0:
+            campaign["activation_price"] = round(price, 3)
+            campaign["activation_price_recorded_at"] = timing.get("received_at")
+            campaign["activation_price_provider_at"] = timing.get("provider_at")
+            self._live_campaign_dirty = True
+    advanced = _current_advance_campaign(
+        self,
+        campaign,
+        price,
+        allow_price_events=effective_allow_price_events,
+    )
     if isinstance(advanced, dict) and str(advanced.get("status") or "").lower() in {"won", "lost", "invalidated", "expired"}:
         gross_r = cost_model.campaign_gross_r(advanced)
         costed = cost_model.campaign_cost_result(advanced, gross_r)
@@ -110,6 +166,8 @@ def _campaign_trade_v89(campaign: dict[str, Any]) -> dict[str, Any]:
             "cost_model_version": campaign.get("cost_model_version"),
             "execution_cost_model": dict(campaign.get("execution_cost_model") or {}),
             "pre_activation_price_events_eligible": False,
+            "live_price_event_requires_provider_after_activation": True,
+            "live_price_event_requires_receipt_after_activation": True,
         }
     )
     return trade
@@ -214,6 +272,7 @@ def _runtime_status_v89(self: core.LiveTrader) -> dict[str, Any]:
             "execution_timing_contract_version": TIMING_CONTRACT_VERSION,
             "campaign_activation_requires_persisted_publication": True,
             "pre_publication_price_credit_allowed": False,
+            "live_campaign_price_event_causality_enforced": True,
             "forward_replay_starts_at_first_full_m1_after_activation": True,
             "manual_delay_seconds": int(getattr(self.settings, "live_trader_manual_delay_seconds", 15)),
             "execution_cost_model_version": cost_model.COST_MODEL_VERSION,
