@@ -326,7 +326,11 @@ async def _stage(
 
     finished_at = _now()
     after = _usage()
-    elapsed_ms = max(\n        (time.perf_counter() - started_perf) * 1000.0,\n        max(0.0, (finished_at - durable_started_at).total_seconds() * 1000.0),\n    )\n    stage_run_id = await _write_stage_telemetry(
+    elapsed_ms = max(
+        (time.perf_counter() - started_perf) * 1000.0,
+        max(0.0, (finished_at - durable_started_at).total_seconds() * 1000.0),
+    )
+    stage_run_id = await _write_stage_telemetry(
         repo,
         cycle_id=cycle_id,
         stage_name=name,
