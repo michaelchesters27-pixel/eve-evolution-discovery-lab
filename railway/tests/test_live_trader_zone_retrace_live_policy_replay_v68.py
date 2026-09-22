@@ -1,3 +1,8 @@
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
 from app.services import live_trader_zone_retrace_live_policy_replay_v68 as v68
 
 
@@ -130,3 +135,114 @@ def test_live_promotion_stays_blocked_below_scorable_coverage_floor() -> None:
     assert specialist["live_policy_expectancy_verified"] is False
     assert specialist["live_promoted_execution"] is None
     assert specialist["promotion_blocked"] is True
+
+
+
+class ResourceReplayClient:
+    def __init__(self, snapshot: dict) -> None:
+        self.snapshot = snapshot
+        self.rpc_calls: list[tuple[str, dict]] = []
+        self.upserts: list[tuple[str, dict, str]] = []
+
+    async def rpc(self, function: str, payload: dict | None = None):
+        self.rpc_calls.append((function, dict(payload or {})))
+        return dict(self.snapshot)
+
+    async def upsert(self, table: str, payload: dict, *, on_conflict: str, return_rows: bool = False):
+        self.upserts.append((table, dict(payload), on_conflict))
+        return []
+
+
+def resource_replayer(snapshot: dict):
+    client = ResourceReplayClient(snapshot)
+    item = object.__new__(v68.ZoneRetraceLivePolicyReplayer)
+    item.repo = SimpleNamespace(client=client)
+    item.symbol = "XAU/USD"
+    item.settings = SimpleNamespace(live_trader_learning_horizon_minutes=60)
+    item.owner = SimpleNamespace(_zone_retrace_learning_v58={})
+    item.last_error = None
+    item.last_state = {}
+    return item, client
+
+
+def test_resource_work_snapshot_is_bounded_and_requires_complete_server_side_scan() -> None:
+    snapshot = {
+        "version": v68.RESOURCE_WORK_VERSION,
+        "complete_server_side_scan": True,
+        "eligible_episodes": 158,
+        "processed_episodes": 158,
+        "scorable_episodes": 158,
+        "unscorable_episodes": 0,
+        "triggered": 1,
+        "wins": 1,
+        "losses": 0,
+        "breakeven": 0,
+        "total_r": 1.5,
+        "pending": [],
+    }
+    replayer, client = resource_replayer(snapshot)
+
+    result = asyncio.run(replayer._work_snapshot())
+
+    assert result == snapshot
+    assert client.rpc_calls == [
+        (
+            "get_live_trader_zone_replay_work_v97",
+            {
+                "p_symbol": "XAU/USD",
+                "p_replay_version": v68.REPLAY_VERSION,
+                "p_limit": v68.REPLAY_BATCH_SIZE,
+            },
+        )
+    ]
+
+
+def test_resource_work_snapshot_fails_closed_if_server_side_scan_is_not_complete() -> None:
+    replayer, _ = resource_replayer(
+        {
+            "version": v68.RESOURCE_WORK_VERSION,
+            "complete_server_side_scan": False,
+            "pending": [],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="complete server-side scan"):
+        asyncio.run(replayer._work_snapshot())
+
+
+def test_resource_aggregate_preserves_current_v68_evidence_semantics() -> None:
+    snapshot = {
+        "version": v68.RESOURCE_WORK_VERSION,
+        "complete_server_side_scan": True,
+        "eligible_episodes": 158,
+        "processed_episodes": 158,
+        "scorable_episodes": 158,
+        "unscorable_episodes": 0,
+        "triggered": 1,
+        "wins": 1,
+        "losses": 0,
+        "breakeven": 0,
+        "total_r": 1.5,
+        "pending": [],
+    }
+    replayer, client = resource_replayer(snapshot)
+
+    state = asyncio.run(replayer._aggregate(snapshot))
+
+    assert state["eligible_episodes"] == 158
+    assert state["processed_episodes"] == 158
+    assert state["scorable_episodes"] == 158
+    assert state["triggered"] == 1
+    assert state["wins"] == 1
+    assert state["losses"] == 0
+    assert state["total_r"] == 1.5
+    assert state["expectancy_per_opportunity_r"] == 0.0095
+    assert state["expectancy_per_triggered_r"] == 1.5
+    assert state["trigger_rate"] == 0.0063
+    assert state["promoted"] is False
+    assert state["completed"] is True
+    assert state["status"] == "complete_not_promoted"
+    assert state["policy"]["resource_work_version"] == v68.RESOURCE_WORK_VERSION
+    assert state["policy"]["complete_server_side_eligible_scan"] is True
+    assert state["policy"]["historical_heap_scan_in_worker"] is False
+    assert len(client.upserts) == 1
