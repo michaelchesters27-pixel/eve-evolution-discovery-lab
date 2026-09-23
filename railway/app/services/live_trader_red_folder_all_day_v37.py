@@ -8,8 +8,11 @@ from app.services import live_trader as core
 from app.services import live_trader_red_folder_news_confirmation_v36 as confirmation
 from app.services import live_trader_red_folder_news_v35 as news
 
-ALL_DAY_VERSION = "eve-live-red-folder-all-day-v2-complete-window"
-BLACKOUT_WINDOW_VERSION = "eve-live-news-blackout-window-v98"
+ALL_DAY_VERSION = "eve-live-red-folder-all-day-v3-blackout-overlap"
+BLACKOUT_WINDOW_VERSION = "eve-live-news-blackout-window-v99"
+BLACKOUT_WINDOW_RPC = "get_live_trader_news_window_v99"
+BLACKOUT_WINDOW_SOURCE = "server_side_blackout_overlap_aggregation"
+BLACKOUT_WINDOW_SELECTION = "blackout_interval_overlap"
 ALL_DAY_POLICY = (
     "Forex Factory RED events shown as All/Tentative with no exact release time may be entered as all-day macro risk. "
     "EVE blocks new XAU/USD campaigns for the full Europe/London calendar day, suspends pending campaigns without "
@@ -66,6 +69,48 @@ def _rpc_object(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _validate_blackout_row_v99(row: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        raise RuntimeError("News blackout inventory contains a non-object event.")
+
+    event_id = str(row.get("event_id") or "").strip()
+    currency = str(row.get("currency") or "").strip().upper()
+    event_name = " ".join(str(row.get("event_name") or "").strip().split())
+    event_class = str(row.get("event_class") or "").strip().lower()
+    source = str(row.get("source") or "").strip()
+    scheduled = news._parse_time(row.get("scheduled_at"))
+
+    if not event_id:
+        raise RuntimeError("News blackout inventory contains an event with no event_id.")
+    if currency not in {"USD", "ALL"}:
+        raise RuntimeError(f"News blackout event {event_id} has invalid currency.")
+    if not event_name:
+        raise RuntimeError(f"News blackout event {event_id} has no event name.")
+    if scheduled is None:
+        raise RuntimeError(f"News blackout event {event_id} has an invalid scheduled_at timestamp.")
+    if not event_class:
+        raise RuntimeError(f"News blackout event {event_id} has no event_class.")
+    if not source:
+        raise RuntimeError(f"News blackout event {event_id} has no source.")
+
+    if event_class == "all_day":
+        if currency != "ALL":
+            raise RuntimeError(f"All-day news event {event_id} must use currency ALL.")
+        pre = core.number(row.get("pre_minutes"), None)
+        post = core.number(row.get("post_minutes"), None)
+        if pre is None or post is None or float(pre) != 0.0 or float(post) != 0.0:
+            raise RuntimeError(f"All-day news event {event_id} has invalid blackout minute fields.")
+    else:
+        if currency != "USD":
+            raise RuntimeError(f"Timed news event {event_id} must use currency USD.")
+        pre = core.number(row.get("pre_minutes"), None)
+        post = core.number(row.get("post_minutes"), None)
+        if pre is None or post is None or float(pre) < 0 or float(post) < 0:
+            raise RuntimeError(f"Timed news event {event_id} has invalid blackout minute fields.")
+
+    return dict(row)
+
+
 def _decorate_event_v37(row: dict[str, Any]) -> dict[str, Any] | None:
     if str(row.get("event_class") or "") != "all_day":
         return _current_decorate_event(row)
@@ -116,7 +161,7 @@ async def _load_calendar_with_all(self: core.LiveTrader, *, force: bool = False)
     end = now + timedelta(days=news.CALENDAR_LOOKAHEAD_DAYS)
     try:
         raw = await self.repo.client.rpc(
-            "get_live_trader_news_window_v98",
+            BLACKOUT_WINDOW_RPC,
             {
                 "p_symbol": self.symbol,
                 "p_start": start.isoformat(),
@@ -128,21 +173,27 @@ async def _load_calendar_with_all(self: core.LiveTrader, *, force: bool = False)
         if (
             str(payload.get("version") or "") != BLACKOUT_WINDOW_VERSION
             or payload.get("complete") is not True
+            or str(payload.get("source") or "") != BLACKOUT_WINDOW_SOURCE
+            or str(payload.get("selection") or "") != BLACKOUT_WINDOW_SELECTION
             or not isinstance(rows, list)
         ):
             raise RuntimeError("News blackout inventory did not prove a complete server-side window.")
 
         reported_count = int(core.number(payload.get("event_count"), -1))
-        clean_rows = [dict(row) for row in rows if isinstance(row, dict)]
-        ids = [str(row.get("event_id") or "") for row in clean_rows]
-        if (
-            reported_count < 0
-            or reported_count != len(rows)
-            or len(clean_rows) != reported_count
-            or any(not event_id for event_id in ids)
-            or len(ids) != len(set(ids))
-        ):
-            raise RuntimeError("News blackout inventory is incomplete, malformed, or contains duplicate IDs.")
+        if reported_count < 0 or reported_count != len(rows):
+            raise RuntimeError("News blackout inventory count is incomplete or inconsistent.")
+
+        clean_rows = [_validate_blackout_row_v99(row) for row in rows]
+        ids = [str(row.get("event_id") or "").strip() for row in clean_rows]
+        if len(ids) != len(set(ids)):
+            raise RuntimeError("News blackout inventory contains duplicate event IDs.")
+
+        # Validate the final runtime decoration as part of the completeness
+        # contract. A malformed required timestamp/field must never be silently
+        # dropped by news_status_from_rows and turn a safety block into clear.
+        decorated = [_decorate_event_v37(row) for row in clean_rows]
+        if any(item is None for item in decorated) or len(decorated) != reported_count:
+            raise RuntimeError("News blackout inventory contains an event that cannot be evaluated safely.")
 
         self._news_calendar_rows_v37 = clean_rows
         self._news_calendar_cache_at_v37 = now
