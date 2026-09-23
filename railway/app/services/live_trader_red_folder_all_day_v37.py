@@ -8,7 +8,7 @@ from app.services import live_trader as core
 from app.services import live_trader_red_folder_news_confirmation_v36 as confirmation
 from app.services import live_trader_red_folder_news_v35 as news
 
-ALL_DAY_VERSION = "eve-live-red-folder-all-day-v3-blackout-overlap"
+ALL_DAY_VERSION = "eve-live-red-folder-all-day-v4-canonical-event-class"
 BLACKOUT_WINDOW_VERSION = "eve-live-news-blackout-window-v99"
 BLACKOUT_WINDOW_RPC = "get_live_trader_news_window_v99"
 BLACKOUT_WINDOW_SOURCE = "server_side_blackout_overlap_aggregation"
@@ -90,6 +90,8 @@ def _validate_blackout_row_v99(row: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"News blackout event {event_id} has an invalid scheduled_at timestamp.")
     if not event_class:
         raise RuntimeError(f"News blackout event {event_id} has no event_class.")
+    if event_class not in {"all_day", "high", "major"}:
+        raise RuntimeError(f"News blackout event {event_id} has an unsupported event_class.")
     if not source:
         raise RuntimeError(f"News blackout event {event_id} has no source.")
 
@@ -108,7 +110,23 @@ def _validate_blackout_row_v99(row: dict[str, Any]) -> dict[str, Any]:
         if pre is None or post is None or float(pre) < 0 or float(post) < 0:
             raise RuntimeError(f"Timed news event {event_id} has invalid blackout minute fields.")
 
-    return dict(row)
+    # The validator and evaluator must consume one canonical representation.
+    # Never accept a normalised class while returning the original unnormalised
+    # row: that can turn an accepted all-day event into a zero-minute timed event.
+    clean = dict(row)
+    clean.update(
+        {
+            "event_id": event_id,
+            "currency": currency,
+            "event_name": event_name,
+            "scheduled_at": scheduled.isoformat(),
+            "event_class": event_class,
+            "pre_minutes": int(float(pre)),
+            "post_minutes": int(float(post)),
+            "source": source,
+        }
+    )
+    return clean
 
 
 def _decorate_event_v37(row: dict[str, Any]) -> dict[str, Any] | None:
