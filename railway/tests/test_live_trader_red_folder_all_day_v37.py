@@ -218,3 +218,72 @@ def test_all_day_event_returned_in_afternoon_stays_blocked(monkeypatch) -> None:
     assert result["new_trade_blocked"] is True
     assert result["forward_learning_blocked"] is True
     assert result["active_event_ids"] == [event["event_id"]]
+
+
+
+def test_all_day_class_variants_are_canonicalised_before_evaluation(monkeypatch) -> None:
+    now = utc(2026, 9, 23, 15, 0)
+    base = all_day.build_all_day_event("XAU/USD", "2026-09-23", "Canonicalisation safety test")
+
+    for raw_class in ("ALL_DAY", "all_day "):
+        event = dict(base)
+        event["event_id"] = f"variant-{raw_class.strip().lower()}"
+        event["event_class"] = raw_class
+        trader = FakeTrader([event])
+        monkeypatch.setattr(all_day.core, "utc_now", lambda: now)
+
+        result = asyncio.run(all_day._load_calendar_with_all(trader, force=True))
+
+        assert result["available"] is True
+        assert result["active"] is True
+        assert result["new_trade_blocked"] is True
+        assert result["forward_learning_blocked"] is True
+        assert result["event_count"] == 1
+        assert result["events"][0]["event_class"] == "all_day"
+        assert result["events"][0]["all_day"] is True
+
+
+def test_unsupported_event_class_fails_closed(monkeypatch) -> None:
+    malformed = {
+        "event_id": "unsupported-class",
+        "currency": "USD",
+        "event_name": "Unsupported class",
+        "scheduled_at": "2026-09-23T15:05:00+00:00",
+        "event_class": "nonsense",
+        "pre_minutes": 30,
+        "post_minutes": 15,
+        "source": news.NEWS_SOURCE,
+    }
+    trader = FakeTrader([malformed])
+    monkeypatch.setattr(all_day.core, "utc_now", lambda: utc(2026, 9, 23, 15, 0))
+
+    result = asyncio.run(all_day._load_calendar_with_all(trader, force=True))
+
+    assert result["available"] is False
+    assert result["new_trade_blocked"] is True
+    assert result["forward_learning_blocked"] is True
+    assert "unsupported event_class" in str(result["error"])
+
+
+def test_validator_returns_canonical_event_class_and_required_fields() -> None:
+    raw = {
+        "event_id": " canonical-id ",
+        "currency": " all ",
+        "event_name": "  All Day   Event  ",
+        "scheduled_at": "2026-09-23T11:00:00+00:00",
+        "event_class": " ALL_DAY ",
+        "pre_minutes": 0.0,
+        "post_minutes": 0.0,
+        "source": " Forex Factory manual ",
+    }
+
+    clean = all_day._validate_blackout_row_v99(raw)
+
+    assert clean["event_id"] == "canonical-id"
+    assert clean["currency"] == "ALL"
+    assert clean["event_name"] == "All Day Event"
+    assert clean["event_class"] == "all_day"
+    assert clean["scheduled_at"] == "2026-09-23T11:00:00+00:00"
+    assert clean["pre_minutes"] == 0
+    assert clean["post_minutes"] == 0
+    assert clean["source"] == "Forex Factory manual"
