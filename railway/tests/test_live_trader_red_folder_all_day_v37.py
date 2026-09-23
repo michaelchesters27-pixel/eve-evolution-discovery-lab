@@ -49,12 +49,13 @@ class FakeClient:
         self.events = list(events or [])
 
     async def rpc(self, function: str, payload: dict | None = None):
-        assert function == "get_live_trader_news_window_v98"
+        assert function == all_day.BLACKOUT_WINDOW_RPC
         self.rpc_call = (function, dict(payload or {}))
         return {
             "version": all_day.BLACKOUT_WINDOW_VERSION,
             "complete": True,
-            "source": "server_side_sql_aggregation",
+            "source": all_day.BLACKOUT_WINDOW_SOURCE,
+            "selection": all_day.BLACKOUT_WINDOW_SELECTION,
             "event_count": len(self.events),
             "events": list(self.events),
         }
@@ -73,7 +74,7 @@ def test_base_calendar_loader_uses_complete_server_side_window(monkeypatch) -> N
 
     result = asyncio.run(all_day._load_calendar_with_all(trader, force=True))
 
-    assert trader.repo.client.rpc_call[0] == "get_live_trader_news_window_v98"
+    assert trader.repo.client.rpc_call[0] == all_day.BLACKOUT_WINDOW_RPC
     assert result["available"] is True
     assert result["blackout_inventory_complete"] is True
     assert result["blackout_inventory_count"] == 0
@@ -131,6 +132,8 @@ def test_incomplete_blackout_inventory_fails_closed(monkeypatch) -> None:
         return {
             "version": all_day.BLACKOUT_WINDOW_VERSION,
             "complete": False,
+            "source": all_day.BLACKOUT_WINDOW_SOURCE,
+            "selection": all_day.BLACKOUT_WINDOW_SELECTION,
             "event_count": 0,
             "events": [],
         }
@@ -143,3 +146,75 @@ def test_incomplete_blackout_inventory_fails_closed(monkeypatch) -> None:
     assert result["available"] is False
     assert result["new_trade_blocked"] is True
     assert result["forward_learning_blocked"] is True
+
+
+
+def test_malformed_timestamp_fails_closed_instead_of_being_silently_dropped(monkeypatch) -> None:
+    valid = {
+        "event_id": "valid-001",
+        "currency": "USD",
+        "event_name": "Valid event",
+        "scheduled_at": "2026-09-23T15:30:00+00:00",
+        "event_class": "high",
+        "pre_minutes": 30,
+        "post_minutes": 15,
+        "source": news.NEWS_SOURCE,
+    }
+    malformed = {
+        "event_id": "malformed-101",
+        "currency": "USD",
+        "event_name": "Malformed active event",
+        "scheduled_at": "not-a-time",
+        "event_class": "high",
+        "pre_minutes": 30,
+        "post_minutes": 15,
+        "source": news.NEWS_SOURCE,
+    }
+    trader = FakeTrader([valid, malformed])
+    monkeypatch.setattr(all_day.core, "utc_now", lambda: utc(2026, 9, 23, 15, 0))
+
+    result = asyncio.run(all_day._load_calendar_with_all(trader, force=True))
+
+    assert result["available"] is False
+    assert result["new_trade_blocked"] is True
+    assert result["forward_learning_blocked"] is True
+    assert "invalid scheduled_at timestamp" in str(result["error"])
+
+
+def test_missing_required_event_field_fails_closed(monkeypatch) -> None:
+    malformed = {
+        "event_id": "missing-name",
+        "currency": "USD",
+        "event_name": "",
+        "scheduled_at": "2026-09-23T15:05:00+00:00",
+        "event_class": "high",
+        "pre_minutes": 30,
+        "post_minutes": 15,
+        "source": news.NEWS_SOURCE,
+    }
+    trader = FakeTrader([malformed])
+    monkeypatch.setattr(all_day.core, "utc_now", lambda: utc(2026, 9, 23, 15, 0))
+
+    result = asyncio.run(all_day._load_calendar_with_all(trader, force=True))
+
+    assert result["available"] is False
+    assert result["new_trade_blocked"] is True
+    assert result["forward_learning_blocked"] is True
+
+
+def test_all_day_event_returned_in_afternoon_stays_blocked(monkeypatch) -> None:
+    event = all_day.build_all_day_event("XAU/USD", "2026-09-23", "All Day Safety Test")
+    # On 23 Sep 2026 (BST), the storage anchor is 11:00 UTC. The old loader's
+    # two-hour timestamp lookback at 15:00 UTC began at 13:00 and lost this row.
+    assert event["scheduled_at"] == "2026-09-23T11:00:00+00:00"
+    trader = FakeTrader([event])
+    monkeypatch.setattr(all_day.core, "utc_now", lambda: utc(2026, 9, 23, 15, 0))
+
+    result = asyncio.run(all_day._load_calendar_with_all(trader, force=True))
+
+    assert result["available"] is True
+    assert result["blackout_inventory_complete"] is True
+    assert result["active"] is True
+    assert result["new_trade_blocked"] is True
+    assert result["forward_learning_blocked"] is True
+    assert result["active_event_ids"] == [event["event_id"]]
