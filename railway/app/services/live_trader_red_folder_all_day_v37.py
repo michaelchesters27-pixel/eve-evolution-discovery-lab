@@ -11,6 +11,8 @@ from app.services import live_trader_red_folder_news_v35 as news
 ALL_DAY_VERSION = "eve-live-red-folder-all-day-v3-blackout-overlap"
 BLACKOUT_WINDOW_VERSION = "eve-live-news-blackout-window-v99"
 BLACKOUT_WINDOW_RPC = "get_live_trader_news_window_v99"
+BLACKOUT_WINDOW_SOURCE = "server_side_blackout_overlap_aggregation"
+BLACKOUT_WINDOW_SELECTION = "blackout_interval_overlap"
 ALL_DAY_POLICY = (
     "Forex Factory RED events shown as All/Tentative with no exact release time may be entered as all-day macro risk. "
     "EVE blocks new XAU/USD campaigns for the full Europe/London calendar day, suspends pending campaigns without "
@@ -171,6 +173,8 @@ async def _load_calendar_with_all(self: core.LiveTrader, *, force: bool = False)
         if (
             str(payload.get("version") or "") != BLACKOUT_WINDOW_VERSION
             or payload.get("complete") is not True
+            or str(payload.get("source") or "") != BLACKOUT_WINDOW_SOURCE
+            or str(payload.get("selection") or "") != BLACKOUT_WINDOW_SELECTION
             or not isinstance(rows, list)
         ):
             raise RuntimeError("News blackout inventory did not prove a complete server-side window.")
