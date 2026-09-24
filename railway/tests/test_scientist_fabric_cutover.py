@@ -144,3 +144,101 @@ def test_orchestrator_never_routes_fabric_rules_to_legacy_rows():
 
     assert asyncio.run(orchestrator._rows_for_item(fabric_item, legacy)) is fabric
     assert asyncio.run(orchestrator._rows_for_item(legacy_item, legacy)) is legacy
+
+
+
+def test_discovery_releases_legacy_heap_before_loading_fabric(monkeypatch):
+    orchestrator = DiscoveryOrchestrator.__new__(DiscoveryOrchestrator)
+    legacy = [{"candle_time": f"legacy-{index}"} for index in range(250)]
+    fabric = [{"candle_time": "fabric"}]
+    orchestrator._rows_cache = legacy
+    orchestrator._cache_at = object()
+    orchestrator.last_dataset_handoff = {}
+    observed = {}
+
+    def fake_collect():
+        observed["gc_called"] = True
+        return 0
+
+    async def authorised():
+        observed["legacy_len_at_fabric_load"] = len(legacy)
+        observed["cache_len_at_fabric_load"] = len(orchestrator._rows_cache)
+        return fabric
+
+    monkeypatch.setattr("app.services.orchestrator_v3.gc.collect", fake_collect)
+    orchestrator._authorised_fabric_rows = authorised
+
+    item = {
+        "rules": {
+            "market": {
+                "snapshot_interval": FABRIC_SNAPSHOT_INTERVAL,
+                "source_interval": FABRIC_SOURCE_INTERVAL,
+                "research_dataset": FABRIC_DATASET,
+            }
+        }
+    }
+
+    result = asyncio.run(orchestrator._rows_for_item(item, legacy))
+
+    assert result is fabric
+    assert observed == {
+        "gc_called": True,
+        "legacy_len_at_fabric_load": 0,
+        "cache_len_at_fabric_load": 0,
+    }
+    assert orchestrator._cache_at is None
+    assert orchestrator.last_dataset_handoff == {
+        "from": "legacy_15m",
+        "to": FABRIC_DATASET,
+        "released_rows": 250,
+    }
+
+
+def test_discovery_keeps_legacy_heap_for_legacy_item(monkeypatch):
+    orchestrator = DiscoveryOrchestrator.__new__(DiscoveryOrchestrator)
+    legacy = [{"candle_time": "legacy"}]
+    orchestrator._rows_cache = legacy
+    orchestrator._cache_at = object()
+    orchestrator.last_dataset_handoff = {}
+
+    collected = []
+    monkeypatch.setattr("app.services.orchestrator_v3.gc.collect", lambda: collected.append(True))
+
+    item = {"rules": {"market": {"research_dataset": LEGACY_DATASET}}}
+    result = asyncio.run(orchestrator._rows_for_item(item, legacy))
+
+    assert result is legacy
+    assert legacy == [{"candle_time": "legacy"}]
+    assert collected == []
+    assert orchestrator.last_dataset_handoff == {
+        "from": "legacy_15m",
+        "to": "legacy_15m",
+        "released_rows": 0,
+    }
+
+
+
+def test_discovery_memory_error_is_explicit_and_does_not_blank_fail_candidate():
+    orchestrator = DiscoveryOrchestrator.__new__(DiscoveryOrchestrator)
+    failed = []
+
+    class Repo:
+        async def fail_candidate(self, candidate_id, error):
+            failed.append((candidate_id, error))
+
+    async def memory_error(_item, _rows):
+        raise MemoryError()
+
+    orchestrator.repo = Repo()
+    orchestrator._rows_for_item = memory_error
+
+    candidate = {"id": "candidate-1", "rules": {}}
+
+    try:
+        asyncio.run(orchestrator.process_candidate(candidate, []))
+    except RuntimeError as exc:
+        assert str(exc) == "discovery_memory_ceiling_exceeded_during_candidate_processing"
+    else:
+        raise AssertionError("Expected explicit Discovery memory ceiling error")
+
+    assert failed == []

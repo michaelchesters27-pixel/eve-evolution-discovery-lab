@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import os
 from datetime import timedelta
@@ -49,6 +50,11 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
         self._fabric_rows_cache: list[dict[str, Any]] = []
         self._fabric_cache_at = None
         self.fabric_validation_rows = 0
+        self.last_dataset_handoff: dict[str, Any] = {
+            "from": None,
+            "to": None,
+            "released_rows": 0,
+        }
 
     async def rows(self, force: bool = False) -> list[dict[str, Any]]:
         rows = await super().rows(force=force)
@@ -90,10 +96,43 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
         self.fabric_validation_rows = len(self._fabric_rows_cache)
         return self._fabric_rows_cache
 
+    def _release_legacy_rows_before_fabric(self, legacy_rows: list[Any]) -> int:
+        """Drop the legacy research heap before loading the full Every-M5 fabric.
+
+        Discovery historically loaded ~164k legacy rows before it knew which
+        dataset the claimed item required. Fabric-routed items then loaded the
+        ~492k Every-M5 set as well, leaving both large datasets resident inside
+        the same 2 GiB bounded child. Release every reference we own before the
+        fabric load so the allocator can reuse that address space.
+
+        This changes only process memory residency. It does not truncate either
+        dataset, alter research partitions, or relabel persisted evidence.
+        """
+        released = len(legacy_rows)
+        if legacy_rows is getattr(self, "_rows_cache", None):
+            # Detach the orchestrator cache before clearing the old list. A
+            # later legacy cycle will rebuild it from the authoritative store.
+            self._rows_cache = []
+            self._cache_at = None
+        legacy_rows.clear()
+        gc.collect()
+        self.last_dataset_handoff = {
+            "from": "legacy_15m",
+            "to": FABRIC_DATASET,
+            "released_rows": released,
+        }
+        return released
+
     async def _rows_for_item(self, item: dict[str, Any], legacy_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rules = dict(item.get("rules") or {})
         if rules_use_fabric(rules):
+            self._release_legacy_rows_before_fabric(legacy_rows)
             return await self._authorised_fabric_rows()
+        self.last_dataset_handoff = {
+            "from": "legacy_15m",
+            "to": "legacy_15m",
+            "released_rows": 0,
+        }
         return legacy_rows
 
     def runtime_status(self) -> dict[str, Any]:
@@ -107,6 +146,7 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
                 "final_exam_budget": dict(self.final_exam_budget_status),
                 "fabric_validation_rows_cached": self.fabric_validation_rows,
                 "dataset_routing": "rules.market.research_dataset selects legacy_15m or every_m5_fabric; cross-dataset validation is forbidden",
+                "dataset_memory_handoff": dict(self.last_dataset_handoff),
             }
         )
         return status
@@ -243,6 +283,12 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
                 },
             )
             self.last_action = f"Candidate {result['result_status']}: {candidate.get('name')}"
+        except MemoryError as exc:
+            # Do not overwrite a possibly already-persisted research result with
+            # an empty generic failure. MemoryError stringifies to an empty
+            # string, which previously produced opaque failed rows. A running
+            # claim is safely recovered by the database stale-claim contract.
+            raise RuntimeError("discovery_memory_ceiling_exceeded_during_candidate_processing") from exc
         except Exception as exc:
             await self.repo.fail_candidate(str(candidate["id"]), str(exc))
             raise
@@ -385,6 +431,8 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
                 self.last_action = f"Finalist held behind global exam budget: {mutation.get('name')}"
             else:
                 self.last_action = f"Mutation {'promoted' if selection.get('promoted') else 'rejected'}: {mutation.get('name')}"
+        except MemoryError as exc:
+            raise RuntimeError("discovery_memory_ceiling_exceeded_during_mutation_processing") from exc
         except Exception as exc:
             await self.repo.fail_mutation(str(mutation["id"]), str(exc))
             raise
