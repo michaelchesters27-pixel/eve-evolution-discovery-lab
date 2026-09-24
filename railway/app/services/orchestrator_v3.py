@@ -283,6 +283,12 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
                 },
             )
             self.last_action = f"Candidate {result['result_status']}: {candidate.get('name')}"
+        except MemoryError as exc:
+            # Do not overwrite a possibly already-persisted research result with
+            # an empty generic failure. MemoryError stringifies to an empty
+            # string, which previously produced opaque failed rows. A running
+            # claim is safely recovered by the database stale-claim contract.
+            raise RuntimeError("discovery_memory_ceiling_exceeded_during_candidate_processing") from exc
         except Exception as exc:
             await self.repo.fail_candidate(str(candidate["id"]), str(exc))
             raise
@@ -425,6 +431,8 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
                 self.last_action = f"Finalist held behind global exam budget: {mutation.get('name')}"
             else:
                 self.last_action = f"Mutation {'promoted' if selection.get('promoted') else 'rejected'}: {mutation.get('name')}"
+        except MemoryError as exc:
+            raise RuntimeError("discovery_memory_ceiling_exceeded_during_mutation_processing") from exc
         except Exception as exc:
             await self.repo.fail_mutation(str(mutation["id"]), str(exc))
             raise
