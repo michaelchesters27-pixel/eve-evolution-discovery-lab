@@ -215,3 +215,30 @@ def test_discovery_keeps_legacy_heap_for_legacy_item(monkeypatch):
         "to": "legacy_15m",
         "released_rows": 0,
     }
+
+
+
+def test_discovery_memory_error_is_explicit_and_does_not_blank_fail_candidate():
+    orchestrator = DiscoveryOrchestrator.__new__(DiscoveryOrchestrator)
+    failed = []
+
+    class Repo:
+        async def fail_candidate(self, candidate_id, error):
+            failed.append((candidate_id, error))
+
+    async def memory_error(_item, _rows):
+        raise MemoryError()
+
+    orchestrator.repo = Repo()
+    orchestrator._rows_for_item = memory_error
+
+    candidate = {"id": "candidate-1", "rules": {}}
+
+    try:
+        asyncio.run(orchestrator.process_candidate(candidate, []))
+    except RuntimeError as exc:
+        assert str(exc) == "discovery_memory_ceiling_exceeded_during_candidate_processing"
+    else:
+        raise AssertionError("Expected explicit Discovery memory ceiling error")
+
+    assert failed == []
