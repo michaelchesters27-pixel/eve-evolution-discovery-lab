@@ -109,7 +109,7 @@ class DiscoveryOrchestrator(base.DiscoveryOrchestrator):
         dataset, alter research partitions, or relabel persisted evidence.
         """
         released = len(legacy_rows)
-        if legacy_rows is self._rows_cache:
+        if legacy_rows is getattr(self, "_rows_cache", None):
             # Detach the orchestrator cache before clearing the old list. A
             # later legacy cycle will rebuild it from the authoritative store.
             self._rows_cache = []
