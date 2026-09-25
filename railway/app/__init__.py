@@ -85,3 +85,5 @@ from app.services import live_trader_zone_target_guard_v49 as _live_trader_zone_
 from app.services import live_trader_zone_target_compat_v50 as _live_trader_zone_target_compat_v50  # noqa: F401
 # Preserve established session precedence and apply v49 checks only to v49-published campaigns.
 from app.services import live_trader_zone_target_runtime_v51 as _live_trader_zone_target_runtime_v51  # noqa: F401
+# Keep Live Trader M5/MTF context fresh independently of the six-hour bounded research Fabric cadence.
+from app.services import live_trader_live_context_v101 as _live_trader_live_context_v101  # noqa: F401
