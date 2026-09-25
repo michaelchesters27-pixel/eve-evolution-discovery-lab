@@ -70,6 +70,7 @@ from app.services.live_trader import LiveTrader
 from app.services.live_trader_historical_learning_v29 import LiveTraderHistoricalLearner
 from app.services.live_trader_zone_retrace_live_policy_replay_v68 import ZoneRetraceLivePolicyReplayer
 from app.services.live_trader_zone_retrace_current_policy_academy_v71 import CurrentPolicyZoneRetraceAcademy
+from app.services import live_trader_zone_retrace_current_policy_throughput_v102 as current_policy_throughput
 from app.services.orchestrator_v3 import DiscoveryOrchestrator
 from app.services.repository import DiscoveryRepository, SourceRepository
 from app.services import mtf_reasoning as _mtf_reasoning  # noqa: F401
@@ -141,6 +142,14 @@ def _summary(value: Any) -> Any:
             "processed_episodes",
             "opportunities_found",
             "cursor_time",
+            "rows_scanned",
+            "opportunities_added",
+            "batches",
+            "scan_batch_rows",
+            "row_budget",
+            "time_budget_seconds",
+            "elapsed_seconds",
+            "throughput_version",
         )
         result = {key: value.get(key) for key in keep if key in value}
         result["resource_version"] = RESOURCE_VERSION
@@ -410,7 +419,11 @@ async def _operation_for_stage(
     if stage_name == "current_policy":
         live = LiveTrader(settings, repo)
         current_policy = CurrentPolicyZoneRetraceAcademy(live)
-        return current_policy.run_cycle
+
+        async def current_policy_cycle() -> Any:
+            return await current_policy_throughput.run_bounded_stage(current_policy)
+
+        return current_policy_cycle
 
     raise ValueError(f"Unknown bounded research stage: {stage_name}")
 
