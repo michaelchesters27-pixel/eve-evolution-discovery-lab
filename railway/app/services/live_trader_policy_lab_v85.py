@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.services import live_trader as core
+from app.services import live_trader_context_contract as context_contract
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_clear_bias_gate_v45 as clear_gate
 from app.services import live_trader_execution_cost_model as cost_model
@@ -69,6 +70,7 @@ def _policy_definition(policy_key: str) -> dict[str, Any]:
         "clear_bias_gate_version": clear_gate.GATE_VERSION,
         "publication_authority": False,
         "automatic_promotion": False,
+        "live_context_contract": context_contract.definition(),
     }
 
 

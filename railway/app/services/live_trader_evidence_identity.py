@@ -6,7 +6,7 @@ from typing import Any
 
 IDENTITY_VERSION = "eve-live-evidence-identity-v1"
 COHORT_PROTOCOL_VERSION = "eve-live-prospective-cohort-v1"
-PRODUCTION_POLICY_CONTRACT_VERSION = "eve-live-production-policy-contract-v1"
+PRODUCTION_POLICY_CONTRACT_VERSION = "eve-live-production-policy-contract-v2-fresh-context"
 
 
 def _canonical(value: Any) -> str:
@@ -26,6 +26,7 @@ def production_policy_definition() -> dict[str, Any]:
     # themselves part of the Live Trader wrapper chain, so eager imports here
     # would create a circular bootstrap dependency.
     from app.services import live_trader_clear_bias_gate_v45 as clear_gate
+    from app.services import live_trader_context_contract as context_contract
     from app.services import live_trader_london_session_gate_v46 as session_gate
     from app.services import live_trader_trade_lock_v28 as lock
     from app.services import live_trader_zone_retrace_evidence_contract_v67 as evidence
@@ -39,6 +40,7 @@ def production_policy_definition() -> dict[str, Any]:
         "symbol": "XAU/USD",
         "manual_only": True,
         "automatic_order_placement": False,
+        "live_context_contract": context_contract.definition(),
         "clear_bias_gate": {
             "version": clear_gate.GATE_VERSION,
             "minimum_confidence": clear_gate.MIN_CLEAR_CONFIDENCE,
