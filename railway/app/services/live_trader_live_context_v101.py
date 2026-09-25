@@ -6,6 +6,7 @@ from typing import Any
 
 from app.services import live_trader as core
 from app.services import live_trader_context_contract as contract
+from app.services import live_trader_trade_lock_v28 as lock
 from app.services.m5_foundation import LOOKBACK_BARS, build_m5_snapshot
 from app.services.multitimeframe import CompletedCandleIndex, aggregate_m30, as_utc, build_fabric_context
 from app.services.repository import SourceRepository
@@ -410,3 +411,5 @@ core.LiveTrader._load_rows = _load_rows_v101  # type: ignore[method-assign]
 core.LiveTrader._bias = _bias_v101  # type: ignore[method-assign]
 core.LiveTrader._maybe_persist_state = _maybe_persist_state_v101  # type: ignore[method-assign]
 core.LiveTrader.runtime_status = _runtime_status_v101  # type: ignore[method-assign]
+# Preserve the established compatibility alias contract used by earlier audited wrappers.
+lock._maybe_persist_state_v28 = _maybe_persist_state_v101
