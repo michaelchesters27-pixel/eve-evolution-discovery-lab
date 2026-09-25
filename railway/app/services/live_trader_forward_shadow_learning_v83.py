@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.services import live_trader as core
+from app.services import live_trader_context_contract as context_contract
 from app.services import live_trader_audit_hardening_v26 as hardening
 from app.services import live_trader_execution_cost_model as cost_model
 from app.services import live_trader_evidence_identity as evidence_id
@@ -46,6 +47,7 @@ def _shadow_policy_definition(variant: str) -> dict[str, Any]:
         "publication_authority": False,
         "manual_only": True,
         "automatic_order_placement": False,
+        "live_context_contract": context_contract.definition(),
     }
 
 
