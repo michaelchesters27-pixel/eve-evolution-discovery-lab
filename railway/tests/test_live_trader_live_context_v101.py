@@ -257,7 +257,7 @@ def test_persistent_watermark_is_separate_from_effective_live_cache() -> None:
             assert params["select"] == "candle_time"
             return [{"candle_time": "2026-09-25T16:30:00+00:00"}]
 
-    effective_start = datetime(2026, 9, 25, 21, 30, tzinfo=timezone.utc)
+    effective_start = datetime(2026, 9, 25, 17, 30, tzinfo=timezone.utc)
     effective = [
         _candle(effective_start + timedelta(minutes=5 * index), 4200.0 + index * 0.1)
         for index in range(60)
