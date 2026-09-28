@@ -250,6 +250,47 @@ def test_overlay_builds_missing_completed_m5_without_persisting_heavy_fabric() -
     assert diagnostic["persistent_research_fabric_required_for_live_freshness"] is False
 
 
+def test_persistent_watermark_is_separate_from_effective_live_cache() -> None:
+    class Client:
+        async def get(self, table, params):
+            assert table == "m5_research_snapshots"
+            assert params["select"] == "candle_time"
+            return [{"candle_time": "2026-09-25T16:30:00+00:00"}]
+
+    effective_start = datetime(2026, 9, 25, 21, 30, tzinfo=timezone.utc)
+    effective = [
+        _candle(effective_start + timedelta(minutes=5 * index), 4200.0 + index * 0.1)
+        for index in range(60)
+    ]
+    assert effective[-1]["candle_time"] == "2026-09-25T22:25:00+00:00"
+
+    async def fake_current_load_rows(self, force=False):
+        return list(effective)
+
+    dummy = SimpleNamespace(
+        repo=SimpleNamespace(client=Client()),
+        symbol="XAU/USD",
+        settings=SimpleNamespace(source_symbol="XAU/USD"),
+        last_tick_at="2026-09-25T22:30:00+00:00",
+        _live_context_rows_v101=list(effective),
+        _live_context_polled_at_v101=None,
+        _rows=list(effective),
+        _rows_loaded_at=None,
+    )
+
+    original = v101._current_load_rows
+    try:
+        v101._current_load_rows = fake_current_load_rows
+        asyncio.run(v101._load_rows_v101(dummy))
+    finally:
+        v101._current_load_rows = original
+
+    diagnostic = dummy._live_context_diagnostic_v101
+    assert diagnostic["persistent_latest_m5"] == "2026-09-25T16:30:00+00:00"
+    assert diagnostic["effective_latest_m5"] == "2026-09-25T22:25:00+00:00"
+    assert diagnostic["fresh"] is True
+
+
 def test_production_and_policy_lab_contracts_include_fresh_context_identity() -> None:
     production = identity.production_policy_definition()
     lab = v85._policy_definition("directional_momentum_confirmation")
