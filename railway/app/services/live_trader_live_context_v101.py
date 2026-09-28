@@ -14,6 +14,7 @@ from app.services.repository import SourceRepository
 logger = logging.getLogger(__name__)
 
 VERSION = contract.LIVE_CONTEXT_VERSION
+PATCH_VERSION = "eve-live-context-freshness-v101-completion-guard-v1"
 
 _current_load_rows = core.LiveTrader._load_rows
 _current_bias = core.LiveTrader._bias
@@ -50,23 +51,110 @@ def _completed_m5_start(reference: datetime) -> datetime:
 
 
 def _decision_time(row: dict[str, Any] | None) -> datetime | None:
+    """Return the explicit causal decision timestamp stored with an M5 snapshot.
+
+    Live freshness never invents this timestamp from candle_time. Missing or
+    malformed decision timestamps are unverifiable and therefore fail closed.
+    """
     if not row:
         return None
     context = dict(row.get("mtf_context") or {})
-    decision = _parse_time(context.get("decision_time"))
-    if decision is not None:
-        return decision
+    return _parse_time(context.get("decision_time"))
+
+
+def _row_completion_validation(
+    row: dict[str, Any],
+    reference: datetime | None,
+) -> tuple[bool, str | None, datetime | None, datetime | None]:
+    if reference is None:
+        return False, "missing_live_reference", None, None
+
     stamp = _parse_time(row.get("candle_time"))
-    return stamp + timedelta(minutes=5) if stamp is not None else None
+    if stamp is None:
+        return False, "missing_or_invalid_candle_time", None, None
+
+    context = dict(row.get("mtf_context") or {})
+    decision = _parse_time(context.get("decision_time"))
+    if decision is None:
+        return False, "missing_or_invalid_decision_time", stamp, None
+
+    expected_decision = stamp + timedelta(minutes=5)
+    if decision != expected_decision:
+        return False, "decision_time_not_exactly_m5_close", stamp, decision
+
+    signal_time = context.get("signal_time")
+    if signal_time not in (None, ""):
+        parsed_signal = _parse_time(signal_time)
+        if parsed_signal is None or parsed_signal != stamp:
+            return False, "signal_time_mismatch", stamp, decision
+
+    completed_through = _completed_m5_start(reference)
+    if stamp > completed_through:
+        return False, "forming_or_future_m5_candle", stamp, decision
+    if decision > reference:
+        return False, "decision_time_after_live_reference", stamp, decision
+    return True, None, stamp, decision
+
+
+def _validate_context_rows(
+    rows: list[dict[str, Any]],
+    reference: datetime | None,
+) -> tuple[bool, str | None]:
+    if reference is None:
+        return False, "missing_live_reference"
+    if not rows:
+        return False, "empty_context"
+
+    previous: datetime | None = None
+    for index, row in enumerate(rows):
+        valid, reason, stamp, _ = _row_completion_validation(row, reference)
+        if not valid:
+            return False, f"row_{index}:{reason}"
+        if stamp is None:
+            return False, f"row_{index}:missing_or_invalid_candle_time"
+        if previous is not None and stamp <= previous:
+            return False, f"row_{index}:non_monotonic_candle_time"
+        previous = stamp
+    return True, None
 
 
 def _context_lag_minutes(rows: list[dict[str, Any]], reference: datetime | None) -> float | None:
     if reference is None or not rows:
         return None
-    decision = _decision_time(rows[-1])
-    if decision is None:
+    valid, _, _, decision = _row_completion_validation(rows[-1], reference)
+    if not valid or decision is None:
         return None
-    return max(0.0, (reference - decision).total_seconds() / 60.0)
+    return (reference - decision).total_seconds() / 60.0
+
+
+async def _persistent_fabric_watermark(self: core.LiveTrader) -> datetime | None:
+    rows = await self.repo.client.get(
+        "m5_research_snapshots",
+        params={
+            "select": "candle_time",
+            "symbol": f"eq.{self.symbol}",
+            "order": "candle_time.desc",
+            "limit": "1",
+        },
+    )
+    return _parse_time((rows[0] or {}).get("candle_time")) if rows else None
+
+
+async def _load_persistent_rows_direct(self: core.LiveTrader) -> list[dict[str, Any]]:
+    rows = await self.repo.client.get(
+        "m5_research_snapshots",
+        params={
+            "select": (
+                "candle_time,open,high,low,close,atr_14,session,regime,direction,"
+                "return_12_pct,return_48_pct,mtf_context,outcome_complete"
+            ),
+            "symbol": f"eq.{self.symbol}",
+            "order": "candle_time.desc",
+            "limit": "720",
+        },
+    )
+    rows.reverse()
+    return list(rows)
 
 
 async def _fetch_range(
@@ -148,21 +236,30 @@ def _diagnostic(
     error: str | None = None,
 ) -> dict[str, Any]:
     effective_latest = _latest_row_time(rows)
+    context_valid, validation_error = _validate_context_rows(rows, reference)
     lag = _context_lag_minutes(rows, reference)
-    fresh = lag is None or lag <= contract.MAX_CONTEXT_LAG_MINUTES
+    fresh = bool(
+        context_valid
+        and lag is not None
+        and 0.0 <= lag <= contract.MAX_CONTEXT_LAG_MINUTES
+    )
+    explicit_decision = _decision_time(rows[-1]) if rows else None
     return {
         "version": VERSION,
+        "patch_version": PATCH_VERSION,
         "contract_version": contract.CONTEXT_CONTRACT_VERSION,
         "status": status,
         "source": contract.SOURCE_NAME,
         "live_tick_at": reference.isoformat() if reference is not None else None,
         "persistent_latest_m5": persistent_latest.isoformat() if persistent_latest is not None else None,
         "effective_latest_m5": effective_latest.isoformat() if effective_latest is not None else None,
-        "effective_decision_time": _decision_time(rows[-1]).isoformat() if rows and _decision_time(rows[-1]) is not None else None,
+        "effective_decision_time": explicit_decision.isoformat() if explicit_decision is not None else None,
         "context_lag_minutes": round(lag, 3) if lag is not None else None,
         "max_context_lag_minutes": contract.MAX_CONTEXT_LAG_MINUTES,
         "overlay_rows": int(overlay_rows),
-        "fresh": bool(fresh),
+        "context_valid": bool(context_valid),
+        "validation_error": validation_error,
+        "fresh": fresh,
         "fail_closed": True,
         "persistent_research_fabric_required_for_live_freshness": False,
         "error": error,
@@ -175,6 +272,10 @@ async def _overlay_fresh_rows(
     reference: datetime,
     persistent_latest: datetime | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    seed_valid, seed_error = _validate_context_rows(seed, reference)
+    if not seed_valid:
+        raise RuntimeError(f"live_context_seed_invalid:{seed_error}")
+
     if len(seed) < LOOKBACK_BARS:
         return seed, _diagnostic(
             rows=seed,
@@ -273,6 +374,9 @@ async def _overlay_fresh_rows(
     # Live Trader only uses a rolling context window. Keeping 720 observations
     # bounds resident memory while preserving the existing structural history.
     combined = combined[-720:]
+    combined_valid, combined_error = _validate_context_rows(combined, reference)
+    if not combined_valid:
+        raise RuntimeError(f"live_context_overlay_invalid:{combined_error}")
     return combined, _diagnostic(
         rows=combined,
         reference=reference,
@@ -284,11 +388,19 @@ async def _overlay_fresh_rows(
 
 async def _load_rows_v101(self: core.LiveTrader, force: bool = False) -> list[dict[str, Any]]:
     persistent = list(await _current_load_rows(self, force=force))
-    persistent_latest = _latest_row_time(persistent)
+    try:
+        persistent_latest = await _persistent_fabric_watermark(self)
+        self._live_context_persistent_watermark_v101 = persistent_latest
+        persistent_watermark_error = None
+    except Exception as exc:
+        persistent_latest = getattr(self, "_live_context_persistent_watermark_v101", None)
+        persistent_watermark_error = str(exc)[:500]
 
     cached = list(getattr(self, "_live_context_rows_v101", None) or [])
     cached_latest = _latest_row_time(cached)
-    seed = cached if cached_latest is not None and (persistent_latest is None or cached_latest > persistent_latest) else persistent
+    seed = cached if cached_latest is not None and (
+        _latest_row_time(persistent) is None or cached_latest > _latest_row_time(persistent)
+    ) else persistent
 
     now = core.utc_now()
     last_poll = getattr(self, "_live_context_polled_at_v101", None)
@@ -306,11 +418,17 @@ async def _load_rows_v101(self: core.LiveTrader, force: bool = False) -> list[di
             overlay_rows=0,
             status="cached_live_context",
         )
+        diagnostic["persistent_watermark_error"] = persistent_watermark_error
         self._live_context_diagnostic_v101 = diagnostic
         self._rows = seed
         return seed
 
     try:
+        seed_valid, _ = _validate_context_rows(seed, reference)
+        if not seed_valid:
+            # Recover from a poisoned ephemeral/core cache only by re-reading the
+            # persistent snapshot table. The invalid row is never trusted.
+            seed = await _load_persistent_rows_direct(self)
         merged, diagnostic = await _overlay_fresh_rows(self, seed, reference, persistent_latest)
     except Exception as exc:
         logger.warning("Live Trader fresh-context overlay failed safely: %s", exc)
@@ -324,6 +442,7 @@ async def _load_rows_v101(self: core.LiveTrader, force: bool = False) -> list[di
             error=str(exc)[:500],
         )
 
+    diagnostic["persistent_watermark_error"] = persistent_watermark_error
     self._live_context_polled_at_v101 = now
     self._live_context_rows_v101 = list(merged)
     self._live_context_diagnostic_v101 = dict(diagnostic)
@@ -340,35 +459,63 @@ def _bias_v101(self: core.LiveTrader, latest: dict[str, Any]) -> tuple[dict[str,
     reference = _parse_time(getattr(self, "last_tick_at", None))
     lag = _context_lag_minutes([latest], reference)
     feed_fresh = bool(reference is not None and getattr(self, "_feed_is_fresh", lambda: False)())
-    stale = bool(feed_fresh and lag is not None and lag > contract.MAX_CONTEXT_LAG_MINUTES)
+    row_valid, row_error = _validate_context_rows([latest], reference)
+    prior_diagnostic = dict(getattr(self, "_live_context_diagnostic_v101", {}) or {})
+    diagnostic_fresh = prior_diagnostic.get("fresh") is True
+    blocked = bool(
+        feed_fresh
+        and (
+            not row_valid
+            or lag is None
+            or lag < 0.0
+            or lag > contract.MAX_CONTEXT_LAG_MINUTES
+            or not diagnostic_fresh
+        )
+    )
 
-    diagnostic = dict(getattr(self, "_live_context_diagnostic_v101", {}) or {})
+    diagnostic = prior_diagnostic
     diagnostic.update(
         {
             "version": VERSION,
-            "context_lag_minutes": round(lag, 3) if lag is not None else diagnostic.get("context_lag_minutes"),
+            "patch_version": PATCH_VERSION,
+            "context_lag_minutes": round(lag, 3) if lag is not None else None,
             "max_context_lag_minutes": contract.MAX_CONTEXT_LAG_MINUTES,
-            "fresh": not stale if feed_fresh else diagnostic.get("fresh"),
+            "context_valid": bool(row_valid and diagnostic.get("context_valid", True)),
+            "validation_error": row_error or diagnostic.get("validation_error"),
+            "fresh": False if blocked else (diagnostic.get("fresh") if not feed_fresh else True),
             "feed_fresh": feed_fresh,
         }
     )
     self._live_context_diagnostic_v101 = diagnostic
 
     data_quality["live_context_freshness_version"] = VERSION
+    data_quality["live_context_patch_version"] = PATCH_VERSION
     data_quality["live_context_lag_minutes"] = diagnostic.get("context_lag_minutes")
     data_quality["live_context_max_lag_minutes"] = contract.MAX_CONTEXT_LAG_MINUTES
-    data_quality["live_context_stale"] = stale
+    data_quality["live_context_valid"] = diagnostic.get("context_valid")
+    data_quality["live_context_validation_error"] = diagnostic.get("validation_error")
+    data_quality["live_context_stale"] = blocked
     data_quality["live_context_fail_closed"] = True
 
-    if stale:
+    if blocked:
         bias["overall"] = "neutral"
         bias["raw_score"] = 0.0
         bias["confidence"] = min(int(core.number(bias.get("confidence"), 40)), 50)
         data_quality["trade_bias_blocked"] = True
-        data_quality["live_context_block_reason"] = (
-            f"Live M5/MTF context is {lag:.1f} minutes behind the live price feed; "
-            f"maximum allowed lag is {contract.MAX_CONTEXT_LAG_MINUTES:.1f} minutes."
-        )
+        if not row_valid:
+            reason = f"Live M5/MTF context failed completion validation: {row_error}."
+        elif lag is None:
+            reason = "Live M5/MTF context has no verifiable decision timestamp."
+        elif lag < 0.0:
+            reason = "Live M5/MTF context decision timestamp is in the future."
+        elif lag > contract.MAX_CONTEXT_LAG_MINUTES:
+            reason = (
+                f"Live M5/MTF context is {lag:.1f} minutes behind the live price feed; "
+                f"maximum allowed lag is {contract.MAX_CONTEXT_LAG_MINUTES:.1f} minutes."
+            )
+        else:
+            reason = "Live M5/MTF context failed the end-to-end freshness diagnostic."
+        data_quality["live_context_block_reason"] = reason
         score = 0.0
 
     bias["data_quality"] = data_quality
@@ -400,6 +547,7 @@ def _runtime_status_v101(self: core.LiveTrader) -> dict[str, Any]:
     status.update(
         {
             "live_context_freshness_version": VERSION,
+            "live_context_patch_version": PATCH_VERSION,
             "live_context_contract": contract.definition(),
             "live_context_freshness": dict(getattr(self, "_live_context_diagnostic_v101", {}) or {}),
         }

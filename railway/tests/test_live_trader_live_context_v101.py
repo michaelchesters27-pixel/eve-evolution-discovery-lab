@@ -19,6 +19,10 @@ def _candle(stamp: datetime, price: float) -> dict:
         "low": price - 1.0,
         "close": price + 0.25,
         "volume": 1.0,
+        "mtf_context": {
+            "signal_time": stamp.isoformat(),
+            "decision_time": (stamp + timedelta(minutes=5)).isoformat(),
+        },
     }
 
 
@@ -106,10 +110,17 @@ def test_live_context_does_not_block_a_fresh_completed_m5() -> None:
     dummy = SimpleNamespace(
         last_tick_at="2026-09-25T08:31:00+00:00",
         _feed_is_fresh=lambda: True,
+        _live_context_diagnostic_v101={
+            "fresh": True,
+            "context_valid": True,
+        },
     )
     latest = {
         "candle_time": "2026-09-25T08:25:00+00:00",
-        "mtf_context": {"decision_time": "2026-09-25T08:30:00+00:00"},
+        "mtf_context": {
+            "signal_time": "2026-09-25T08:25:00+00:00",
+            "decision_time": "2026-09-25T08:30:00+00:00",
+        },
     }
     try:
         v101._current_bias = fake_bias
@@ -121,6 +132,83 @@ def test_live_context_does_not_block_a_fresh_completed_m5() -> None:
     assert score == 0.7
     assert bias["data_quality"]["live_context_stale"] is False
     assert bias["data_quality"].get("trade_bias_blocked") is not True
+
+
+def test_forming_seed_is_rejected_before_overlay_can_call_it_current() -> None:
+    reference = datetime(2026, 9, 25, 8, 31, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 24, 7, 35, tzinfo=timezone.utc)
+    seed = [_candle(start + timedelta(minutes=5 * index), 4200.0 + index * 0.1) for index in range(300)]
+    seed[-1] = _candle(datetime(2026, 9, 25, 8, 30, tzinfo=timezone.utc), 4230.0)
+
+    dummy = SimpleNamespace(
+        symbol="XAU/USD",
+        settings=SimpleNamespace(source_symbol="XAU/USD"),
+    )
+
+    try:
+        asyncio.run(v101._overlay_fresh_rows(dummy, seed, reference, None))
+        assert False, "forming seed must fail closed"
+    except RuntimeError as exc:
+        assert "forming_or_future_m5_candle" in str(exc)
+
+
+def test_future_decision_timestamp_cannot_be_zero_lag_clearance() -> None:
+    original = v101._current_bias
+
+    def fake_bias(self, latest):
+        return {
+            "overall": "bullish",
+            "raw_score": 0.8,
+            "confidence": 85,
+            "data_quality": {},
+        }, 0.8
+
+    latest = {
+        "candle_time": "2026-09-25T08:30:00+00:00",
+        "mtf_context": {
+            "signal_time": "2026-09-25T08:30:00+00:00",
+            "decision_time": "2026-09-25T08:35:00+00:00",
+        },
+    }
+    dummy = SimpleNamespace(
+        last_tick_at="2026-09-25T08:31:00+00:00",
+        _feed_is_fresh=lambda: True,
+        _live_context_diagnostic_v101={
+            "fresh": False,
+            "context_valid": False,
+            "validation_error": "forming_or_future_m5_candle",
+        },
+    )
+
+    assert v101._context_lag_minutes([latest], v101._parse_time(dummy.last_tick_at)) is None
+    try:
+        v101._current_bias = fake_bias
+        bias, score = v101._bias_v101(dummy, latest)
+    finally:
+        v101._current_bias = original
+
+    assert bias["overall"] == "neutral"
+    assert score == 0.0
+    assert bias["data_quality"]["trade_bias_blocked"] is True
+    assert bias["data_quality"]["live_context_valid"] is False
+
+
+def test_missing_decision_timestamp_is_unverifiable_and_not_fresh() -> None:
+    reference = datetime(2026, 9, 25, 8, 31, tzinfo=timezone.utc)
+    row = _candle(datetime(2026, 9, 25, 8, 25, tzinfo=timezone.utc), 4230.0)
+    row["mtf_context"].pop("decision_time")
+
+    diagnostic = v101._diagnostic(
+        rows=[row],
+        reference=reference,
+        persistent_latest=datetime(2026, 9, 25, 5, 10, tzinfo=timezone.utc),
+        overlay_rows=0,
+        status="test",
+    )
+
+    assert diagnostic["fresh"] is False
+    assert diagnostic["context_valid"] is False
+    assert "missing_or_invalid_decision_time" in str(diagnostic["validation_error"])
 
 
 def test_overlay_builds_missing_completed_m5_without_persisting_heavy_fabric() -> None:
@@ -160,6 +248,47 @@ def test_overlay_builds_missing_completed_m5_without_persisting_heavy_fabric() -
     assert diagnostic["overlay_rows"] == 1
     assert diagnostic["fresh"] is True
     assert diagnostic["persistent_research_fabric_required_for_live_freshness"] is False
+
+
+def test_persistent_watermark_is_separate_from_effective_live_cache() -> None:
+    class Client:
+        async def get(self, table, params):
+            assert table == "m5_research_snapshots"
+            assert params["select"] == "candle_time"
+            return [{"candle_time": "2026-09-25T16:30:00+00:00"}]
+
+    effective_start = datetime(2026, 9, 25, 17, 30, tzinfo=timezone.utc)
+    effective = [
+        _candle(effective_start + timedelta(minutes=5 * index), 4200.0 + index * 0.1)
+        for index in range(60)
+    ]
+    assert effective[-1]["candle_time"] == "2026-09-25T22:25:00+00:00"
+
+    async def fake_current_load_rows(self, force=False):
+        return list(effective)
+
+    dummy = SimpleNamespace(
+        repo=SimpleNamespace(client=Client()),
+        symbol="XAU/USD",
+        settings=SimpleNamespace(source_symbol="XAU/USD"),
+        last_tick_at="2026-09-25T22:30:00+00:00",
+        _live_context_rows_v101=list(effective),
+        _live_context_polled_at_v101=None,
+        _rows=list(effective),
+        _rows_loaded_at=None,
+    )
+
+    original = v101._current_load_rows
+    try:
+        v101._current_load_rows = fake_current_load_rows
+        asyncio.run(v101._load_rows_v101(dummy))
+    finally:
+        v101._current_load_rows = original
+
+    diagnostic = dummy._live_context_diagnostic_v101
+    assert diagnostic["persistent_latest_m5"] == "2026-09-25T16:30:00+00:00"
+    assert diagnostic["effective_latest_m5"] == "2026-09-25T22:25:00+00:00"
+    assert diagnostic["fresh"] is True
 
 
 def test_production_and_policy_lab_contracts_include_fresh_context_identity() -> None:
@@ -206,3 +335,64 @@ def test_bounded_current_policy_stage_runs_multiple_durable_batches() -> None:
     assert result["caught_up"] is True
     assert result["durable_checkpoint_each_batch"] is True
     assert result["trading_rules_changed"] is False
+
+
+def test_bounded_current_policy_stage_probes_after_persisted_caught_up() -> None:
+    class Worker:
+        def __init__(self) -> None:
+            self.rows = 100
+            self.cursor = "2026-09-25T10:00:00+00:00"
+            self.caught_up = True
+            self.calls = 0
+
+        async def _state(self):
+            return {
+                "rows_scanned": self.rows,
+                "opportunities_found": 0,
+                "cursor_time": self.cursor,
+                "caught_up": self.caught_up,
+            }
+
+        async def run_cycle(self):
+            self.calls += 1
+            self.rows += 1
+            self.cursor = "2026-09-25T10:05:00+00:00"
+            self.caught_up = True
+            return True
+
+    worker = Worker()
+    result = asyncio.run(v102.run_bounded_stage(worker))
+
+    assert worker.calls == 1
+    assert result["rows"] == 1
+    assert result["batches"] == 1
+    assert result["initial_caught_up"] is True
+    assert result["caught_up_probe_performed"] is True
+    assert result["cursor_time"] == "2026-09-25T10:05:00+00:00"
+
+
+def test_bounded_current_policy_stage_no_new_data_still_probes_once() -> None:
+    class Worker:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def _state(self):
+            return {
+                "rows_scanned": 100,
+                "opportunities_found": 0,
+                "cursor_time": "2026-09-25T10:00:00+00:00",
+                "caught_up": True,
+            }
+
+        async def run_cycle(self):
+            self.calls += 1
+            return False
+
+    worker = Worker()
+    result = asyncio.run(v102.run_bounded_stage(worker))
+
+    assert worker.calls == 1
+    assert result["rows"] == 0
+    assert result["batches"] == 1
+    assert result["caught_up"] is True
+    assert result["caught_up_probe_performed"] is True

@@ -150,6 +150,9 @@ def _summary(value: Any) -> Any:
             "time_budget_seconds",
             "elapsed_seconds",
             "throughput_version",
+            "throughput_patch_version",
+            "initial_caught_up",
+            "caught_up_probe_performed",
         )
         result = {key: value.get(key) for key in keep if key in value}
         result["resource_version"] = RESOURCE_VERSION

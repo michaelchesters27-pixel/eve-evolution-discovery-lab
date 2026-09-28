@@ -6,6 +6,7 @@ from typing import Any
 from app.services import live_trader_zone_retrace_current_policy_academy_v71 as v71
 
 VERSION = "eve-live-current-policy-throughput-v102"
+PATCH_VERSION = "eve-live-current-policy-throughput-v102-caught-up-probe-v1"
 BOUNDED_ROW_BUDGET = 18000
 BOUNDED_TIME_BUDGET_SECONDS = 240.0
 SCAN_BATCH_ROWS = 900
@@ -36,6 +37,7 @@ async def run_bounded_stage(worker: v71.CurrentPolicyZoneRetraceAcademy) -> dict
     initial_opportunities = int(_num(initial.get("opportunities_found")))
     batches = 0
     last = initial
+    initial_caught_up = bool(initial.get("caught_up"))
     no_progress_streak = 0
 
     while True:
@@ -43,9 +45,11 @@ async def run_bounded_stage(worker: v71.CurrentPolicyZoneRetraceAcademy) -> dict
         rows_advanced = max(0, int(_num(last.get("rows_scanned"))) - initial_rows)
         if rows_advanced >= BOUNDED_ROW_BUDGET or elapsed >= BOUNDED_TIME_BUDGET_SECONDS:
             break
-        if bool(last.get("caught_up")):
-            break
 
+        # A persisted caught_up=true is only a checkpoint, never a permanent
+        # stop condition. Every scheduled bounded stage probes once for newly
+        # completed archive rows. The underlying run_cycle then persists the
+        # updated cursor/caught_up state before we decide whether to continue.
         before_rows = int(_num(last.get("rows_scanned")))
         before_cursor = str(last.get("cursor_time") or "")
         result = await worker.run_cycle()
@@ -93,6 +97,9 @@ async def run_bounded_stage(worker: v71.CurrentPolicyZoneRetraceAcademy) -> dict
         "time_budget_seconds": BOUNDED_TIME_BUDGET_SECONDS,
         "elapsed_seconds": round(elapsed, 3),
         "throughput_version": VERSION,
+        "throughput_patch_version": PATCH_VERSION,
+        "initial_caught_up": initial_caught_up,
+        "caught_up_probe_performed": bool(initial_caught_up and batches > 0),
         "durable_checkpoint_each_batch": True,
         "trading_rules_changed": False,
         "evidence_semantics_changed": False,
