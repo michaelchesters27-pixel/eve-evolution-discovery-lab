@@ -12,6 +12,11 @@
     return Number.isFinite(parsed) ? parsed : null;
   };
 
+  const fmt = value => {
+    const parsed = num(value);
+    return parsed == null ? '—' : parsed.toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
+  };
+
   const tfDirection = (state, key) => {
     const item = state?.bias?.timeframes?.[key];
     if (item && typeof item === 'object') return String(item.direction || '').toLowerCase();
@@ -164,6 +169,7 @@
       style.textContent = `
         .eve-tolerant-zone-decision-active .lt-zone-decision{display:none!important}
         #ltZoneDecisionTolerance{margin-top:10px}
+        #ltZoneDecisionTolerance .lt-zone-decision-range{margin-top:4px;font-size:12px;font-weight:900;color:#e7f4ed;font-variant-numeric:tabular-nums}
         #ltZoneDecisionTolerance .lt-zone-decision-arrow{animation:eve-zone-tolerance-pulse .85s ease-in-out infinite;transform-origin:center}
         #ltZoneDecisionTolerance.bullish .lt-zone-decision-arrow{filter:drop-shadow(0 0 8px rgba(75,240,150,.85))}
         #ltZoneDecisionTolerance.bearish .lt-zone-decision-arrow{filter:drop-shadow(0 0 8px rgba(255,105,125,.85))}
@@ -220,6 +226,7 @@
       <div>
         <div class="lt-zone-decision-kicker">${position} ${test.kind.toUpperCase()} · ZONE DECISION</div>
         <div class="lt-zone-decision-title">${decision.title}</div>
+        <div class="lt-zone-decision-range">${test.kind.toUpperCase()} ZONE ${fmt(test.low)} – ${fmt(test.high)}</div>
         <p class="lt-zone-decision-note">${decision.note}</p>
         <div class="lt-zone-decision-tfs">M5 ${tfLabel(decision.m5)} · M15 ${tfLabel(decision.m15)} · ACTIVE FOR 20 MIN AFTER TEST</div>
       </div>`;
