@@ -97,8 +97,8 @@ def test_eve_view_shows_pending_bos_level_and_zone_coordinates() -> None:
     assert "Next BOS level" in session
     assert "completed M5 close must finish" in session
     assert "max(2% ATR, 0.01)" in session
-    assert "ZONE ${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}" in session
-    assert "ZONE ${fmt(test.low)} – ${fmt(test.high)}" in tolerance
+    assert "${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}" in session
+    assert "${fmt(test.low)} – ${fmt(test.high)}" in tolerance
 
 
 def test_eve_view_zone_labels_expose_side_strength_and_backing() -> None:
