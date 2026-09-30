@@ -119,3 +119,26 @@ def test_eve_view_zone_labels_expose_side_strength_and_backing() -> None:
 
     assert "POTENTIAL ${safe(retrace.side)} ZONE" in session
     assert "POTENTIAL ${side} ZONE" in tolerance
+
+
+def test_eve_view_always_lists_relevant_buy_and_sell_chart_zones() -> None:
+    session = (_frontend() / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
+
+    assert "RELEVANT CHART ZONES" in session
+    assert "BUY ZONES" in session
+    assert "SELL ZONES" in session
+    assert "SAME SNAPSHOT · NEAREST FIRST" in session
+    assert "chartZoneRows(state, kind)" in session
+    assert "state?.zones?.[kind]" in session
+    assert ".sort((a,b) => a.distance - b.distance)" in session
+    assert ".slice(0, 3)" in session
+    assert "H1 + M15 BACKED" in session
+    assert "M15 BACKED" in session
+    assert "H1 BACKED" in session
+    assert "M5 ONLY" in session
+    assert "QUALITY" in session
+    assert "RETEST" in session
+    assert "FRESH" in session and "USED" in session
+    assert "only AUTHORITATIVE TRADE ACTION is execution authority" in session
+    assert "api('/live-trader')" not in session
+    assert 'api("/live-trader")' not in session
