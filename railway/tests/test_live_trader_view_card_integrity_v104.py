@@ -169,5 +169,17 @@ def test_chart_zone_panel_uses_persistent_valid_zone_feed() -> None:
 
     assert "state?.chart_zones || state?.zones || {}" in session
     assert "UNDER PRESSURE" in session
-    assert "stay mapped until EVE's completed-candle invalidation removes them or they genuinely age out of the zone lookback" in session
+    assert "BUY zones are removed after a completed M5 close below the zone low" in session
+    assert "SELL zones are removed after a completed M5 close above the zone high" in session
+    assert "Wicks alone do not invalidate them" in session
     assert '"chart_zones": getattr(self, "_chart_zones_v95", zones)' in core
+
+
+def test_chart_zone_backend_uses_actual_zone_edge_not_trade_atr_tolerance() -> None:
+    backend = (Path(__file__).resolve().parents[2] / "railway" / "app" / "services" / "live_trader_mtf_zones_v63.py").read_text(encoding="utf-8")
+
+    assert "def _chart_zone_broken_by_completed_m5_close" in backend
+    assert 'kind == "demand" and close < low' in backend
+    assert 'kind == "supply" and close > high' in backend
+    assert "origin_index + 9" in backend
+    assert "atr * 0.2" not in backend[backend.index("def _chart_zone_broken_by_completed_m5_close"):backend.index("def _chart_zones_v95")]
