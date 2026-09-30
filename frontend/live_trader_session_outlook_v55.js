@@ -62,6 +62,7 @@
     .lt-zone-decision.undecided .lt-zone-decision-arrow,.lt-zone-decision.undecided .lt-zone-decision-title{color:var(--amber)}
     .lt-zone-decision-kicker{font-size:8px;color:var(--muted);font-weight:900;letter-spacing:.08em;text-transform:uppercase}
     .lt-zone-decision-title{margin-top:3px;font-size:13px;font-weight:900;line-height:1.2}
+    .lt-zone-decision-range{margin-top:4px;font-size:12px;font-weight:900;color:#e7f4ed;font-variant-numeric:tabular-nums}
     .lt-zone-decision-note{margin:4px 0 0;font-size:9px;line-height:1.4;color:#c2d6cc}
     .lt-zone-decision-tfs{margin-top:5px;font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
     @keyframes eve-zone-pulse{0%,100%{transform:scale(.9);opacity:.72}50%{transform:scale(1.14);opacity:1}}
@@ -290,6 +291,7 @@
         <div>
           <div class="lt-zone-decision-kicker">PRICE IS IN ${safe(retrace.kind)} · ZONE DECISION</div>
           <div class="lt-zone-decision-title">${safe(decision.title)}</div>
+          <div class="lt-zone-decision-range">${safe(retrace.kind)} ZONE ${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
           <p class="lt-zone-decision-note">${safe(decision.note)}</p>
           <div class="lt-zone-decision-tfs">M5 ${safe(tfLabel(decision.m5))} · M15 ${safe(tfLabel(decision.m15))}</div>
         </div>
@@ -308,9 +310,20 @@
     let bosClass = 'none';
     let bosNote = 'No current-session BOS confirmation.';
     if (waiting) {
-      bosText = 'WAITING CONFIRMATION';
+      const pending = structure.bos_confirmation || {};
+      const pendingDirection = String(pending.direction || chochDirection || '').toLowerCase();
+      const pendingLevel = number(pending.level);
+      bosText = pendingDirection === 'bullish' || pendingDirection === 'bearish'
+        ? `WAITING ${pendingDirection.toUpperCase()} BOS`
+        : 'WAITING BOS';
       bosClass = 'waiting';
-      bosNote = 'A CHoCH occurred after the previous BOS.';
+      if (pendingLevel != null) {
+        const relation = pendingDirection === 'bearish' ? 'below' : 'above';
+        bosNote = `Next BOS level ${fmt(pendingLevel)} · completed M5 close must finish ${relation} it by max(2% ATR, 0.01)`;
+      } else {
+        const swing = pendingDirection === 'bearish' ? 'low' : pendingDirection === 'bullish' ? 'high' : 'level';
+        bosNote = `CHoCH confirmed · waiting for the next confirmed swing ${swing} before a BOS level exists.`;
+      }
     } else if (bosSupport === 'bullish' || bosSupport === 'bearish') {
       bosText = `SUPPORTS ${bosSupport.toUpperCase()}`;
       bosClass = bosSupport;
