@@ -88,3 +88,14 @@ def test_eve_view_labels_explain_setup_and_magnet_semantics() -> None:
     assert "<span>Market session</span>" in base
     assert "<span>Bias-side magnet</span>" in base
     assert "Nearest level in current bias direction" in base
+
+
+def test_eve_view_shows_pending_bos_level_and_zone_coordinates() -> None:
+    session = (_frontend() / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
+    tolerance = (_frontend() / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
+
+    assert "Next BOS level" in session
+    assert "completed M5 close must finish" in session
+    assert "max(2% ATR, 0.01)" in session
+    assert "ZONE ${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}" in session
+    assert "ZONE ${fmt(test.low)} – ${fmt(test.high)}" in tolerance
