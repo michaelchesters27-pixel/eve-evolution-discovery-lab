@@ -69,8 +69,25 @@
     .lt-zone-decision-tfs{margin-top:5px;font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
     @keyframes eve-zone-pulse{0%,100%{transform:scale(.9);opacity:.72}50%{transform:scale(1.14);opacity:1}}
     .lt-session-outlook-flip{margin:8px 0 0;color:var(--muted);font-size:10px;line-height:1.45}
+    .lt-chart-zones{grid-column:1/-1;margin-top:12px;border:1px solid var(--line);border-radius:12px;padding:11px;background:#07130e}
+    .lt-chart-zones-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:9px}
+    .lt-chart-zones-head strong{font-size:11px;letter-spacing:.07em}
+    .lt-chart-zones-head small{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+    .lt-chart-zones-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .lt-chart-zone-column{border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:9px;background:#06100b}
+    .lt-chart-zone-column.buy{border-color:rgba(75,240,150,.22)}
+    .lt-chart-zone-column.sell{border-color:rgba(255,105,125,.22)}
+    .lt-chart-zone-column h4{margin:0 0 7px;font-size:11px;letter-spacing:.06em}
+    .lt-chart-zone-column.buy h4{color:var(--green)}
+    .lt-chart-zone-column.sell h4{color:var(--red)}
+    .lt-chart-zone-row{padding:7px 0;border-top:1px solid rgba(255,255,255,.055)}
+    .lt-chart-zone-row:first-of-type{border-top:0;padding-top:0}
+    .lt-chart-zone-price{font-size:13px;font-weight:900;font-variant-numeric:tabular-nums;color:#e7f4ed}
+    .lt-chart-zone-meta{margin-top:3px;font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.035em;line-height:1.45}
+    .lt-chart-zone-empty{font-size:9px;color:var(--muted);line-height:1.45}
+    .lt-chart-zones-note{margin-top:8px;font-size:8px;color:var(--muted)}
     .lt-session-outlook-note{margin:8px 0 0;padding-top:8px;border-top:1px solid var(--line);color:var(--muted);font-size:9px}
-    @media(max-width:760px){.lt-session-structure{grid-template-columns:1fr}}
+    @media(max-width:760px){.lt-session-structure,.lt-chart-zones-grid{grid-template-columns:1fr}}
     @media(prefers-reduced-motion:reduce){.lt-zone-decision-arrow{animation:none}}
   `;
   document.head.appendChild(style);
@@ -317,6 +334,78 @@
       </div>`;
   }
 
+  function chartZoneBacking(zone) {
+    if (zone?.h1_confluence === true && zone?.m15_confluence === true) return 'H1 + M15 BACKED';
+    if (zone?.h1_confluence === true) return 'H1 BACKED';
+    if (zone?.m15_confluence === true) return 'M15 BACKED';
+    return 'M5 ONLY';
+  }
+
+  function chartZoneRows(state, kind) {
+    const price = number(state?.price);
+    const zones = Array.isArray(state?.zones?.[kind]) ? state.zones[kind] : [];
+    return zones
+      .map(zone => {
+        const low = number(zone?.low);
+        const high = number(zone?.high);
+        if (low == null || high == null || high < low) return null;
+        const status = String(zone?.status || '').toUpperCase();
+        if (['BROKEN','INVALID','EXPIRED'].includes(status)) return null;
+        const distance = price == null || (low <= price && price <= high)
+          ? 0
+          : Math.min(Math.abs(price - low), Math.abs(price - high));
+        return {
+          low,
+          high,
+          distance,
+          quality:number(zone?.quality),
+          retests:Math.max(0, Number(zone?.retests || 0)),
+          fresh:zone?.fresh === true,
+          backing:chartZoneBacking(zone),
+        };
+      })
+      .filter(Boolean)
+      .sort((a,b) => a.distance - b.distance)
+      .slice(0, 3);
+  }
+
+  function chartZoneColumn(state, kind, side) {
+    const rows = chartZoneRows(state, kind);
+    if (!rows.length) {
+      return `<div class="lt-chart-zone-column ${side.toLowerCase()}"><h4>${side} ZONES</h4><div class="lt-chart-zone-empty">No current ${safe(kind)} zones are available from this snapshot.</div></div>`;
+    }
+    return `
+      <div class="lt-chart-zone-column ${side.toLowerCase()}">
+        <h4>${side} ZONES</h4>
+        ${rows.map((zone, index) => {
+          const quality = zone.quality == null ? 'QUALITY —' : `QUALITY ${Math.round(zone.quality)}/100`;
+          const retests = `${zone.retests} RETEST${zone.retests === 1 ? '' : 'S'}`;
+          const freshness = zone.fresh ? 'FRESH' : 'USED';
+          return `
+            <div class="lt-chart-zone-row">
+              <div class="lt-chart-zone-price">${index + 1}. ${safe(fmt(zone.low))} – ${safe(fmt(zone.high))}</div>
+              <div class="lt-chart-zone-meta">${safe(zone.backing)} · ${safe(quality)} · ${safe(retests)} · ${safe(freshness)}</div>
+            </div>`;
+        }).join('')}
+      </div>`;
+  }
+
+  function chartZonesHtml(state) {
+    return `
+      <div class="lt-chart-zones">
+        <div class="lt-chart-zones-head">
+          <strong>RELEVANT CHART ZONES</strong>
+          <small>SAME SNAPSHOT · NEAREST FIRST</small>
+        </div>
+        <div class="lt-chart-zones-grid">
+          ${chartZoneColumn(state, 'demand', 'BUY')}
+          ${chartZoneColumn(state, 'supply', 'SELL')}
+        </div>
+        <div class="lt-chart-zones-note">For drawing on your chart. BUY/SELL ZONE means potential area of interest — only AUTHORITATIVE TRADE ACTION is execution authority.</div>
+      </div>`;
+  }
+
+
   function structurePlan(outlook) {
     const structure = outlook?.structure || {};
     const bosSupport = String(structure.bos_support || 'none').toLowerCase();
@@ -433,7 +522,8 @@
         <span>SESSION LEAN</span>
         ${integrityHtml(integrity)}
         ${authorityHtml(state)}
-        <div class="lt-session-outlook-meta">No directional session lean is currently available.</div>`;
+        <div class="lt-session-outlook-meta">No directional session lean is currently available.</div>
+        ${chartZonesHtml(state)}`;
       return;
     }
 
@@ -488,6 +578,7 @@
       ${headwinds.length ? `<p class="lt-session-headwinds"><b>HEADWINDS / OPPOSING EVIDENCE</b><br>${safe(headwinds.join(' '))}</p>` : ''}
       ${structureHtml}
       ${retraceHtml}
+      ${chartZonesHtml(state)}
       <p class="lt-session-outlook-flip">${safe(flip)}</p>
       <p class="lt-session-outlook-note">Trade bias: ${safe(tradeBias)} · Session lean is an opinion, not a trade signal. BOS/CHoCH and zone guidance are display context. Only AUTHORITATIVE TRADE ACTION above is execution authority.</p>`;
   }
