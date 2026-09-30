@@ -458,8 +458,7 @@
         };
       })
       .filter(Boolean)
-      .sort((a,b) => a.distance - b.distance)
-      .slice(0, 3);
+      .sort((a,b) => a.distance - b.distance);
   }
 
   function chartZoneColumn(state, kind, side) {
@@ -496,7 +495,7 @@
           ${chartZoneColumn(state, 'demand', 'BUY')}
           ${chartZoneColumn(state, 'supply', 'SELL')}
         </div>
-        <div class="lt-chart-zones-note">For drawing on your chart. These zones stay mapped until EVE's completed-candle invalidation removes them; moving past a proximity threshold alone will not make them disappear. Each SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
+        <div class="lt-chart-zones-note">For drawing on your chart. These zones stay mapped until EVE's completed-candle invalidation removes them or they genuinely age out of the zone lookback; moving past a proximity threshold or changing rank will not make them disappear. Each SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
       </div>`;
   }
 
