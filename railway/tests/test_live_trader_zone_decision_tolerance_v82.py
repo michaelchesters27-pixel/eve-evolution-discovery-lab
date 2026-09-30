@@ -20,8 +20,12 @@ def test_zone_decision_tolerance_is_display_only_and_time_bounded():
     assert "state?.market?.atr" in canonical
     assert "state?.zones?.[kind]" in canonical
     assert "M5" in canonical and "M15" in canonical
-    assert "const state = await api('/live-trader')" in canonical
+    assert "eve:live-trader-state" in canonical
+    assert "window.__eveLiveTraderState" in canonical
+    assert "api('/live-trader')" not in canonical
     assert "fetch('/api/live-trader'" not in canonical
+    assert "ctx.context_valid === true" in canonical
+    assert "ctx.fresh === true" in canonical
     assert "eve-zone-tolerance-pulse" in canonical
 
     forbidden = ["state.trade =", "state['trade'] =", "_trade_idea", "order_type =", "fetch('/api/trade"]
