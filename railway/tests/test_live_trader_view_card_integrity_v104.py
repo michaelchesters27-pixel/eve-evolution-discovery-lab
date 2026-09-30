@@ -132,7 +132,7 @@ def test_eve_view_always_lists_relevant_buy_and_sell_chart_zones() -> None:
     assert "chartZoneRows(state, kind)" in session
     assert "state?.chart_zones || state?.zones || {}" in session
     assert ".sort((a,b) => a.distance - b.distance)" in session
-    assert ".slice(0, 3)" in session
+    assert ".slice(0, 3)" not in session
     assert "H1 + M15 BACKED" in session
     assert "M15 BACKED" in session
     assert "H1 BACKED" in session
@@ -169,5 +169,5 @@ def test_chart_zone_panel_uses_persistent_valid_zone_feed() -> None:
 
     assert "state?.chart_zones || state?.zones || {}" in session
     assert "UNDER PRESSURE" in session
-    assert "stay mapped until EVE's completed-candle invalidation removes them" in session
+    assert "stay mapped until EVE's completed-candle invalidation removes them or they genuinely age out of the zone lookback" in session
     assert '"chart_zones": getattr(self, "_chart_zones_v95", zones)' in core
