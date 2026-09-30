@@ -2,17 +2,37 @@
   if (window.eveSessionOutlookV55) return;
   window.eveSessionOutlookV55 = true;
 
+  const CARD_INTEGRITY_VERSION = 'eve-live-view-card-integrity-v1';
+  const MAX_CONTEXT_LAG_MINUTES = 10;
+  const LIVE_ZONE_MAX_DISTANCE_ATR = 1.8;
+  const LIVE_ZONE_MIN_QUALITY = 58;
+
   const style = document.createElement('style');
   style.textContent = `
     .lt-session-outlook{margin-top:14px;border:1px solid #28563d;background:#06100b;border-radius:13px;padding:13px}
+    .lt-session-outlook.invalid{border-color:rgba(255,195,90,.45)}
     .lt-session-outlook-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
     .lt-session-outlook-head span{display:block;font-size:9px;color:var(--muted);letter-spacing:.09em;text-transform:uppercase}
-    .lt-session-outlook-direction{font-size:30px;font-weight:900;line-height:1;margin-top:5px;letter-spacing:-.02em}
+    .lt-session-outlook-direction{font-size:28px;font-weight:900;line-height:1;margin-top:5px;letter-spacing:-.02em}
     .lt-session-outlook-direction.bullish{color:var(--green)}
     .lt-session-outlook-direction.bearish{color:var(--red)}
-    .lt-session-outlook-confidence{font-size:18px;font-weight:900;white-space:nowrap}
+    .lt-session-outlook-direction.wait{color:var(--amber)}
+    .lt-session-outlook-confidence{text-align:right;white-space:nowrap}
+    .lt-session-outlook-confidence span{display:block;font-size:8px;color:var(--muted);letter-spacing:.07em}
+    .lt-session-outlook-confidence strong{display:block;margin-top:3px;font-size:18px}
     .lt-session-outlook-meta{margin-top:7px;color:#a9c4b6;font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+    .lt-session-integrity{margin-top:8px;padding:7px 9px;border:1px solid rgba(80,220,145,.25);border-radius:9px;color:#a9c4b6;font-size:8px;line-height:1.45;letter-spacing:.03em}
+    .lt-session-integrity.bad{border-color:rgba(255,195,90,.35);color:var(--amber)}
+    .lt-session-authority{margin-top:9px;padding:9px 10px;border:1px solid rgba(255,255,255,.10);border-radius:10px;background:#08140f}
+    .lt-session-authority span{display:block;font-size:8px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+    .lt-session-authority strong{display:block;margin-top:4px;font-size:17px}
+    .lt-session-authority strong.wait{color:var(--amber)}
+    .lt-session-authority strong.buy{color:var(--green)}
+    .lt-session-authority strong.sell{color:var(--red)}
+    .lt-session-authority small{display:block;margin-top:4px;color:#a9c4b6;font-size:8px;line-height:1.4}
     .lt-session-outlook-reasons{margin:10px 0 0;color:#c2d6cc;font-size:11px;line-height:1.5}
+    .lt-session-headwinds{margin:8px 0 0;padding:8px 9px;border-left:2px solid rgba(255,195,90,.55);background:rgba(255,195,90,.035);color:#d8c7a0;font-size:9px;line-height:1.45}
+    .lt-session-headwinds b{color:var(--amber);font-size:8px;letter-spacing:.07em}
     .lt-session-structure{margin-top:11px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
     .lt-session-structure-item{border:1px solid var(--line);border-radius:11px;padding:10px;background:#08140f}
     .lt-session-structure-item span{display:block;font-size:8px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
@@ -52,10 +72,8 @@
   `;
   document.head.appendChild(style);
 
-  let timer = null;
-
   function safe(value) {
-    return String(value ?? '').replace(/[&<>'\"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[ch]));
+    return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
   }
 
   function number(value) {
@@ -66,6 +84,43 @@
   function fmt(value) {
     const parsed = number(value);
     return parsed == null ? '—' : parsed.toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+
+  function utcClock(value) {
+    const text = String(value || '');
+    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text) ? `${text.slice(11,16)} UTC` : '—';
+  }
+
+  function contextIntegrity(state) {
+    const feed = state?.feed || {};
+    const dq = state?.bias?.data_quality || {};
+    const ctx = state?.live_context_freshness || {};
+    const lag = number(ctx.context_lag_minutes ?? dq.live_context_lag_minutes);
+    const valid = feed.status === 'live'
+      && feed.connected === true
+      && ctx.context_valid === true
+      && ctx.fresh === true
+      && dq.live_context_stale !== true
+      && dq.trade_bias_blocked !== true
+      && lag != null
+      && lag >= 0
+      && lag <= MAX_CONTEXT_LAG_MINUTES;
+
+    let reason = '';
+    if (feed.status !== 'live' || feed.connected !== true) reason = 'Live price feed is not currently fresh.';
+    else if (ctx.context_valid !== true) reason = `M5 context is not validated${ctx.validation_error ? `: ${ctx.validation_error}` : '.'}`;
+    else if (ctx.fresh !== true || dq.live_context_stale === true) reason = 'M5/MTF context is stale.';
+    else if (dq.trade_bias_blocked === true) reason = 'Trading bias is blocked by data quality.';
+    else if (lag == null || lag < 0 || lag > MAX_CONTEXT_LAG_MINUTES) reason = 'Context lag is outside the accepted live range.';
+
+    return {
+      valid,
+      reason,
+      lag,
+      tick: ctx.live_tick_at || feed.last_tick_at,
+      m5: ctx.effective_latest_m5 || state?.market?.fabric_time,
+      decision: ctx.effective_decision_time,
+    };
   }
 
   function momentumReasonsHtml(reasons) {
@@ -81,25 +136,43 @@
     const oneMove = movementFor(oneHour);
     const fourMove = movementFor(fourHour);
     const read = oneMove === fourMove && oneMove !== 'Flat'
-      ? `${oneMove} on both 1H and 4H`
+      ? `${oneMove} on both rolling windows`
       : oneMove === 'Flat' && fourMove === 'Flat'
-        ? 'Flat on both 1H and 4H'
+        ? 'Flat on both rolling windows'
         : 'Mixed';
     const rest = text.replace(match[0], '').trim();
 
-    return `1H Momentum: ${oneMove} ${safe(pct(oneHour))} ${arrowFor(oneHour)}<br>` +
-      `4H Momentum: ${fourMove} ${safe(pct(fourHour))} ${arrowFor(fourHour)}<br>` +
+    return `Rolling 1H momentum: ${oneMove} ${safe(pct(oneHour))} ${arrowFor(oneHour)}<br>` +
+      `Rolling 4H momentum: ${fourMove} ${safe(pct(fourHour))} ${arrowFor(fourHour)}<br>` +
       `Momentum read: ${safe(read)}` +
       (rest ? `<br>${safe(rest)}` : '');
   }
 
+  function zoneDistanceAtr(item, price, atr) {
+    const supplied = number(item?.zone?.distance_atr);
+    if (supplied != null) return supplied;
+    if (item.low <= price && price <= item.high) return 0;
+    const distance = price < item.low ? item.low - price : price - item.high;
+    return distance / Math.max(atr, 0.01);
+  }
+
   function retracePlan(state, direction) {
     const price = number(state?.price);
+    const atr = Math.max(number(state?.market?.atr) || 0, 0.01);
+    const biasDirection = String(state?.bias?.overall || 'neutral').toLowerCase();
     const zones = state?.zones || {};
     const kind = direction === 'bearish' ? 'supply' : 'demand';
     const side = direction === 'bearish' ? 'SELL' : 'BUY';
     const zonesForSide = Array.isArray(zones[kind]) ? zones[kind] : [];
-    if (price == null || !zonesForSide.length) return null;
+    const trade = state?.trade || {};
+    const clear = trade?.clear_bias_gate?.clear === true;
+    const action = String(trade.action || 'WAIT').toUpperCase();
+    const actionable = !['', 'WAIT', 'NO TRADE'].includes(action);
+
+    if (price == null) return {available:false, reason:'Current price is unavailable.'};
+    if (biasDirection !== direction) {
+      return {available:false, reason:`Session lean is ${direction.toUpperCase()} but trade bias is ${biasDirection.toUpperCase()}. No directional retrace plan is shown while they disagree.`};
+    }
 
     const candidates = zonesForSide
       .map(zone => ({
@@ -108,37 +181,54 @@
         high:number(zone?.high),
         quality:number(zone?.quality),
       }))
-      .filter(item => item.low != null && item.high != null && item.high >= item.low);
+      .filter(item => item.low != null && item.high != null && item.high >= item.low)
+      .filter(item => item.zone?.fresh !== false)
+      .filter(item => !['BROKEN','INVALID','EXPIRED'].includes(String(item.zone?.status || '').toUpperCase()))
+      .filter(item => item.quality == null || item.quality >= LIVE_ZONE_MIN_QUALITY)
+      .map(item => ({...item, distanceAtr:zoneDistanceAtr(item, price, atr)}))
+      .filter(item => item.distanceAtr <= LIVE_ZONE_MAX_DISTANCE_ATR);
 
     const containing = candidates.find(item => item.low <= price && price <= item.high);
     let selected = containing || null;
     if (!selected && direction === 'bearish') {
-      selected = candidates
-        .filter(item => item.low > price)
-        .sort((a,b) => a.low - b.low)[0] || null;
+      selected = candidates.filter(item => item.low > price).sort((a,b) => a.low - b.low)[0] || null;
     }
     if (!selected && direction === 'bullish') {
-      selected = candidates
-        .filter(item => item.high < price)
-        .sort((a,b) => b.high - a.high)[0] || null;
+      selected = candidates.filter(item => item.high < price).sort((a,b) => b.high - a.high)[0] || null;
     }
-    if (!selected) return null;
+    if (!selected) {
+      return {
+        available:false,
+        reason:`No current ${kind} zone meets the live quality/proximity geometry (quality ≥ ${LIVE_ZONE_MIN_QUALITY}, distance ≤ ${LIVE_ZONE_MAX_DISTANCE_ATR.toFixed(1)} ATR).`,
+      };
+    }
 
     const inZone = selected.low <= price && price <= selected.high;
-    const action = direction === 'bearish' ? 'bearish rejection' : 'bullish rejection';
+    const actionWord = direction === 'bearish' ? 'bearish rejection' : 'bullish rejection';
     const travel = direction === 'bearish' ? 'up' : 'down';
+    const title = actionable
+      ? `LIVE ${side} CONTEXT`
+      : clear
+        ? `RETRACE WATCH FOR ${side}`
+        : 'WATCH AREA — NO TRADE YET';
+    const note = actionable
+      ? `The authoritative live trade state is ${action}. Use the published trade entry/SL/TP, not this display zone, as execution authority.`
+      : inZone
+        ? `Price is inside current ${kind}. EVE's trade gate has NOT confirmed a ${side}; wait for the authoritative trade action to change.`
+        : `Price may retrace ${travel} into this current ${kind} area. It is a watch area only; wait for EVE's authoritative trade state before acting on ${actionWord}.`;
+
     return {
-      title:`RETRACE BEFORE ${side}`,
+      available:true,
+      title,
       low:selected.low,
       high:selected.high,
       kind:kind.toUpperCase(),
       kindLower:kind,
       side,
       quality:selected.quality,
+      distanceAtr:selected.distanceAtr,
       inZone,
-      note:inZone
-        ? `Price is inside current ${kind}. EVE is now judging whether the zone rejects or breaks.`
-        : `Wait for price to retrace ${travel} into this current ${kind} area, then look for ${action}.`,
+      note,
     };
   }
 
@@ -149,7 +239,7 @@
   }
 
   function zoneDecision(state, direction, retrace) {
-    if (!retrace?.inZone) return null;
+    if (!retrace?.available || !retrace.inZone) return null;
 
     const desired = direction;
     const opposite = direction === 'bullish' ? 'bearish' : 'bullish';
@@ -170,46 +260,24 @@
     const zoneName = retrace.kindLower;
     const side = retrace.side;
 
-    if (confirmed) {
-      return {
-        tone:desired,
-        arrow:desiredArrow,
-        title:`${desired.toUpperCase()} REJECTION CONFIRMED`,
-        note:`EVE's live zone-retracement strategy has confirmed the ${side}.`,
-        m5,
-        m15,
-      };
-    }
+    if (confirmed) return {
+      tone:desired, arrow:desiredArrow, title:`${desired.toUpperCase()} REJECTION CONFIRMED`,
+      note:`EVE's authoritative live zone-retracement strategy has confirmed the ${side}.`, m5, m15,
+    };
 
-    if (m5 === desired && m15 === desired) {
-      return {
-        tone:desired,
-        arrow:desiredArrow,
-        title:'REJECTION BUILDING',
-        note:`M5 and M15 are aligned ${desired} while price is in ${zoneName}. Evidence is building, but EVE has not confirmed the ${side} yet.`,
-        m5,
-        m15,
-      };
-    }
+    if (m5 === desired && m15 === desired) return {
+      tone:desired, arrow:desiredArrow, title:'REJECTION BUILDING — WAIT',
+      note:`M5 and M15 are aligned ${desired} while price is in ${zoneName}, but EVE has not confirmed the ${side}.`, m5, m15,
+    };
 
-    if (m5 === opposite && m15 === opposite) {
-      return {
-        tone:opposite,
-        arrow:oppositeArrow,
-        title:`${opposite.toUpperCase()} BREAK BUILDING`,
-        note:`M5 and M15 are aligned ${opposite} while price is in ${zoneName}. The zone may fail. Do not take the ${side} while this remains.`,
-        m5,
-        m15,
-      };
-    }
+    if (m5 === opposite && m15 === opposite) return {
+      tone:opposite, arrow:oppositeArrow, title:`${opposite.toUpperCase()} BREAK BUILDING`,
+      note:`M5 and M15 are aligned ${opposite} while price is in ${zoneName}. Do not take the ${side} while this remains.`, m5, m15,
+    };
 
     return {
-      tone:'undecided',
-      arrow:'↕',
-      title:'UNDECIDED — WAIT',
-      note:`M5 and M15 do not agree yet. EVE cannot tell whether ${zoneName} will reject or break. Wait.`,
-      m5,
-      m15,
+      tone:'undecided', arrow:'↕', title:'UNDECIDED — WAIT',
+      note:`M5 and M15 do not agree yet. EVE has not confirmed the ${side}.`, m5, m15,
     };
   }
 
@@ -259,12 +327,7 @@
     }
 
     return {
-      bosText,
-      bosClass,
-      bosNote,
-      chochText,
-      chochClass,
-      chochNote,
+      bosText, bosClass, bosNote, chochText, chochClass, chochNote,
       summary:String(structure.summary || 'Building current-session M5 structure readout…'),
     };
   }
@@ -279,30 +342,80 @@
     panel = document.createElement('div');
     panel.id = 'ltSessionOutlookPanel';
     panel.className = 'lt-session-outlook';
+    panel.dataset.integrityVersion = CARD_INTEGRITY_VERSION;
     const statusRow = biasCard.querySelector('.lt-status-row');
     if (statusRow) statusRow.insertAdjacentElement('beforebegin', panel);
     else biasCard.appendChild(panel);
     return panel;
   }
 
+  function authorityHtml(state) {
+    const trade = state?.trade || {};
+    const action = String(trade.action || 'WAIT').toUpperCase();
+    const waiting = action === 'WAIT' || action === 'NO TRADE' || !action;
+    const tone = waiting ? 'wait' : action.includes('SELL') ? 'sell' : 'buy';
+    const reason = String(trade.reason || state?.setup?.reason || '');
+    return `
+      <div class="lt-session-authority">
+        <span>AUTHORITATIVE TRADE ACTION</span>
+        <strong class="${tone}">${safe(waiting ? 'WAIT' : action)}</strong>
+        ${reason ? `<small>${safe(reason)}</small>` : ''}
+      </div>`;
+  }
+
+  function integrityHtml(integrity) {
+    if (!integrity.valid) {
+      return `<div class="lt-session-integrity bad">DATA CHECK FAILED · ${safe(integrity.reason || 'Live context is not validated.')}</div>`;
+    }
+    return `<div class="lt-session-integrity">DATA FRESH · SAME SNAPSHOT · M5 ${safe(utcClock(integrity.m5))} · DECISION ${safe(utcClock(integrity.decision))} · LAG ${safe(integrity.lag)}m</div>`;
+  }
+
+  function renderInvalid(state, integrity) {
+    const panel = ensurePanel();
+    if (!panel) return;
+    panel.classList.add('invalid');
+    panel.innerHTML = `
+      <div class="lt-session-outlook-head">
+        <div><span>SESSION LEAN</span><div class="lt-session-outlook-direction wait">WAIT — DATA NOT VALID</div></div>
+      </div>
+      ${integrityHtml(integrity)}
+      ${authorityHtml(state)}
+      <p class="lt-session-outlook-note">Directional outlook, BOS/CHoCH, retrace zones and stop references must not be trusted until the live-context check is valid again.</p>`;
+  }
+
   function render(state) {
     const panel = ensurePanel();
     if (!panel) return;
+
+    const integrity = contextIntegrity(state);
+    if (!integrity.valid) {
+      renderInvalid(state, integrity);
+      return;
+    }
+
+    panel.classList.remove('invalid');
     const outlook = state?.session_outlook || state?.market?.session_outlook || {};
     const direction = String(outlook.direction || '').toLowerCase();
     if (!['bullish','bearish'].includes(direction)) {
-      panel.innerHTML = '<span>SESSION OUTLOOK</span><div class="lt-session-outlook-meta">Building directional opinion…</div>';
+      panel.innerHTML = `
+        <span>SESSION LEAN</span>
+        ${integrityHtml(integrity)}
+        ${authorityHtml(state)}
+        <div class="lt-session-outlook-meta">No directional session lean is currently available.</div>`;
       return;
     }
+
     const confidence = Number(outlook.confidence || 51);
     const conviction = String(outlook.conviction || (confidence <= 57 ? 'slight' : confidence <= 66 ? 'moderate' : confidence <= 76 ? 'clear' : 'strong'));
     const session = String(outlook.session_label || outlook.session || 'current').replaceAll('_',' ');
-    const reasons = Array.isArray(outlook.reasons) ? outlook.reasons.filter(Boolean).slice(0,2) : [];
+    const reasons = Array.isArray(outlook.reasons) ? outlook.reasons.filter(Boolean).slice(0,3) : [];
+    const headwinds = Array.isArray(outlook.headwinds) ? outlook.headwinds.filter(Boolean).slice(0,2) : [];
     const flip = String(outlook.flip_text || '');
     const tradeBias = String(state?.bias?.overall || 'neutral').toUpperCase();
     const structure = structurePlan(outlook);
     const retrace = retracePlan(state, direction);
     const decision = zoneDecision(state, direction, retrace);
+
     const structureHtml = `
       <div class="lt-session-structure">
         <div class="lt-session-structure-item">
@@ -317,47 +430,44 @@
         </div>
         <p class="lt-session-structure-summary">${safe(structure.summary)}</p>
       </div>`;
-    const retraceHtml = retrace ? `
+
+    const retraceHtml = retrace?.available ? `
       <div class="lt-session-outlook-retrace">
-        <div class="lt-session-outlook-retrace-head"><span>${safe(retrace.title)}</span><small>LIVE · AUTO-UPDATING</small></div>
+        <div class="lt-session-outlook-retrace-head"><span>${safe(retrace.title)}</span><small>SAME SNAPSHOT · AUTO-UPDATING</small></div>
         <div class="lt-session-outlook-retrace-range ${safe(direction)}">${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
-        <div class="lt-session-outlook-retrace-meta">CURRENT ${safe(retrace.kind)}${retrace.quality == null ? '' : ` · QUALITY ${safe(Math.round(retrace.quality))}/100`}</div>
+        <div class="lt-session-outlook-retrace-meta">CURRENT ${safe(retrace.kind)}${retrace.quality == null ? '' : ` · QUALITY ${safe(Math.round(retrace.quality))}/100`} · ${safe(retrace.distanceAtr.toFixed(2))} ATR</div>
         <p class="lt-session-outlook-retrace-note">${safe(retrace.note)}</p>
         ${zoneDecisionHtml(decision, retrace)}
       </div>` : `
       <div class="lt-session-outlook-retrace">
-        <div class="lt-session-outlook-retrace-head"><span>RETRACE BEFORE ${direction === 'bearish' ? 'SELL' : 'BUY'}</span><small>LIVE · AUTO-UPDATING</small></div>
-        <p class="lt-session-outlook-retrace-note">No valid current ${direction === 'bearish' ? 'supply above price' : 'demand below price'} yet. EVE will fill this automatically when one is available.</p>
+        <div class="lt-session-outlook-retrace-head"><span>NO QUALIFIED RETRACE PLAN</span><small>SAME SNAPSHOT</small></div>
+        <p class="lt-session-outlook-retrace-note">${safe(retrace?.reason || 'No qualified current retrace zone is available.')}</p>
       </div>`;
 
     panel.innerHTML = `
       <div class="lt-session-outlook-head">
-        <div><span>SESSION OUTLOOK</span><div class="lt-session-outlook-direction ${safe(direction)}">${safe(direction.toUpperCase())}</div></div>
-        <div class="lt-session-outlook-confidence">${safe(confidence)}/100</div>
+        <div><span>SESSION LEAN</span><div class="lt-session-outlook-direction ${safe(direction)}">${safe(direction.toUpperCase())} LEAN</div></div>
+        <div class="lt-session-outlook-confidence"><span>LEAN STRENGTH · NOT WIN RATE</span><strong>${safe(confidence)}/100</strong></div>
       </div>
       <div class="lt-session-outlook-meta">${safe(conviction)} lean · ${safe(session)} session</div>
+      ${integrityHtml(integrity)}
+      ${authorityHtml(state)}
       <p class="lt-session-outlook-reasons">${momentumReasonsHtml(reasons)}</p>
+      ${headwinds.length ? `<p class="lt-session-headwinds"><b>HEADWINDS / OPPOSING EVIDENCE</b><br>${safe(headwinds.join(' '))}</p>` : ''}
       ${structureHtml}
       ${retraceHtml}
       <p class="lt-session-outlook-flip">${safe(flip)}</p>
-      <p class="lt-session-outlook-note">Trade bias: ${safe(tradeBias)} · BOS/CHoCH, retrace and zone-decision information are display guidance only. Only EVE's existing live trade state can confirm a trade.</p>`;
+      <p class="lt-session-outlook-note">Trade bias: ${safe(tradeBias)} · Session lean is an opinion, not a trade signal. BOS/CHoCH and zone guidance are display context. Only AUTHORITATIVE TRADE ACTION above is execution authority.</p>`;
   }
 
-  async function refresh() {
-    const view = document.getElementById('view-live-trader');
-    if (!view || !view.classList.contains('active')) return;
-    try {
-      const state = await api('/live-trader');
-      render(state);
-    } catch (_) {}
+  function consume(event) {
+    const state = event?.detail?.state;
+    if (state && typeof state === 'object') render(state);
   }
 
-  function start() {
-    clearInterval(timer);
-    refresh();
-    timer = setInterval(refresh, 2500);
-  }
-
-  document.querySelector('[data-view="live-trader"]')?.addEventListener('click', start);
-  if (document.getElementById('view-live-trader')?.classList.contains('active')) start();
+  window.addEventListener('eve:live-trader-state', consume);
+  document.querySelector('[data-view="live-trader"]')?.addEventListener('click', () => {
+    if (window.__eveLiveTraderState) render(window.__eveLiveTraderState);
+  });
+  if (window.__eveLiveTraderState) render(window.__eveLiveTraderState);
 })();
