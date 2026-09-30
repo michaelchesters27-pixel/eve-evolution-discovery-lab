@@ -53,6 +53,11 @@ def test_completed_m5_structure_detects_bearish_bos_then_bullish_choch() -> None
     assert readout["choch"]["level"] == 103.0
     assert readout["bos_waiting_after_choch"] is True
     assert readout["bos_support"] == "none"
+    assert readout["bos_confirmation"]["direction"] == "bullish"
+    assert readout["bos_confirmation"]["level"] == 106.0
+    assert readout["bos_confirmation"]["relation"] == "above"
+    assert readout["bos_confirmation"]["confirmation"] == "completed_m5_close"
+    assert readout["bos_confirmation"]["buffer_rule"] == "max(atr_14 * 0.02, 0.01)"
     assert "waiting for a confirming BULLISH BOS" in readout["summary"]
     assert readout["display_only"] is True
     assert readout["affects_trade_gate"] is False
