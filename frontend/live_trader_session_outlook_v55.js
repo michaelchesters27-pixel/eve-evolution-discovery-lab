@@ -62,7 +62,9 @@
     .lt-zone-decision.undecided .lt-zone-decision-arrow,.lt-zone-decision.undecided .lt-zone-decision-title{color:var(--amber)}
     .lt-zone-decision-kicker{font-size:8px;color:var(--muted);font-weight:900;letter-spacing:.08em;text-transform:uppercase}
     .lt-zone-decision-title{margin-top:3px;font-size:13px;font-weight:900;line-height:1.2}
-    .lt-zone-decision-range{margin-top:4px;font-size:12px;font-weight:900;color:#e7f4ed;font-variant-numeric:tabular-nums}
+    .lt-zone-decision-side{margin-top:4px;font-size:11px;font-weight:900;letter-spacing:.05em}
+    .lt-zone-decision-range{margin-top:3px;font-size:12px;font-weight:900;color:#e7f4ed;font-variant-numeric:tabular-nums}
+    .lt-zone-decision-meta{margin-top:4px;font-size:8px;color:var(--muted);font-weight:800;letter-spacing:.04em;text-transform:uppercase}
     .lt-zone-decision-note{margin:4px 0 0;font-size:9px;line-height:1.4;color:#c2d6cc}
     .lt-zone-decision-tfs{margin-top:5px;font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
     @keyframes eve-zone-pulse{0%,100%{transform:scale(.9);opacity:.72}50%{transform:scale(1.14);opacity:1}}
@@ -228,6 +230,11 @@
       side,
       quality:selected.quality,
       distanceAtr:selected.distanceAtr,
+      fresh:selected.zone?.fresh === true,
+      retests:Math.max(0, Number(selected.zone?.retests || 0)),
+      zoneRole:String(selected.zone?.zone_role || 'M5_ONLY'),
+      h1Confluence:selected.zone?.h1_confluence === true,
+      m15Confluence:selected.zone?.m15_confluence === true,
       inZone,
       note,
     };
@@ -285,13 +292,25 @@
   function zoneDecisionHtml(decision, retrace) {
     if (!decision) return '';
     const tfLabel = value => ['bullish','bearish','neutral'].includes(value) ? value.toUpperCase() : 'UNKNOWN';
+    const backing = retrace.h1Confluence && retrace.m15Confluence
+      ? 'H1 + M15 BACKED'
+      : retrace.h1Confluence
+        ? 'H1 BACKED'
+        : retrace.m15Confluence
+          ? 'M15 BACKED'
+          : 'M5 ONLY';
+    const quality = retrace.quality == null ? 'QUALITY —' : `QUALITY ${Math.round(retrace.quality)}/100`;
+    const retests = `${retrace.retests} RETEST${retrace.retests === 1 ? '' : 'S'}`;
+    const freshness = retrace.fresh ? 'FRESH' : 'USED';
     return `
       <div class="lt-zone-decision ${safe(decision.tone)}">
         <div class="lt-zone-decision-arrow" aria-hidden="true">${safe(decision.arrow)}</div>
         <div>
           <div class="lt-zone-decision-kicker">PRICE IS IN ${safe(retrace.kind)} · ZONE DECISION</div>
           <div class="lt-zone-decision-title">${safe(decision.title)}</div>
-          <div class="lt-zone-decision-range">${safe(retrace.kind)} ZONE ${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
+          <div class="lt-zone-decision-side">POTENTIAL ${safe(retrace.side)} ZONE</div>
+          <div class="lt-zone-decision-range">${safe(retrace.kind)} ${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
+          <div class="lt-zone-decision-meta">${safe(backing)} · ${safe(quality)} · ${safe(retests)} · ${safe(freshness)}</div>
           <p class="lt-zone-decision-note">${safe(decision.note)}</p>
           <div class="lt-zone-decision-tfs">M5 ${safe(tfLabel(decision.m5))} · M15 ${safe(tfLabel(decision.m15))}</div>
         </div>
