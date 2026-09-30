@@ -67,3 +67,32 @@ def test_completed_m5_structure_detects_bearish_bos_then_bullish_choch() -> None
 
 def test_structure_display_does_not_replace_hardened_trade_engine() -> None:
     assert core.LiveTrader._trade_idea is runtime._trade_idea_v51
+
+
+def test_completed_m5_structure_exposes_bearish_bos_confirmation_level() -> None:
+    values = [
+        (102, 100, 101),
+        (101, 98, 99),
+        (100, 95, 96),
+        (102, 97, 101),
+        (105, 99, 104),
+        (104, 100, 102),
+        (104, 101, 103),
+        (107, 102, 106),
+        (106, 101, 102),
+        (103, 97, 98),
+        (103, 99, 101),
+        (104, 100, 102),
+        (103, 98, 99),
+        (100, 94, 95),
+        (99, 96, 97),
+        (101, 97, 100),
+    ]
+    trader = DummyTrader([_row(index, *value) for index, value in enumerate(values)])
+    readout = structure.build_structure_readout(trader, {"market": {"session": "london"}, "trade": {"action": "WAIT"}})
+
+    assert readout["choch_direction"] == "bearish"
+    assert readout["bos_waiting_after_choch"] is True
+    assert readout["bos_confirmation"]["direction"] == "bearish"
+    assert readout["bos_confirmation"]["level"] == 94.0
+    assert readout["bos_confirmation"]["relation"] == "below"
