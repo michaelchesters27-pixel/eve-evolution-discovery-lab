@@ -110,21 +110,28 @@ def test_chart_zone_keeps_same_id_when_price_moves_back_inside() -> None:
 
 
 def _rows(origin_close: float, later_closes: list[float]) -> list[dict]:
-    rows = [
-        {
-            "candle_time": f"2026-09-30T15:{minute:02d}:00+00:00",
-            "close": origin_close,
-        }
-        for minute in range(0, 45, 5)
+    # Zone formation uses the origin bar plus the next eight M5 bars.
+    # Strict chart invalidation begins only after that same causal window.
+    formation_times = [
+        "2026-09-30T15:25:00+00:00",
+        "2026-09-30T15:30:00+00:00",
+        "2026-09-30T15:35:00+00:00",
+        "2026-09-30T15:40:00+00:00",
+        "2026-09-30T15:45:00+00:00",
+        "2026-09-30T15:50:00+00:00",
+        "2026-09-30T15:55:00+00:00",
+        "2026-09-30T16:00:00+00:00",
+        "2026-09-30T16:05:00+00:00",
     ]
-    rows[5]["candle_time"] = "2026-09-30T15:25:00+00:00"
-    for offset, close in enumerate(later_closes, start=0):
-        rows.append(
-            {
-                "candle_time": f"2026-09-30T16:{offset * 5:02d}:00+00:00",
-                "close": close,
-            }
-        )
+    rows = [{"candle_time": stamp, "close": origin_close} for stamp in formation_times]
+    later_times = [
+        "2026-09-30T16:10:00+00:00",
+        "2026-09-30T16:15:00+00:00",
+        "2026-09-30T16:20:00+00:00",
+        "2026-09-30T16:25:00+00:00",
+    ]
+    for stamp, close in zip(later_times, later_closes):
+        rows.append({"candle_time": stamp, "close": close})
     return rows
 
 
