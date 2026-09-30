@@ -37,7 +37,7 @@
           <div class="lt-confidence" id="ltConfidence">Bias confidence —</div>
           <div class="lt-status-row" style="margin-top:18px">
             <div class="lt-status"><span>Trade action</span><strong id="ltSetup">WAIT</strong><small id="ltSetupGate" style="display:block;margin-top:4px;color:var(--muted);font-size:8px">Setup gate: WATCHING</small></div>
-            <div class="lt-status"><span>Session</span><strong id="ltSession">—</strong></div>
+            <div class="lt-status"><span>Market session</span><strong id="ltSession">—</strong></div>
             <div class="lt-status"><span>Regime</span><strong id="ltRegime">—</strong></div>
             <div class="lt-status"><span>Bias-side magnet</span><strong id="ltMagnet">—</strong><small style="display:block;margin-top:4px;color:var(--muted);font-size:8px">Nearest level in current bias direction</small></div>
           </div>
