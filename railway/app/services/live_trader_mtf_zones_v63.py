@@ -149,12 +149,43 @@ def _confluence(zone: dict[str, Any], h1: list[dict[str, Any]], m15: list[dict[s
     return result
 
 
+def _chart_zone_broken_by_completed_m5_close(
+    zone: dict[str, Any],
+    kind: str,
+    rows: list[dict[str, Any]],
+) -> tuple[bool, str | None, float | None]:
+    # Core zone creation deliberately reserves the eight M5 bars after the
+    # pivot for proving departure. Its own "later" invalidation window begins
+    # at origin + 9 bars. Chart mapping uses that identical causal start point,
+    # but invalidates at the actual zone edge rather than the trade engine's
+    # extra 0.20 ATR tolerance.
+    source = list(rows[-360:])
+    origin = str(zone.get("origin_time") or "")
+    origin_index = next(
+        (index for index, row in enumerate(source) if str(row.get("candle_time") or "") == origin),
+        None,
+    )
+    if origin_index is None:
+        return False, None, None
+
+    low = _num(zone.get("low"))
+    high = _num(zone.get("high"))
+    for row in source[origin_index + 9:]:
+        close = _num(row.get("close"))
+        if kind == "demand" and close < low:
+            return True, str(row.get("candle_time") or ""), close
+        if kind == "supply" and close > high:
+            return True, str(row.get("candle_time") or ""), close
+    return False, None, None
+
+
 def _chart_zones_v95(
     self: core.LiveTrader,
     price: float,
     atr: float,
     h1: dict[str, list[dict[str, Any]]],
     m15: dict[str, list[dict[str, Any]]],
+    rows: list[dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
     raw_pool = getattr(self, "_chart_zone_raw_v95", None)
     if not isinstance(raw_pool, dict):
@@ -162,7 +193,22 @@ def _chart_zones_v95(
 
     result: dict[str, list[dict[str, Any]]] = {"demand": [], "supply": []}
     for kind in ("demand", "supply"):
-        annotated = [_confluence(dict(zone), h1[kind], m15[kind], atr) for zone in list(raw_pool.get(kind) or [])]
+        annotated: list[dict[str, Any]] = []
+        for raw_zone in list(raw_pool.get(kind) or []):
+            broken, broken_at, broken_close = _chart_zone_broken_by_completed_m5_close(raw_zone, kind, rows)
+            if broken:
+                continue
+            zone = _confluence(dict(raw_zone), h1[kind], m15[kind], atr)
+            zone["chart_invalidation_rule"] = (
+                "completed_m5_close_below_zone_low"
+                if kind == "demand"
+                else "completed_m5_close_above_zone_high"
+            )
+            zone["chart_last_break_check_at"] = str((rows[-1] if rows else {}).get("candle_time") or "")
+            zone["chart_broken_at"] = broken_at
+            zone["chart_broken_close"] = broken_close
+            annotated.append(zone)
+
         for zone in annotated:
             low = _num(zone.get("low"))
             high = _num(zone.get("high"))
@@ -177,11 +223,11 @@ def _chart_zones_v95(
             else:
                 zone["chart_state"] = "ACTIVE"
 
-        # Chart mapping deliberately keeps every still-valid native M5
-        # zone from the engine lookback.  Do not top-N, proximity-filter or
-        # dynamically dedupe this list: any of those can make a zone that a
-        # trader has already drawn disappear and later reappear even though the
-        # zone itself was never invalidated.
+        # Chart mapping deliberately keeps every native M5 zone that has
+        # NOT had a completed M5 close through its actual zone edge. Do not
+        # top-N, proximity-filter or dynamically dedupe this list: those can
+        # make a zone already drawn by the trader disappear/reappear without a
+        # real structural break.
         annotated.sort(
             key=lambda z: (
                 _num(z.get("distance_atr")),
@@ -213,7 +259,7 @@ def _zone_candidates_v63(self: core.LiveTrader, rows: list[dict[str, Any]], pric
             zone["preferred"] = index == 1
         result[kind] = final
 
-    self._chart_zones_v95 = _chart_zones_v95(self, price, atr, h1, m15)
+    self._chart_zones_v95 = _chart_zones_v95(self, price, atr, h1, m15, rows)
 
     self._mtf_zone_map_v63 = {
         "version": MTF_ZONE_VERSION,
