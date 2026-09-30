@@ -36,10 +36,10 @@ def test_zone_decision_labels_buy_sell_potential_without_creating_authority():
     root = _repo_root()
     source = (root / "frontend" / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
 
-    assert "POTENTIAL \${side} ZONE" in source
+    assert "POTENTIAL ${side} ZONE" in source
     assert "H1 + M15 BACKED" in source
     assert "M5 ONLY" in source
-    assert "QUALITY \${Math.round(test.quality)}/100" in source
+    assert "QUALITY ${Math.round(test.quality)}/100" in source
     assert "RETEST" in source
     assert "FRESH" in source and "USED" in source
     assert "state.trade =" not in source
