@@ -8,6 +8,7 @@ MTF_ZONE_VERSION = "eve-live-mtf-zones-v63"
 MIN_NATIVE_QUALITY = 58
 MAX_NATIVE_RETESTS = 2
 FINAL_ZONE_COUNT = 4
+CHART_ZONE_COUNT = 8
 _BASE_ZONE_CANDIDATES = core.LiveTrader._zone_candidates
 
 
@@ -149,6 +150,58 @@ def _confluence(zone: dict[str, Any], h1: list[dict[str, Any]], m15: list[dict[s
     return result
 
 
+def _chart_zones_v95(
+    self: core.LiveTrader,
+    price: float,
+    atr: float,
+    h1: dict[str, list[dict[str, Any]]],
+    m15: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    raw_pool = getattr(self, "_chart_zone_raw_v95", None)
+    if not isinstance(raw_pool, dict):
+        return {"demand": [], "supply": []}
+
+    result: dict[str, list[dict[str, Any]]] = {"demand": [], "supply": []}
+    for kind in ("demand", "supply"):
+        annotated = [_confluence(dict(zone), h1[kind], m15[kind], atr) for zone in list(raw_pool.get(kind) or [])]
+        for zone in annotated:
+            low = _num(zone.get("low"))
+            high = _num(zone.get("high"))
+            distance = 0.0 if low <= price <= high else min(abs(price - low), abs(price - high))
+            zone["distance_atr"] = round(distance / max(atr, 0.01), 2)
+            if low <= price <= high:
+                zone["chart_state"] = "IN ZONE"
+            elif kind == "demand" and price < low:
+                zone["chart_state"] = "UNDER PRESSURE"
+            elif kind == "supply" and price > high:
+                zone["chart_state"] = "UNDER PRESSURE"
+            else:
+                zone["chart_state"] = "ACTIVE"
+
+        annotated.sort(
+            key=lambda z: (
+                _num(z.get("distance_atr")),
+                -int(z.get("mtf_confluence_count") or 0),
+                -_num(z.get("quality")),
+                int(z.get("retests") or 0),
+            )
+        )
+        kept: list[dict[str, Any]] = []
+        for zone in annotated:
+            midpoint = _num(zone.get("mid"))
+            if any(abs(midpoint - _num(other.get("mid"))) <= atr * 0.65 for other in kept):
+                continue
+            kept.append(zone)
+            if len(kept) >= CHART_ZONE_COUNT:
+                break
+
+        for index, zone in enumerate(kept, start=1):
+            zone["chart_rank"] = index
+        result[kind] = kept
+
+    return result
+
+
 def _zone_candidates_v63(self: core.LiveTrader, rows: list[dict[str, Any]], price: float, bias: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     base = _BASE_ZONE_CANDIDATES(self, rows, price, bias)
     atr = max(_num((rows[-1] if rows else {}).get("atr_14")), 0.01)
@@ -164,6 +217,8 @@ def _zone_candidates_v63(self: core.LiveTrader, rows: list[dict[str, Any]], pric
             zone["rank"] = index
             zone["preferred"] = index == 1
         result[kind] = final
+
+    self._chart_zones_v95 = _chart_zones_v95(self, price, atr, h1, m15)
 
     self._mtf_zone_map_v63 = {
         "version": MTF_ZONE_VERSION,
