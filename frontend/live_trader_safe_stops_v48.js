@@ -25,19 +25,19 @@
 
   const buy = document.createElement('div');
   buy.className = 'lt-status lt-safe-stop lt-safe-buy';
-  buy.innerHTML = '<span>Buy structural SL ref</span><strong id="ltSafeBuyStop">—</strong><small>Reference only · not a live trade stop</small>';
+  buy.innerHTML = '<span>Global buy structural ref</span><strong id="ltSafeBuyStop">—</strong><small>Overall structure · use zone-specific SL refs above</small>';
 
   const buySweep = document.createElement('div');
   buySweep.className = 'lt-status lt-sweep-protection lt-sweep-buy';
-  buySweep.innerHTML = '<span>Buy sweep buffer</span><strong id="ltBuySweepProtection">—</strong><small>Relative to the structural reference</small>';
+  buySweep.innerHTML = '<span>Global buy sweep check</span><strong id="ltBuySweepProtection">—</strong><small>Overall structure only</small>';
 
   const sell = document.createElement('div');
   sell.className = 'lt-status lt-safe-stop lt-safe-sell';
-  sell.innerHTML = '<span>Sell structural SL ref</span><strong id="ltSafeSellStop">—</strong><small>Reference only · not a live trade stop</small>';
+  sell.innerHTML = '<span>Global sell structural ref</span><strong id="ltSafeSellStop">—</strong><small>Overall structure · use zone-specific SL refs above</small>';
 
   const sellSweep = document.createElement('div');
   sellSweep.className = 'lt-status lt-sweep-protection lt-sweep-sell';
-  sellSweep.innerHTML = '<span>Sell sweep buffer</span><strong id="ltSellSweepProtection">—</strong><small>Relative to the structural reference</small>';
+  sellSweep.innerHTML = '<span>Global sell sweep check</span><strong id="ltSellSweepProtection">—</strong><small>Overall structure only</small>';
 
   statusRow.append(buy, buySweep, sell, sellSweep);
 
