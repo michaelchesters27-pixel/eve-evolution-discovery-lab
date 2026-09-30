@@ -140,7 +140,7 @@ def test_eve_view_always_lists_relevant_buy_and_sell_chart_zones() -> None:
     assert "QUALITY" in session
     assert "RETEST" in session
     assert "FRESH" in session and "USED" in session
-    assert "only AUTHORITATIVE TRADE ACTION is execution authority" in session
+    assert "Only AUTHORITATIVE TRADE ACTION is execution authority" in session
     assert "api('/live-trader')" not in session
     assert 'api("/live-trader")' not in session
 
@@ -160,4 +160,4 @@ def test_eve_view_chart_zones_have_zone_specific_sweep_aware_sl_refs() -> None:
     assert "SL REF ${safe(fmt(zone.slRef?.level))}" in session
     assert "Math.abs(level - edge) <= huntBand" in session
     assert "Math.abs(extreme - edge) <= huntBand" in session
-    assert "only AUTHORITATIVE TRADE ACTION is execution authority" in session
+    assert "Only AUTHORITATIVE TRADE ACTION is execution authority" in session
