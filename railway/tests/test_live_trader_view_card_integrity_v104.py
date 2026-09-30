@@ -125,8 +125,9 @@ def test_eve_view_always_lists_relevant_buy_and_sell_chart_zones() -> None:
     session = (_frontend() / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
 
     assert "RELEVANT CHART ZONES" in session
-    assert "BUY ZONES" in session
-    assert "SELL ZONES" in session
+    assert "chartZoneColumn(state, 'demand', 'BUY')" in session
+    assert "chartZoneColumn(state, 'supply', 'SELL')" in session
+    assert "${side} ZONES" in session
     assert "SAME SNAPSHOT · NEAREST FIRST" in session
     assert "chartZoneRows(state, kind)" in session
     assert "state?.zones?.[kind]" in session
