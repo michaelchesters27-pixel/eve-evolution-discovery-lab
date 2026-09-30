@@ -130,7 +130,8 @@ def test_eve_view_always_lists_relevant_buy_and_sell_chart_zones() -> None:
     assert "${side} ZONES" in session
     assert "SAME SNAPSHOT · NEAREST FIRST" in session
     assert "chartZoneRows(state, kind)" in session
-    assert "state?.chart_zones || state?.zones || {}" in session
+    assert "state?.chart_zones?.[kind]" in session
+    assert "state?.chart_zones || state?.zones || {}" not in session
     assert ".sort((a,b) => a.distance - b.distance)" in session
     assert ".slice(0, 3)" not in session
     assert "H1 + M15 BACKED" in session
@@ -167,11 +168,10 @@ def test_chart_zone_panel_uses_persistent_valid_zone_feed() -> None:
     session = (_frontend() / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
     core = (Path(__file__).resolve().parents[2] / "railway" / "app" / "services" / "live_trader.py").read_text(encoding="utf-8")
 
-    assert "state?.chart_zones || state?.zones || {}" in session
+    assert "state?.chart_zones?.[kind]" in session
     assert "UNDER PRESSURE" in session
-    assert "BUY zones are removed after a completed M5 close below the zone low" in session
-    assert "SELL zones are removed after a completed M5 close above the zone high" in session
-    assert "Wicks alone do not invalidate them" in session
+    assert "BROKEN IF M5 CLOSES <" in session
+    assert "BROKEN IF M5 CLOSES >" in session
     assert '"chart_zones": getattr(self, "_chart_zones_v95", zones)' in core
 
 
@@ -183,3 +183,28 @@ def test_chart_zone_backend_uses_actual_zone_edge_not_trade_atr_tolerance() -> N
     assert 'kind == "supply" and close > high' in backend
     assert "origin_index + 9" in backend
     assert "atr * 0.2" not in backend[backend.index("def _chart_zone_broken_by_completed_m5_close"):backend.index("def _chart_zones_v95")]
+
+
+def test_chart_zone_panel_is_easy_live_trading_cockpit() -> None:
+    session = (_frontend() / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
+
+    assert "function zoneCockpitSummary(state)" in session
+    assert "LIVE PRICE" in session
+    assert "TRADE ACTION" in session
+    assert "NEAREST BUY" in session
+    assert "NEAREST SELL" in session
+    assert "DISTANCE" in session
+    assert "INVALIDATION" in session
+    assert "OPPOSING ZONE" in session
+    assert "M5 / M15 REACTION" in session
+    assert "BROKEN IF M5 CLOSES <" in session
+    assert "BROKEN IF M5 CLOSES >" in session
+    assert "NEXT ${zone.opposing.side}" in session
+    assert "GAP ${fmt(zone.opposing.gap)} PTS" in session
+    assert "NEAREST</span>" in session
+    assert "STRONGEST</span>" in session
+    assert "SUPPORTING ${side} REACTION" in session
+    assert "PRESSURE AGAINST ${side}" in session
+    assert "MIXED / NO CONFIRMATION" in session
+    assert "state?.chart_zones?.[kind]" in session
+    assert "state?.zones?.[kind]" not in session
