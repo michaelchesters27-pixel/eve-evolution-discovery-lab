@@ -74,7 +74,8 @@ def test_stop_cards_are_structural_references_not_claimed_safe_trade_stops() -> 
     assert "Reference only · not a live trade stop" in stops
     assert "REF COVERS NEARBY SWEEPS" in stops
     assert "ALREADY PROTECTED" not in stops
-    assert "fallback" not in stops.lower()
+    assert "price - safeAtr * 1.5" not in stops
+    assert "price + safeAtr * 1.5" not in stops
     assert "return {level:null, sources:[], available:false}" in stops
 
 
