@@ -2,7 +2,6 @@
   if (window.eveZoneDecisionToleranceV82) return;
   window.eveZoneDecisionToleranceV82 = true;
 
-  const POLL_MS = 2500;
   const HOLD_MS = 20 * 60 * 1000;
   const TOLERANCE_ATR = 0.35;
   const EARLY_REACTION_ATR = 0.20;
@@ -176,9 +175,31 @@
     }
   }
 
+  function contextValid(state) {
+    const feed = state?.feed || {};
+    const dq = state?.bias?.data_quality || {};
+    const ctx = state?.live_context_freshness || {};
+    const lag = num(ctx.context_lag_minutes ?? dq.live_context_lag_minutes);
+    return feed.status === 'live'
+      && feed.connected === true
+      && ctx.context_valid === true
+      && ctx.fresh === true
+      && dq.live_context_stale !== true
+      && dq.trade_bias_blocked !== true
+      && lag != null
+      && lag >= 0
+      && lag <= 10;
+  }
+
   function render(state) {
     const panel = document.getElementById('ltSessionOutlookPanel');
     if (!panel) return;
+    if (!contextValid(state)) {
+      active = null;
+      document.getElementById('ltZoneDecisionTolerance')?.remove();
+      nativeDecisionMode(panel, false);
+      return;
+    }
     const test = armOrUpdate(state);
     const existing = document.getElementById('ltZoneDecisionTolerance');
 
@@ -204,15 +225,14 @@
       </div>`;
   }
 
-  async function tick() {
-    const view = document.getElementById('view-live-trader');
-    if (view && !view.classList.contains('active')) return;
-    try {
-      const state = await api('/live-trader');
-      render(state);
-    } catch (_) {}
+  function consume(event) {
+    const state = event?.detail?.state;
+    if (state && typeof state === 'object') render(state);
   }
 
-  setInterval(tick, POLL_MS);
-  tick();
+  window.addEventListener('eve:live-trader-state', consume);
+  document.querySelector('[data-view="live-trader"]')?.addEventListener('click', () => {
+    if (window.__eveLiveTraderState) render(window.__eveLiveTraderState);
+  });
+  if (window.__eveLiveTraderState) render(window.__eveLiveTraderState);
 })();

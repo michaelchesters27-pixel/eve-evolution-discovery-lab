@@ -12,7 +12,7 @@ def test_zone_decision_pulse_is_on_zone_and_display_only():
 
     assert canonical == production
     assert "function zoneDecision(state, direction, retrace)" in canonical
-    assert "if (!retrace?.inZone) return null" in canonical
+    assert "if (!retrace?.available || !retrace.inZone) return null" in canonical
     assert "timeframeDirection(state, 'M5')" in canonical
     assert "timeframeDirection(state, 'M15')" in canonical
     assert "REJECTION BUILDING" in canonical
@@ -21,7 +21,8 @@ def test_zone_decision_pulse_is_on_zone_and_display_only():
     assert "REJECTION CONFIRMED" in canonical
     assert "zone_retrace_v1" in canonical
     assert "zone_retrace_confirmation" in canonical
-    assert "Only EVE's existing live trade state can confirm a trade" in canonical
+    assert "authoritative live zone-retracement strategy has confirmed" in canonical
+    assert "Only AUTHORITATIVE TRADE ACTION above is execution authority" in canonical
 
     forbidden = ["_trade_idea", "state.trade =", "state['trade'] =", "fetch('/api/trade", "order_type ="]
     assert all(token not in canonical for token in forbidden)

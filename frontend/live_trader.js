@@ -32,14 +32,14 @@
           <div class="lt-opinion" id="ltOpinion">Micky, I am loading the live market picture.</div>
         </article>
         <article class="lt-card">
-          <p class="eyebrow">EVE'S VIEW</p>
+          <p class="eyebrow">EVE'S VIEW · TRADE BIAS</p>
           <div class="lt-bias-word neutral" id="ltBias">NEUTRAL</div>
-          <div class="lt-confidence" id="ltConfidence">Confidence —</div>
+          <div class="lt-confidence" id="ltConfidence">Bias confidence —</div>
           <div class="lt-status-row" style="margin-top:18px">
-            <div class="lt-status"><span>Setup</span><strong id="ltSetup">WATCHING</strong></div>
-            <div class="lt-status"><span>Session</span><strong id="ltSession">—</strong></div>
+            <div class="lt-status"><span>Trade action</span><strong id="ltSetup">WAIT</strong><small id="ltSetupGate" style="display:block;margin-top:4px;color:var(--muted);font-size:8px">Setup gate: WATCHING</small></div>
+            <div class="lt-status"><span>Market session</span><strong id="ltSession">—</strong></div>
             <div class="lt-status"><span>Regime</span><strong id="ltRegime">—</strong></div>
-            <div class="lt-status"><span>Price magnet</span><strong id="ltMagnet">—</strong></div>
+            <div class="lt-status"><span>Bias-side magnet</span><strong id="ltMagnet">—</strong><small style="display:block;margin-top:4px;color:var(--muted);font-size:8px">Nearest level in current bias direction</small></div>
           </div>
         </article>
       </div>
@@ -299,13 +299,15 @@
     const biasEl = byId('ltBias');
     biasEl.textContent = String(bias.overall || 'neutral').toUpperCase();
     biasEl.className = `lt-bias-word ${bias.overall || 'neutral'}`;
-    byId('ltConfidence').textContent = `Confidence ${bias.confidence ?? '—'}/100`;
+    byId('ltConfidence').textContent = `Bias confidence ${bias.confidence ?? '—'}/100 · not win rate`;
     byId('ltOpinion').textContent = state.opinion || 'Micky, I am watching.';
     const market = state.market || {};
     byId('ltSession').textContent = label(market.session);
     byId('ltRegime').textContent = label(market.regime);
     byId('ltMagnet').textContent = formatPrice(market.magnet);
-    byId('ltSetup').textContent = state.setup?.status || 'WATCHING';
+    const tradeAction = String(state.trade?.action || 'WAIT').toUpperCase();
+    byId('ltSetup').textContent = ['NO TRADE',''].includes(tradeAction) ? 'WAIT' : tradeAction;
+    byId('ltSetupGate').textContent = `Setup gate: ${state.setup?.status || 'WATCHING'}`;
     byId('ltMarketLine').innerHTML = [
       `ATR ${formatPrice(market.atr)}`,
       `12-bar ${Number(market.return_12_pct || 0).toFixed(3)}%`,
@@ -332,6 +334,19 @@
       ['Setup accuracy', learning.accuracy == null ? 'Learning' : `${Math.round(learning.accuracy*100)}%`],
       ['Confidence calibration', `${Number(learning.confidence_adjustment || 0) >= 0 ? '+' : ''}${Number(learning.confidence_adjustment || 0).toFixed(1)}`]
     ].map(([name,value])=>`<div><span>${esc(name)}</span><strong>${esc(value)}</strong></div>`).join('');
+
+    // One authoritative browser snapshot feeds every sub-card inside EVE'S VIEW.
+    // Extensions must consume this event instead of independently polling /live-trader,
+    // otherwise the user can see values from different market instants on one card.
+    window.__eveLiveTraderState = state;
+    window.__eveLiveTraderStateSequence = Number(window.__eveLiveTraderStateSequence || 0) + 1;
+    window.dispatchEvent(new CustomEvent('eve:live-trader-state', {
+      detail: {
+        state,
+        sequence: window.__eveLiveTraderStateSequence,
+        rendered_at: new Date().toISOString(),
+      },
+    }));
 
     if (allowSpeak && previousState && byId('ltSpeakChanges')?.checked && view.classList.contains('active')) {
       const announcement = marketChangeAnnouncement(previousState, state);
