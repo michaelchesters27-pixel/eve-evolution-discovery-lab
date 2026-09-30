@@ -8,7 +8,6 @@ MTF_ZONE_VERSION = "eve-live-mtf-zones-v63"
 MIN_NATIVE_QUALITY = 58
 MAX_NATIVE_RETESTS = 2
 FINAL_ZONE_COUNT = 4
-CHART_ZONE_COUNT = 8
 _BASE_ZONE_CANDIDATES = core.LiveTrader._zone_candidates
 
 
@@ -178,6 +177,11 @@ def _chart_zones_v95(
             else:
                 zone["chart_state"] = "ACTIVE"
 
+        # Chart mapping deliberately keeps every still-valid native M5
+        # zone from the engine lookback.  Do not top-N, proximity-filter or
+        # dynamically dedupe this list: any of those can make a zone that a
+        # trader has already drawn disappear and later reappear even though the
+        # zone itself was never invalidated.
         annotated.sort(
             key=lambda z: (
                 _num(z.get("distance_atr")),
@@ -186,18 +190,9 @@ def _chart_zones_v95(
                 int(z.get("retests") or 0),
             )
         )
-        kept: list[dict[str, Any]] = []
-        for zone in annotated:
-            midpoint = _num(zone.get("mid"))
-            if any(abs(midpoint - _num(other.get("mid"))) <= atr * 0.65 for other in kept):
-                continue
-            kept.append(zone)
-            if len(kept) >= CHART_ZONE_COUNT:
-                break
-
-        for index, zone in enumerate(kept, start=1):
+        for index, zone in enumerate(annotated, start=1):
             zone["chart_rank"] = index
-        result[kind] = kept
+        result[kind] = annotated
 
     return result
 
