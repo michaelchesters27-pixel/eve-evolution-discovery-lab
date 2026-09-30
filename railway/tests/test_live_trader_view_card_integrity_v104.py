@@ -117,5 +117,5 @@ def test_eve_view_zone_labels_expose_side_strength_and_backing() -> None:
         assert "FRESH" in source
         assert "USED" in source
 
-    assert "POTENTIAL \${safe(retrace.side)} ZONE" in session
-    assert "POTENTIAL \${side} ZONE" in tolerance
+    assert "POTENTIAL ${safe(retrace.side)} ZONE" in session
+    assert "POTENTIAL ${side} ZONE" in tolerance
