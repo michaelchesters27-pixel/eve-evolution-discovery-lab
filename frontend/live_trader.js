@@ -333,6 +333,19 @@
       ['Confidence calibration', `${Number(learning.confidence_adjustment || 0) >= 0 ? '+' : ''}${Number(learning.confidence_adjustment || 0).toFixed(1)}`]
     ].map(([name,value])=>`<div><span>${esc(name)}</span><strong>${esc(value)}</strong></div>`).join('');
 
+    // One authoritative browser snapshot feeds every sub-card inside EVE'S VIEW.
+    // Extensions must consume this event instead of independently polling /live-trader,
+    // otherwise the user can see values from different market instants on one card.
+    window.__eveLiveTraderState = state;
+    window.__eveLiveTraderStateSequence = Number(window.__eveLiveTraderStateSequence || 0) + 1;
+    window.dispatchEvent(new CustomEvent('eve:live-trader-state', {
+      detail: {
+        state,
+        sequence: window.__eveLiveTraderStateSequence,
+        rendered_at: new Date().toISOString(),
+      },
+    }));
+
     if (allowSpeak && previousState && byId('ltSpeakChanges')?.checked && view.classList.contains('active')) {
       const announcement = marketChangeAnnouncement(previousState, state);
       if (announcement && speak(announcement.text, announcement)) {
