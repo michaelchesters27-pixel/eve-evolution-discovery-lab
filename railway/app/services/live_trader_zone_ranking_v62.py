@@ -29,6 +29,17 @@ def _dedupe_zones_v62(
     *,
     kind: str,
 ) -> list[dict[str, Any]]:
+    # Preserve the full set of still-valid native zones before the trade-facing
+    # proximity filter is applied.  The chart panel uses this separate pool so
+    # a legitimate mapped zone does not disappear merely because price moves
+    # more than 0.5 ATR through/past it.  Invalid zones never reach this
+    # function because core._zone_candidates removes them first.
+    raw_pool = getattr(self, "_chart_zone_raw_v95", None)
+    if not isinstance(raw_pool, dict):
+        raw_pool = {"demand": [], "supply": []}
+    raw_pool[kind] = [dict(item) for item in zones]
+    self._chart_zone_raw_v95 = raw_pool
+
     eligible: list[dict[str, Any]] = []
     for raw in zones:
         zone = dict(raw)

@@ -433,7 +433,8 @@
 
   function chartZoneRows(state, kind) {
     const price = number(state?.price);
-    const zones = Array.isArray(state?.zones?.[kind]) ? state.zones[kind] : [];
+    const chartSource = state?.chart_zones || state?.zones || {};
+    const zones = Array.isArray(chartSource?.[kind]) ? chartSource[kind] : [];
     return zones
       .map(zone => {
         const low = number(zone?.low);
@@ -452,12 +453,12 @@
           retests:Math.max(0, Number(zone?.retests || 0)),
           fresh:zone?.fresh === true,
           backing:chartZoneBacking(zone),
+          chartState:String(zone?.chart_state || zone?.status || 'ACTIVE').toUpperCase(),
           slRef:zoneSpecificSlReference(state, kind, low, high),
         };
       })
       .filter(Boolean)
-      .sort((a,b) => a.distance - b.distance)
-      .slice(0, 3);
+      .sort((a,b) => a.distance - b.distance);
   }
 
   function chartZoneColumn(state, kind, side) {
@@ -472,10 +473,11 @@
           const quality = zone.quality == null ? 'QUALITY —' : `QUALITY ${Math.round(zone.quality)}/100`;
           const retests = `${zone.retests} RETEST${zone.retests === 1 ? '' : 'S'}`;
           const freshness = zone.fresh ? 'FRESH' : 'USED';
+          const chartState = zone.chartState === 'UNDER PRESSURE' ? ' · UNDER PRESSURE' : zone.chartState === 'IN ZONE' ? ' · IN ZONE' : '';
           return `
             <div class="lt-chart-zone-row">
               <div class="lt-chart-zone-price">${index + 1}. ${safe(fmt(zone.low))} – ${safe(fmt(zone.high))}</div>
-              <div class="lt-chart-zone-meta">${safe(zone.backing)} · ${safe(quality)} · ${safe(retests)} · ${safe(freshness)}</div>
+              <div class="lt-chart-zone-meta">${safe(zone.backing)} · ${safe(quality)} · ${safe(retests)} · ${safe(freshness)}${safe(chartState)}</div>
               <div class="lt-chart-zone-sl"><strong>SL REF ${safe(fmt(zone.slRef?.level))}</strong><small>${safe(zone.slRef?.basis || 'STRUCTURAL REF')} · ${safe(zone.slRef?.detail || '')}</small></div>
             </div>`;
         }).join('')}
@@ -493,7 +495,7 @@
           ${chartZoneColumn(state, 'demand', 'BUY')}
           ${chartZoneColumn(state, 'supply', 'SELL')}
         </div>
-        <div class="lt-chart-zones-note">For drawing on your chart. Each SL REF is zone-specific and sweep/liquidity-aware where relevant; it is still a reference, not an instruction. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
+        <div class="lt-chart-zones-note">For drawing on your chart. These zones stay mapped until EVE's completed-candle invalidation removes them or they genuinely age out of the zone lookback; moving past a proximity threshold or changing rank will not make them disappear. Each SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
       </div>`;
   }
 

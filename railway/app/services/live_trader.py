@@ -601,6 +601,7 @@ class LiveTrader:
                 "fabric_time": latest.get("candle_time"),
             },
             "zones": zones,
+            "chart_zones": getattr(self, "_chart_zones_v95", zones),
             "liquidity": liquidity,
             "setup": setup,
             "trade": trade,

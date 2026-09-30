@@ -1,5 +1,5 @@
 (() => {
-  const UI_BUILD = '94';
+  const UI_BUILD = '95';
   window.__eveLiveTraderUiBuild = `v${UI_BUILD}`;
 
   const load = (src, done) => {
