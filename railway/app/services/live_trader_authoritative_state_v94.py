@@ -193,6 +193,7 @@ def _authority_metadata(
         "authoritative": True,
         "assembled_after_all_runtime_wrappers": True,
         "persisted_after_all_runtime_wrappers": True,
+        "chart_zones_persisted_in_final_state": True,
         "current_policy_academy_source": "live_trader_zone_retrace_current_policy_cohort_state",
         "current_policy_academy_read_ok": bool(academy_result.get("read_ok")),
         "current_policy_academy_cohort_id": academy_result.get("expected_cohort_id"),
@@ -252,6 +253,22 @@ async def _refresh_state_v94(self: core.LiveTrader, *, force_rows: bool = False)
         state = dict(await _current_refresh_state(self, force_rows=force_rows))
     finally:
         self._authoritative_refresh_active_v94 = False
+
+    chart_zones = getattr(self, "_chart_zones_v95", None)
+    if isinstance(chart_zones, dict):
+        state["chart_zones"] = {
+            "demand": [dict(zone) for zone in list(chart_zones.get("demand") or [])],
+            "supply": [dict(zone) for zone in list(chart_zones.get("supply") or [])],
+        }
+    elif "chart_zones" not in state:
+        # Fail safe to the existing trade-facing zones if an older runtime path
+        # has not produced the dedicated chart feed yet.  This preserves the
+        # field contract without manufacturing any new zone.
+        fallback = dict(state.get("zones") or {})
+        state["chart_zones"] = {
+            "demand": [dict(zone) for zone in list(fallback.get("demand") or [])],
+            "supply": [dict(zone) for zone in list(fallback.get("supply") or [])],
+        }
 
     academy_result = await _academy_snapshot(self)
     _synchronise_specialist(self, state, academy_result)
