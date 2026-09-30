@@ -124,6 +124,53 @@ def _structure_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return events
 
 
+def _pending_bos_confirmation(
+    rows: list[dict[str, Any]],
+    latest_choch: dict[str, Any] | None,
+    current_day: str,
+    current_session: str,
+) -> dict[str, Any] | None:
+    if latest_choch is None:
+        return None
+
+    direction = str(latest_choch.get("direction") or "").lower()
+    if direction not in {"bullish", "bearish"}:
+        return None
+
+    choch_index = int(latest_choch.get("bar_index", -1))
+    target_kind = "high" if direction == "bullish" else "low"
+    candidates: list[dict[str, Any]] = []
+    for pivot in _pivots(rows):
+        if str(pivot.get("kind") or "") != target_kind:
+            continue
+        confirmed_index = int(pivot.get("confirmed_index", -1))
+        if confirmed_index <= choch_index or confirmed_index >= len(rows):
+            continue
+        confirmation_row = rows[confirmed_index]
+        if _row_day(confirmation_row) != current_day:
+            continue
+        if current_session != "unknown" and str(confirmation_row.get("session") or "unknown") != current_session:
+            continue
+        candidates.append(pivot)
+
+    if not candidates:
+        return None
+
+    pivot = max(candidates, key=lambda item: int(item.get("confirmed_index", -1)))
+    confirmed_index = int(pivot.get("confirmed_index", -1))
+    return {
+        "direction": direction,
+        "level": round(_num(pivot.get("level")), 3),
+        "relation": "above" if direction == "bullish" else "below",
+        "pivot_time": pivot.get("pivot_time"),
+        "pivot_confirmed_at": rows[confirmed_index].get("candle_time"),
+        "confirmation": "completed_m5_close",
+        "buffer_rule": "max(atr_14 * 0.02, 0.01)",
+        "buffer_atr_fraction": 0.02,
+        "minimum_buffer": 0.01,
+    }
+
+
 def build_structure_readout(self: core.LiveTrader, state: dict[str, Any]) -> dict[str, Any]:
     source = list(getattr(self, "_rows", None) or [])[-LOOKBACK_BARS:]
     latest = source[-1] if source else {}
@@ -152,6 +199,7 @@ def build_structure_readout(self: core.LiveTrader, state: dict[str, Any]) -> dic
         bos_waiting_after_choch = True
 
     choch_direction = str((latest_choch or {}).get("direction") or "none")
+    bos_confirmation = _pending_bos_confirmation(source, latest_choch, current_day, current_session) if bos_waiting_after_choch else None
     if bos_support in {"bullish", "bearish"}:
         structure_support = bos_support
         summary = f"BOS supports {bos_support.upper()}."
@@ -173,6 +221,7 @@ def build_structure_readout(self: core.LiveTrader, state: dict[str, Any]) -> dic
         "bos_support": bos_support,
         "bos_waiting_after_choch": bos_waiting_after_choch,
         "bos": latest_bos,
+        "bos_confirmation": bos_confirmation,
         "choch_direction": choch_direction,
         "choch_present": latest_choch is not None,
         "choch": latest_choch,
