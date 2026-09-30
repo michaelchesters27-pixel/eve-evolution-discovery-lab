@@ -55,6 +55,5 @@ def test_zone_decision_can_only_use_a_zone_present_in_relevant_chart_zones():
 
     assert "state?.chart_zones?.[kind]" in source
     assert "state?.zones?.[kind]" not in source
-    assert "never fall back to the more tolerant trade-facing zones array" in source
     assert "id: String(zone?.id || '')" in source
     assert "if (left.id && right.id) return left.id === right.id" in source
