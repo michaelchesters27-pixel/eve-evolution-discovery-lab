@@ -25,10 +25,8 @@
 
   const sameZone = (left, right) => {
     if (!left || !right || left.kind !== right.kind) return false;
-    const atr = Math.max(left.atr || 0, right.atr || 0, 0.01);
-    const overlap = Math.max(left.low, right.low) <= Math.min(left.high, right.high) + atr * 0.20;
-    const nearby = Math.abs(left.low - right.low) <= atr * 0.50 && Math.abs(left.high - right.high) <= atr * 0.50;
-    return overlap || nearby;
+    if (left.id && right.id) return left.id === right.id;
+    return Math.abs(left.low - right.low) <= 0.001 && Math.abs(left.high - right.high) <= 0.001;
   };
 
   function candidates(state) {
@@ -37,7 +35,10 @@
     if (price == null) return [];
     const out = [];
     for (const kind of ['demand', 'supply']) {
-      const zones = Array.isArray(state?.zones?.[kind]) ? state.zones[kind].slice(0, 3) : [];
+      // ZONE TEST must use the exact same active-zone truth as RELEVANT CHART
+      // ZONES. Fail closed if the dedicated chart feed is unavailable; never
+      // fall back to the more tolerant trade-facing zones array.
+      const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
       for (const zone of zones) {
         const low = num(zone?.low);
         const high = num(zone?.high);
@@ -45,6 +46,7 @@
         const inZone = low <= price && price <= high;
         const distance = inZone ? 0 : price < low ? low - price : price - high;
         out.push({
+          id: String(zone?.id || ''),
           kind, low, high, atr, price, inZone,
           distance,
           tolerance: Math.max(atr * TOLERANCE_ATR, 0.25),

@@ -18,7 +18,10 @@ def test_zone_decision_tolerance_is_display_only_and_time_bounded():
     assert "BREAK BUILDING" in canonical
     assert "REJECTION CONFIRMED" in canonical
     assert "state?.market?.atr" in canonical
-    assert "state?.zones?.[kind]" in canonical
+    assert "state?.chart_zones?.[kind]" in canonical
+    assert "state?.zones?.[kind]" not in canonical
+    assert ".slice(0, 3)" not in canonical
+    assert "if (left.id && right.id) return left.id === right.id" in canonical
     assert "M5" in canonical and "M15" in canonical
     assert "eve:live-trader-state" in canonical
     assert "window.__eveLiveTraderState" in canonical
@@ -44,3 +47,13 @@ def test_zone_decision_labels_buy_sell_potential_without_creating_authority():
     assert "FRESH" in source and "USED" in source
     assert "state.trade =" not in source
     assert "order_type =" not in source
+
+
+def test_zone_decision_can_only_use_a_zone_present_in_relevant_chart_zones():
+    root = _repo_root()
+    source = (root / "frontend" / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
+
+    assert "state?.chart_zones?.[kind]" in source
+    assert "state?.zones?.[kind]" not in source
+    assert "id: String(zone?.id || '')" in source
+    assert "if (left.id && right.id) return left.id === right.id" in source
