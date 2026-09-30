@@ -49,6 +49,11 @@
           distance,
           tolerance: Math.max(atr * TOLERANCE_ATR, 0.25),
           quality: num(zone?.quality),
+          fresh: zone?.fresh === true,
+          retests: Math.max(0, Number(zone?.retests || 0)),
+          zoneRole: String(zone?.zone_role || 'M5_ONLY'),
+          h1Confluence: zone?.h1_confluence === true,
+          m15Confluence: zone?.m15_confluence === true,
         });
       }
     }
@@ -68,6 +73,11 @@
         active.price = current.price;
         active.inZone = current.inZone;
         active.quality = current.quality;
+        active.fresh = current.fresh;
+        active.retests = current.retests;
+        active.zoneRole = current.zoneRole;
+        active.h1Confluence = current.h1Confluence;
+        active.m15Confluence = current.m15Confluence;
         active.wasInside = active.wasInside || current.inZone;
         active.extreme = active.kind === 'demand'
           ? Math.min(active.extreme, current.price)
@@ -169,7 +179,9 @@
       style.textContent = `
         .eve-tolerant-zone-decision-active .lt-zone-decision{display:none!important}
         #ltZoneDecisionTolerance{margin-top:10px}
-        #ltZoneDecisionTolerance .lt-zone-decision-range{margin-top:4px;font-size:12px;font-weight:900;color:#e7f4ed;font-variant-numeric:tabular-nums}
+        #ltZoneDecisionTolerance .lt-zone-decision-side{margin-top:4px;font-size:11px;font-weight:900;letter-spacing:.05em}
+        #ltZoneDecisionTolerance .lt-zone-decision-range{margin-top:3px;font-size:12px;font-weight:900;color:#e7f4ed;font-variant-numeric:tabular-nums}
+        #ltZoneDecisionTolerance .lt-zone-decision-meta{margin-top:4px;font-size:8px;color:var(--muted);font-weight:800;letter-spacing:.04em;text-transform:uppercase}
         #ltZoneDecisionTolerance .lt-zone-decision-arrow{animation:eve-zone-tolerance-pulse .85s ease-in-out infinite;transform-origin:center}
         #ltZoneDecisionTolerance.bullish .lt-zone-decision-arrow{filter:drop-shadow(0 0 8px rgba(75,240,150,.85))}
         #ltZoneDecisionTolerance.bearish .lt-zone-decision-arrow{filter:drop-shadow(0 0 8px rgba(255,105,125,.85))}
@@ -221,12 +233,25 @@
     card.className = `lt-zone-decision ${decision.tone}`;
     const tfLabel = value => ['bullish', 'bearish', 'neutral'].includes(value) ? value.toUpperCase() : 'UNKNOWN';
     const position = test.inZone ? 'PRICE IS IN' : test.wasInside ? 'ZONE TOUCHED' : 'PRICE IS NEAR';
+    const side = test.kind === 'demand' ? 'BUY' : 'SELL';
+    const backing = test.h1Confluence && test.m15Confluence
+      ? 'H1 + M15 BACKED'
+      : test.h1Confluence
+        ? 'H1 BACKED'
+        : test.m15Confluence
+          ? 'M15 BACKED'
+          : 'M5 ONLY';
+    const quality = test.quality == null ? 'QUALITY —' : `QUALITY ${Math.round(test.quality)}/100`;
+    const retests = `${test.retests} RETEST${test.retests === 1 ? '' : 'S'}`;
+    const freshness = test.fresh ? 'FRESH' : 'USED';
     card.innerHTML = `
       <div class="lt-zone-decision-arrow" aria-hidden="true">${decision.arrow}</div>
       <div>
         <div class="lt-zone-decision-kicker">${position} ${test.kind.toUpperCase()} · ZONE DECISION</div>
         <div class="lt-zone-decision-title">${decision.title}</div>
-        <div class="lt-zone-decision-range">${test.kind.toUpperCase()} ZONE ${fmt(test.low)} – ${fmt(test.high)}</div>
+        <div class="lt-zone-decision-side">POTENTIAL ${side} ZONE</div>
+        <div class="lt-zone-decision-range">${test.kind.toUpperCase()} ${fmt(test.low)} – ${fmt(test.high)}</div>
+        <div class="lt-zone-decision-meta">${backing} · ${quality} · ${retests} · ${freshness}</div>
         <p class="lt-zone-decision-note">${decision.note}</p>
         <div class="lt-zone-decision-tfs">M5 ${tfLabel(decision.m5)} · M15 ${tfLabel(decision.m15)} · ACTIVE FOR 20 MIN AFTER TEST</div>
       </div>`;
