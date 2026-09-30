@@ -86,6 +86,24 @@
     .lt-chart-zone-row:first-of-type{border-top:0;padding-top:0}
     .lt-chart-zone-price{font-size:13px;font-weight:900;font-variant-numeric:tabular-nums;color:#e7f4ed}
     .lt-chart-zone-meta{margin-top:3px;font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.035em;line-height:1.45}
+    .lt-chart-now{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:0 0 10px}
+    .lt-chart-now-item{padding:8px 9px;border:1px solid rgba(255,255,255,.07);border-radius:9px;background:#06100b;min-width:0}
+    .lt-chart-now-item span{display:block;font-size:7px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+    .lt-chart-now-item strong{display:block;margin-top:3px;font-size:10px;line-height:1.35;overflow-wrap:anywhere}
+    .lt-chart-zone-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+    .lt-chart-zone-badge{display:inline-flex;align-items:center;padding:2px 5px;border-radius:999px;border:1px solid rgba(255,255,255,.09);font-size:7px;font-weight:900;letter-spacing:.05em;text-transform:uppercase}
+    .lt-chart-zone-badge.nearest{color:#ffe06a;border-color:rgba(255,224,106,.35)}
+    .lt-chart-zone-badge.strongest{color:#8cefb9;border-color:rgba(140,239,185,.35)}
+    .lt-chart-zone-badge.fresh{color:#8cefb9}
+    .lt-chart-zone-badge.used{color:#d4b17b}
+    .lt-chart-zone-live{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px}
+    .lt-chart-zone-fact{padding:6px 7px;border-radius:7px;background:rgba(255,255,255,.025);font-size:8px;line-height:1.4}
+    .lt-chart-zone-fact span{display:block;color:var(--muted);font-size:7px;text-transform:uppercase;letter-spacing:.045em}
+    .lt-chart-zone-fact strong{display:block;margin-top:2px;font-size:9px;color:#e7f4ed}
+    .lt-chart-zone-fact.break strong{color:#ffcf6a}
+    .lt-chart-zone-fact.reaction.supporting strong{color:var(--green)}
+    .lt-chart-zone-fact.reaction.against strong{color:var(--red)}
+    .lt-chart-zone-fact.reaction.mixed strong{color:#ffcf6a}
     .lt-chart-zone-sl{margin-top:5px;padding:6px 7px;border-radius:7px;background:rgba(255,255,255,.025);font-size:9px;line-height:1.45}
     .lt-chart-zone-column.buy .lt-chart-zone-sl strong{color:var(--green)}
     .lt-chart-zone-column.sell .lt-chart-zone-sl strong{color:var(--red)}
@@ -93,7 +111,8 @@
     .lt-chart-zone-empty{font-size:9px;color:var(--muted);line-height:1.45}
     .lt-chart-zones-note{margin-top:8px;font-size:8px;color:var(--muted)}
     .lt-session-outlook-note{margin:8px 0 0;padding-top:8px;border-top:1px solid var(--line);color:var(--muted);font-size:9px}
-    @media(max-width:760px){.lt-session-structure,.lt-chart-zones-grid{grid-template-columns:1fr}}
+    @media(max-width:980px){.lt-chart-now{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:760px){.lt-session-structure,.lt-chart-zones-grid{grid-template-columns:1fr}.lt-chart-zone-live{grid-template-columns:1fr}}
     @media(prefers-reduced-motion:reduce){.lt-zone-decision-arrow{animation:none}}
   `;
   document.head.appendChild(style);
@@ -431,10 +450,87 @@
     return 'M5 ONLY';
   }
 
+  function activeChartZones(state, kind) {
+    const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
+    return zones.filter(zone => {
+      const low = number(zone?.low);
+      const high = number(zone?.high);
+      const status = String(zone?.status || '').toUpperCase();
+      return low != null && high != null && high >= low && !['BROKEN','INVALID','EXPIRED'].includes(status);
+    });
+  }
+
+  function zoneDistanceLabel(price, low, high) {
+    if (price == null) return 'DISTANCE —';
+    if (low <= price && price <= high) return 'PRICE IN ZONE';
+    if (price > high) return `${fmt(price - high)} PTS BELOW PRICE`;
+    return `${fmt(low - price)} PTS ABOVE PRICE`;
+  }
+
+  function zoneReactionRead(state, kind) {
+    const m5 = timeframeDirection(state, 'M5');
+    const m15 = timeframeDirection(state, 'M15');
+    const desired = kind === 'demand' ? 'bullish' : 'bearish';
+    const opposite = desired === 'bullish' ? 'bearish' : 'bullish';
+    const side = kind === 'demand' ? 'BUY' : 'SELL';
+    const tf = `M5 ${m5 ? m5.toUpperCase() : 'UNKNOWN'} · M15 ${m15 ? m15.toUpperCase() : 'UNKNOWN'}`;
+
+    if (m5 === desired && m15 === desired) {
+      return {tone:'supporting', text:`${tf} · SUPPORTING ${side} REACTION`};
+    }
+    if (m5 === opposite && m15 === opposite) {
+      return {tone:'against', text:`${tf} · PRESSURE AGAINST ${side}`};
+    }
+    return {tone:'mixed', text:`${tf} · MIXED / NO CONFIRMATION`};
+  }
+
+  function nearestOpposingZone(state, kind, low, high) {
+    const oppositeKind = kind === 'demand' ? 'supply' : 'demand';
+    const opposing = activeChartZones(state, oppositeKind);
+    if (!opposing.length) return null;
+
+    const directional = opposing
+      .map(zone => ({zone, low:number(zone?.low), high:number(zone?.high)}))
+      .filter(item => item.low != null && item.high != null)
+      .filter(item => kind === 'demand' ? item.high >= high : item.low <= low)
+      .map(item => ({
+        ...item,
+        gap: kind === 'demand'
+          ? Math.max(0, item.low - high)
+          : Math.max(0, low - item.high),
+      }))
+      .sort((a,b) => a.gap - b.gap);
+
+    return directional[0] || null;
+  }
+
+  function zoneCockpitSummary(state) {
+    const price = number(state?.price);
+    const buys = chartZoneRows(state, 'demand');
+    const sells = chartZoneRows(state, 'supply');
+    const buy = buys[0] || null;
+    const sell = sells[0] || null;
+    const actionRaw = String(state?.trade?.action || 'WAIT').toUpperCase();
+    const action = !actionRaw || actionRaw === 'NO TRADE' ? 'WAIT' : actionRaw;
+    const m5 = timeframeDirection(state, 'M5');
+    const m15 = timeframeDirection(state, 'M15');
+    const zoneSummary = zone => zone
+      ? `${fmt(zone.low)}–${fmt(zone.high)} · ${zoneDistanceLabel(price, zone.low, zone.high)}`
+      : 'NONE';
+
+    return `
+      <div class="lt-chart-now">
+        <div class="lt-chart-now-item"><span>LIVE PRICE</span><strong>${safe(fmt(price))}</strong></div>
+        <div class="lt-chart-now-item"><span>TRADE ACTION</span><strong>${safe(action)}</strong></div>
+        <div class="lt-chart-now-item"><span>NEAREST BUY</span><strong>${safe(zoneSummary(buy))}</strong></div>
+        <div class="lt-chart-now-item"><span>NEAREST SELL</span><strong>${safe(zoneSummary(sell))}</strong></div>
+        <div class="lt-chart-now-item"><span>REACTION</span><strong>M5 ${safe((m5 || 'unknown').toUpperCase())} · M15 ${safe((m15 || 'unknown').toUpperCase())}</strong></div>
+      </div>`;
+  }
+
   function chartZoneRows(state, kind) {
     const price = number(state?.price);
-    const chartSource = state?.chart_zones || state?.zones || {};
-    const zones = Array.isArray(chartSource?.[kind]) ? chartSource[kind] : [];
+    const zones = activeChartZones(state, kind);
     return zones
       .map(zone => {
         const low = number(zone?.low);
@@ -445,15 +541,28 @@
         const distance = price == null || (low <= price && price <= high)
           ? 0
           : Math.min(Math.abs(price - low), Math.abs(price - high));
+        const opposing = nearestOpposingZone(state, kind, low, high);
         return {
+          id:String(zone?.id || ''),
           low,
           high,
           distance,
+          distanceLabel:zoneDistanceLabel(price, low, high),
           quality:number(zone?.quality),
           retests:Math.max(0, Number(zone?.retests || 0)),
           fresh:zone?.fresh === true,
           backing:chartZoneBacking(zone),
           chartState:String(zone?.chart_state || zone?.status || 'ACTIVE').toUpperCase(),
+          invalidationText:kind === 'demand'
+            ? `BROKEN IF M5 CLOSES < ${fmt(low)}`
+            : `BROKEN IF M5 CLOSES > ${fmt(high)}`,
+          reaction:zoneReactionRead(state, kind),
+          opposing:opposing ? {
+            side:kind === 'demand' ? 'SELL' : 'BUY',
+            low:opposing.low,
+            high:opposing.high,
+            gap:opposing.gap,
+          } : null,
           slRef:zoneSpecificSlReference(state, kind, low, high),
         };
       })
@@ -466,6 +575,7 @@
     if (!rows.length) {
       return `<div class="lt-chart-zone-column ${side.toLowerCase()}"><h4>${side} ZONES</h4><div class="lt-chart-zone-empty">No current ${safe(kind)} zones are available from this snapshot.</div></div>`;
     }
+    const strongestQuality = Math.max(...rows.map(zone => zone.quality == null ? -1 : zone.quality));
     return `
       <div class="lt-chart-zone-column ${side.toLowerCase()}">
         <h4>${side} ZONES</h4>
@@ -474,10 +584,25 @@
           const retests = `${zone.retests} RETEST${zone.retests === 1 ? '' : 'S'}`;
           const freshness = zone.fresh ? 'FRESH' : 'USED';
           const chartState = zone.chartState === 'UNDER PRESSURE' ? ' · UNDER PRESSURE' : zone.chartState === 'IN ZONE' ? ' · IN ZONE' : '';
+          const badges = [
+            index === 0 ? '<span class="lt-chart-zone-badge nearest">NEAREST</span>' : '',
+            zone.quality != null && zone.quality === strongestQuality ? '<span class="lt-chart-zone-badge strongest">STRONGEST</span>' : '',
+            zone.fresh ? '<span class="lt-chart-zone-badge fresh">FRESH</span>' : '<span class="lt-chart-zone-badge used">USED</span>',
+          ].filter(Boolean).join('');
+          const opposing = zone.opposing
+            ? `NEXT ${zone.opposing.side} ${fmt(zone.opposing.low)}–${fmt(zone.opposing.high)} · GAP ${fmt(zone.opposing.gap)} PTS`
+            : `NO OPPOSING ${side === 'BUY' ? 'SELL' : 'BUY'} ZONE IN CURRENT MAP`;
           return `
             <div class="lt-chart-zone-row">
               <div class="lt-chart-zone-price">${index + 1}. ${safe(fmt(zone.low))} – ${safe(fmt(zone.high))}</div>
+              <div class="lt-chart-zone-badges">${badges}</div>
               <div class="lt-chart-zone-meta">${safe(zone.backing)} · ${safe(quality)} · ${safe(retests)} · ${safe(freshness)}${safe(chartState)}</div>
+              <div class="lt-chart-zone-live">
+                <div class="lt-chart-zone-fact"><span>DISTANCE</span><strong>${safe(zone.distanceLabel)}</strong></div>
+                <div class="lt-chart-zone-fact break"><span>INVALIDATION</span><strong>${safe(zone.invalidationText)}</strong></div>
+                <div class="lt-chart-zone-fact"><span>OPPOSING ZONE</span><strong>${safe(opposing)}</strong></div>
+                <div class="lt-chart-zone-fact reaction ${safe(zone.reaction?.tone || 'mixed')}"><span>M5 / M15 REACTION</span><strong>${safe(zone.reaction?.text || 'NO CONFIRMATION')}</strong></div>
+              </div>
               <div class="lt-chart-zone-sl"><strong>SL REF ${safe(fmt(zone.slRef?.level))}</strong><small>${safe(zone.slRef?.basis || 'STRUCTURAL REF')} · ${safe(zone.slRef?.detail || '')}</small></div>
             </div>`;
         }).join('')}
@@ -491,11 +616,12 @@
           <strong>RELEVANT CHART ZONES</strong>
           <small>SAME SNAPSHOT · NEAREST FIRST</small>
         </div>
+        ${zoneCockpitSummary(state)}
         <div class="lt-chart-zones-grid">
           ${chartZoneColumn(state, 'demand', 'BUY')}
           ${chartZoneColumn(state, 'supply', 'SELL')}
         </div>
-        <div class="lt-chart-zones-note">For drawing on your chart. BUY zones are removed after a completed M5 close below the zone low; SELL zones are removed after a completed M5 close above the zone high. Wicks alone do not invalidate them. Proximity and rank changes do not remove them. Each SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
+        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. Reaction describes M5/M15 context only. SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
       </div>`;
   }
 
