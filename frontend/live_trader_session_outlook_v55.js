@@ -6,6 +6,8 @@
   const MAX_CONTEXT_LAG_MINUTES = 10;
   const LIVE_ZONE_MAX_DISTANCE_ATR = 1.8;
   const LIVE_ZONE_MIN_QUALITY = 58;
+  const ZONE_SL_HUNT_BAND_ATR = 1.25;
+  const ZONE_SL_BUFFER_ATR = 0.22;
 
   const style = document.createElement('style');
   style.textContent = `
@@ -84,6 +86,10 @@
     .lt-chart-zone-row:first-of-type{border-top:0;padding-top:0}
     .lt-chart-zone-price{font-size:13px;font-weight:900;font-variant-numeric:tabular-nums;color:#e7f4ed}
     .lt-chart-zone-meta{margin-top:3px;font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.035em;line-height:1.45}
+    .lt-chart-zone-sl{margin-top:5px;padding:6px 7px;border-radius:7px;background:rgba(255,255,255,.025);font-size:9px;line-height:1.45}
+    .lt-chart-zone-column.buy .lt-chart-zone-sl strong{color:var(--green)}
+    .lt-chart-zone-column.sell .lt-chart-zone-sl strong{color:var(--red)}
+    .lt-chart-zone-sl small{display:block;margin-top:2px;color:var(--muted);font-size:8px}
     .lt-chart-zone-empty{font-size:9px;color:var(--muted);line-height:1.45}
     .lt-chart-zones-note{margin-top:8px;font-size:8px;color:var(--muted)}
     .lt-session-outlook-note{margin:8px 0 0;padding-top:8px;border-top:1px solid var(--line);color:var(--muted);font-size:9px}
@@ -334,6 +340,90 @@
       </div>`;
   }
 
+  function reclaimedLiquidityKeysForZoneSl(liquidity) {
+    const reclaimed = new Set();
+    (liquidity?.market_events || []).forEach(event => {
+      const eventClass = String(event?.event_class || '');
+      const key = String(event?.level_key || '');
+      const isSweep = eventClass.includes('sweep_reclaim') || eventClass.startsWith('failed_breakout');
+      if (key && isSweep && event?.reclaimed === true) reclaimed.add(key);
+    });
+    return reclaimed;
+  }
+
+  function zoneSpecificSlReference(state, kind, low, high) {
+    const atr = Math.max(number(state?.market?.atr) || 0, 0.01);
+    const buffer = Math.max(atr * ZONE_SL_BUFFER_ATR, 0.01);
+    const huntBand = atr * ZONE_SL_HUNT_BAND_ATR;
+    const liquidity = state?.liquidity || {};
+    const buy = kind === 'demand';
+    const edge = buy ? low : high;
+    const side = buy ? 'below' : 'above';
+    const reclaimed = reclaimedLiquidityKeysForZoneSl(liquidity);
+    const definitions = buy
+      ? [
+          ['recent_low','recent low'],
+          ['previous_day_low','previous-day low'],
+          ['london_low','London low'],
+          ['new_york_low','New York low'],
+        ]
+      : [
+          ['recent_high','recent high'],
+          ['previous_day_high','previous-day high'],
+          ['london_high','London high'],
+          ['new_york_high','New York high'],
+        ];
+
+    const candidates = [];
+    definitions.forEach(([key,label]) => {
+      if (reclaimed.has(key)) return;
+      const level = number(liquidity?.[key]);
+      if (level == null || level <= 0) return;
+      const beyond = buy ? level < edge : level > edge;
+      const within = Math.abs(level - edge) <= huntBand;
+      if (beyond && within) candidates.push({level, label, type:'liquidity'});
+    });
+
+    (liquidity?.market_events || []).forEach(event => {
+      const eventClass = String(event?.event_class || '');
+      const eventSide = String(event?.side || '');
+      const isPriorSweep = event?.reclaimed === true &&
+        (eventClass.includes('sweep_reclaim') || eventClass.startsWith('failed_breakout'));
+      const matchingSide = buy ? eventSide === 'sell_side' : eventSide === 'buy_side';
+      const extreme = number(event?.extreme);
+      if (!isPriorSweep || !matchingSide || extreme == null || extreme <= 0) return;
+      const beyond = buy ? extreme < edge : extreme > edge;
+      const within = Math.abs(extreme - edge) <= huntBand;
+      if (beyond && within) candidates.push({
+        level:extreme,
+        label:buy ? 'prior sell-side sweep extreme' : 'prior buy-side sweep extreme',
+        type:'sweep',
+      });
+    });
+
+    if (!candidates.length) {
+      return {
+        level:buy ? edge - buffer : edge + buffer,
+        basis:'ZONE EDGE + ATR BUFFER',
+        detail:`No relevant liquidity/sweep level exists within ${ZONE_SL_HUNT_BAND_ATR.toFixed(2)} ATR beyond this zone.`,
+        usedSweep:false,
+      };
+    }
+
+    const anchor = buy
+      ? Math.min(...candidates.map(item => item.level))
+      : Math.max(...candidates.map(item => item.level));
+    const relevant = candidates.filter(item => Math.abs(item.level - anchor) <= 0.001);
+    const usedSweep = relevant.some(item => item.type === 'sweep');
+    const labels = [...new Set(relevant.map(item => item.label))];
+    return {
+      level:buy ? anchor - buffer : anchor + buffer,
+      basis:usedSweep ? 'SWEEP-PROTECTED STRUCTURAL REF' : 'LIQUIDITY-PROTECTED STRUCTURAL REF',
+      detail:`Beyond ${labels.join(' + ')} + ${ZONE_SL_BUFFER_ATR.toFixed(2)} ATR buffer.`,
+      usedSweep,
+    };
+  }
+
   function chartZoneBacking(zone) {
     if (zone?.h1_confluence === true && zone?.m15_confluence === true) return 'H1 + M15 BACKED';
     if (zone?.h1_confluence === true) return 'H1 BACKED';
@@ -362,6 +452,7 @@
           retests:Math.max(0, Number(zone?.retests || 0)),
           fresh:zone?.fresh === true,
           backing:chartZoneBacking(zone),
+          slRef:zoneSpecificSlReference(state, kind, low, high),
         };
       })
       .filter(Boolean)
@@ -385,6 +476,7 @@
             <div class="lt-chart-zone-row">
               <div class="lt-chart-zone-price">${index + 1}. ${safe(fmt(zone.low))} – ${safe(fmt(zone.high))}</div>
               <div class="lt-chart-zone-meta">${safe(zone.backing)} · ${safe(quality)} · ${safe(retests)} · ${safe(freshness)}</div>
+              <div class="lt-chart-zone-sl"><strong>SL REF ${safe(fmt(zone.slRef?.level))}</strong><small>${safe(zone.slRef?.basis || 'STRUCTURAL REF')} · ${safe(zone.slRef?.detail || '')}</small></div>
             </div>`;
         }).join('')}
       </div>`;
@@ -401,7 +493,7 @@
           ${chartZoneColumn(state, 'demand', 'BUY')}
           ${chartZoneColumn(state, 'supply', 'SELL')}
         </div>
-        <div class="lt-chart-zones-note">For drawing on your chart. BUY/SELL ZONE means potential area of interest — only AUTHORITATIVE TRADE ACTION is execution authority.</div>
+        <div class="lt-chart-zones-note">For drawing on your chart. Each SL REF is zone-specific and sweep/liquidity-aware where relevant; it is still a reference, not an instruction. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
       </div>`;
   }
 

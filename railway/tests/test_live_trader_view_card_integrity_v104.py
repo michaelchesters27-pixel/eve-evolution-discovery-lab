@@ -69,9 +69,9 @@ def test_retrace_watch_uses_current_live_policy_geometry_not_any_far_zone() -> N
 def test_stop_cards_are_structural_references_not_claimed_safe_trade_stops() -> None:
     stops = (_frontend() / "live_trader_safe_stops_v48.js").read_text(encoding="utf-8")
 
-    assert "Buy structural SL ref" in stops
-    assert "Sell structural SL ref" in stops
-    assert "Reference only · not a live trade stop" in stops
+    assert "Global buy structural ref" in stops
+    assert "Global sell structural ref" in stops
+    assert "use zone-specific SL refs above" in stops
     assert "REF COVERS NEARBY SWEEPS" in stops
     assert "ALREADY PROTECTED" not in stops
     assert "price - safeAtr * 1.5" not in stops
@@ -140,6 +140,24 @@ def test_eve_view_always_lists_relevant_buy_and_sell_chart_zones() -> None:
     assert "QUALITY" in session
     assert "RETEST" in session
     assert "FRESH" in session and "USED" in session
-    assert "only AUTHORITATIVE TRADE ACTION is execution authority" in session
+    assert "Only AUTHORITATIVE TRADE ACTION is execution authority" in session
     assert "api('/live-trader')" not in session
     assert 'api("/live-trader")' not in session
+
+
+def test_eve_view_chart_zones_have_zone_specific_sweep_aware_sl_refs() -> None:
+    session = (_frontend() / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
+
+    assert "ZONE_SL_HUNT_BAND_ATR = 1.25" in session
+    assert "ZONE_SL_BUFFER_ATR = 0.22" in session
+    assert "function zoneSpecificSlReference(state, kind, low, high)" in session
+    assert "reclaimedLiquidityKeysForZoneSl" in session
+    assert "prior sell-side sweep extreme" in session
+    assert "prior buy-side sweep extreme" in session
+    assert "SWEEP-PROTECTED STRUCTURAL REF" in session
+    assert "LIQUIDITY-PROTECTED STRUCTURAL REF" in session
+    assert "ZONE EDGE + ATR BUFFER" in session
+    assert "SL REF ${safe(fmt(zone.slRef?.level))}" in session
+    assert "Math.abs(level - edge) <= huntBand" in session
+    assert "Math.abs(extreme - edge) <= huntBand" in session
+    assert "Only AUTHORITATIVE TRADE ACTION is execution authority" in session
