@@ -33,6 +33,10 @@ def engine() -> SimpleNamespace:
 
 def test_final_wrapper_defers_inner_persist_and_writes_complete_state(monkeypatch) -> None:
     item = engine()
+    item._chart_zones_v95 = {
+        "demand": [{"id": "mapped-demand", "low": 4151.272, "high": 4154.526}],
+        "supply": [{"id": "mapped-supply", "low": 4160.15, "high": 4163.123}],
+    }
 
     async def inner_refresh(self, *, force_rows: bool = False):
         state = {
@@ -107,6 +111,9 @@ def test_final_wrapper_defers_inner_persist_and_writes_complete_state(monkeypatc
     assert persisted["bounded_research_telemetry"]["stages"][0]["outcome"] == "no_op"
     assert persisted["state_authority"]["authoritative"] is True
     assert persisted["state_authority"]["persisted_after_all_runtime_wrappers"] is True
+    assert persisted["state_authority"]["chart_zones_persisted_in_final_state"] is True
+    assert persisted["chart_zones"]["demand"][0]["id"] == "mapped-demand"
+    assert persisted["chart_zones"]["supply"][0]["id"] == "mapped-supply"
     assert persisted["state_authority"]["current_policy_academy_status"] == "caught_up_not_promoted"
     assert persisted["state_authority"]["bounded_stage_cycle_id"] == "cycle-1"
 
@@ -156,3 +163,4 @@ def test_authoritative_state_marks_missing_academy_explicitly(monkeypatch) -> No
     assert academy_state["status"] == "waiting_for_first_scan"
     assert academy_state["cohort_id"] == "coh_expected"
     assert state["state_authority"]["current_policy_academy_status"] == "waiting_for_first_scan"
+    assert state["chart_zones"] == {"demand": [], "supply": []}
