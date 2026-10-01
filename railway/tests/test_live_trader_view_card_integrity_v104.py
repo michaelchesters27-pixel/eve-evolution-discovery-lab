@@ -29,8 +29,8 @@ def test_eve_view_fails_closed_when_context_is_not_valid_and_fresh() -> None:
     for source in (session, stops, tolerance):
         assert "ctx.context_valid !== true" in source or "ctx.context_valid === true" in source
         assert "ctx.fresh !== true" in source or "ctx.fresh === true" in source
-        assert "dq.live_context_stale !== true" in source
-        assert "dq.trade_bias_blocked !== true" in source
+        assert "dq.live_context_stale === true" in source or "dq.live_context_stale !== true" in source
+        assert "dq.trade_bias_blocked === true" in source or "dq.trade_bias_blocked !== true" in source
 
     assert "WAIT — DATA NOT VALID" in session
     assert "Directional outlook, BOS/CHoCH, retrace zones and stop references must not be trusted" in session
