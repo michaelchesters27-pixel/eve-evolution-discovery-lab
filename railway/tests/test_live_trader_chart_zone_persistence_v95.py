@@ -178,3 +178,6 @@ def test_chart_zone_geometry_and_presence_do_not_depend_on_latest_atr() -> None:
     assert q["high"] == v["high"]
     assert q["origin_atr_14"] == v["origin_atr_14"] == 1.0
     assert q["geometry_version"] == "eve-chart-zone-origin-atr-v1"
+    assert q["quality_version"] == "eve-chart-zone-quality-v1"
+    assert q["quality_inputs"]["departure_atr"] == v["quality_inputs"]["departure_atr"]
+    assert q["quality_inputs"]["touch_bars"] == v["quality_inputs"]["touch_bars"]
