@@ -1,7 +1,7 @@
 (() => {
   const css = document.createElement('link');
   css.rel = 'stylesheet';
-  css.href = 'live_trader.css?v=99';
+  css.href = 'live_trader.css?v=100';
   document.head.appendChild(css);
 
   const nav = document.querySelector('#nav');
@@ -81,13 +81,17 @@
   let pollTimer = null;
   let learningTimer = null;
   let staleWatchdogTimer = null;
+  let pollingStarted = false;
   let lastState = null;
+  let lastSuccessfulRefreshAt = 0;
   let recognition = null;
 
   const byId = id => document.getElementById(id);
   const MAX_CONTEXT_LAG_MINUTES = 10;
   const MAX_TICK_AGE_SECONDS = 90;
   const MAX_DECISION_AGE_MINUTES = 15;
+  const LIVE_STATE_CACHE_KEY = 'eve:live-trader:last-valid-state:v100';
+  const LIVE_STATE_CACHE_MAX_AGE_MS = MAX_TICK_AGE_SECONDS * 1000;
   const strictNumber = value => {
     if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
     const parsed = Number(value);
@@ -142,6 +146,57 @@
     else if (atr == null || atr <= 0) reason = 'ATR is unavailable';
 
     return {valid:!reason, reason, lag, tickAgeSeconds, decisionAgeMinutes};
+  }
+
+  function cacheValidState(state) {
+    if (!state || state.__display_fail_closed === true || state.__restored_cache === true || !contextHealth(state).valid) return;
+    try {
+      sessionStorage.setItem(LIVE_STATE_CACHE_KEY, JSON.stringify({
+        saved_at: Date.now(),
+        state,
+      }));
+    } catch (_) {}
+  }
+
+  function restoreCachedState() {
+    try {
+      const raw = sessionStorage.getItem(LIVE_STATE_CACHE_KEY);
+      if (!raw) return false;
+      const cached = JSON.parse(raw);
+      const savedAt = strictNumber(cached?.saved_at);
+      if (savedAt == null || Date.now() - savedAt > LIVE_STATE_CACHE_MAX_AGE_MS) {
+        sessionStorage.removeItem(LIVE_STATE_CACHE_KEY);
+        return false;
+      }
+      if (!cached?.state || !contextHealth(cached.state).valid) {
+        sessionStorage.removeItem(LIVE_STATE_CACHE_KEY);
+        return false;
+      }
+
+      // A hard browser reload may restore the market picture for continuity,
+      // but an old cached BUY/SELL must never regain execution authority before
+      // the live endpoint has confirmed the current snapshot.
+      const restored = {
+        ...cached.state,
+        trade:{
+          ...(cached.state.trade || {}),
+          action:'WAIT',
+          side:null,
+          reason:'RESTORED CACHED VIEW — WAITING FOR LIVE REFRESH',
+        },
+        setup:{
+          ...(cached.state.setup || {}),
+          status:'WAIT',
+          reason:'RESTORED CACHED VIEW — WAITING FOR LIVE REFRESH',
+        },
+        __restored_cache:true,
+      };
+      renderState(restored, false);
+      return true;
+    } catch (_) {
+      try { sessionStorage.removeItem(LIVE_STATE_CACHE_KEY); } catch (_) {}
+      return false;
+    }
   }
 
   function failClosedState(source, reason) {
@@ -413,6 +468,7 @@
     const previousState = lastState;
     lastState = displayState;
     state = displayState;
+    if (health.valid && state?.__display_fail_closed !== true) cacheValidState(state);
     const feed = state.feed || {};
     byId('ltSymbol').textContent = state.symbol || 'XAU/USD';
     byId('ltPrice').textContent = formatPrice(state.price);
@@ -503,10 +559,11 @@
   }
 
   async function refreshLiveTrader(allowSpeak = true) {
-    if (!view.classList.contains('active') && allowSpeak) return;
+    const liveTraderVisible = view.classList.contains('active');
     try {
       const state = await api('/live-trader');
-      renderState(state, allowSpeak);
+      lastSuccessfulRefreshAt = Date.now();
+      renderState(state, allowSpeak && liveTraderVisible);
     } catch (error) {
       renderState(failClosedState(lastState, `API failure: ${error.message}`), false);
     }
@@ -547,11 +604,29 @@
   }
 
   function startPolling() {
-    clearInterval(pollTimer);clearInterval(learningTimer);clearInterval(staleWatchdogTimer);
-    refreshLiveTrader(false);refreshLearning();loadConversation();
-    pollTimer = setInterval(()=>refreshLiveTrader(true),2500);
-    learningTimer = setInterval(refreshLearning,30000);
-    staleWatchdogTimer = setInterval(enforceFreshness,5000);
+    if (pollingStarted) {
+      // Internal page switches must not reset the cockpit. The hidden Live
+      // Trader has continued receiving snapshots, so return instantly and only
+      // request a quiet catch-up if the last successful refresh is unusually old.
+      enforceFreshness();
+      if (!lastSuccessfulRefreshAt || Date.now() - lastSuccessfulRefreshAt > 5000) {
+        refreshLiveTrader(false);
+      }
+      return;
+    }
+
+    pollingStarted = true;
+    restoreCachedState();
+    refreshLiveTrader(false);
+    refreshLearning();
+    loadConversation();
+
+    // Once the user has opened Live Trader, keep its hidden DOM resident and
+    // keep snapshots current while they browse other EVE pages. Speech stays
+    // disabled unless the Live Trader view itself is visible.
+    pollTimer = setInterval(() => refreshLiveTrader(true), 2500);
+    learningTimer = setInterval(refreshLearning, 30000);
+    staleWatchdogTimer = setInterval(enforceFreshness, 5000);
   }
 
   window.addEventListener('focus', enforceFreshness);
