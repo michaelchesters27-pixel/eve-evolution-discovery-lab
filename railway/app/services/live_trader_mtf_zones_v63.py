@@ -380,13 +380,21 @@ def _chart_zones_v95(
 
 def _zone_candidates_v63(self: core.LiveTrader, rows: list[dict[str, Any]], price: float, bias: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     base = _BASE_ZONE_CANDIDATES(self, rows, price, bias)
-    stable_chart_pool = _stable_chart_zone_pool(self, rows, price, bias)
-    self._chart_zone_raw_v95 = stable_chart_pool
-    atr = _num((rows[-1] if rows else {}).get("atr_14"))
+    source = list(rows[-360:])
+    atr = _num((source[-1] if source else {}).get("atr_14"))
+    if len(source) < 20:
+        self._chart_zone_raw_v95 = {"demand": [], "supply": []}
+        self._chart_zones_v95 = {"demand": [], "supply": []}
+        self._chart_zones_status_v99 = {"available": False, "error": "insufficient_completed_m5_history"}
+        return base
     if atr <= 0:
+        self._chart_zone_raw_v95 = {"demand": [], "supply": []}
         self._chart_zones_v95 = {"demand": [], "supply": []}
         self._chart_zones_status_v99 = {"available": False, "error": "latest_atr_unavailable"}
         return base
+
+    stable_chart_pool = _stable_chart_zone_pool(self, source, price, bias)
+    self._chart_zone_raw_v95 = stable_chart_pool
     h1 = _native_zones(rows[-720:], "H1", price)
     m15 = _native_zones(rows[-720:], "M15", price)
 
