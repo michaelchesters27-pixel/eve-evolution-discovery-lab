@@ -149,7 +149,7 @@
   }
 
   function cacheValidState(state) {
-    if (!state || state.__display_fail_closed === true || !contextHealth(state).valid) return;
+    if (!state || state.__display_fail_closed === true || state.__restored_cache === true || !contextHealth(state).valid) return;
     try {
       sessionStorage.setItem(LIVE_STATE_CACHE_KEY, JSON.stringify({
         saved_at: Date.now(),
@@ -172,7 +172,26 @@
         sessionStorage.removeItem(LIVE_STATE_CACHE_KEY);
         return false;
       }
-      renderState(cached.state, false);
+
+      // A hard browser reload may restore the market picture for continuity,
+      // but an old cached BUY/SELL must never regain execution authority before
+      // the live endpoint has confirmed the current snapshot.
+      const restored = {
+        ...cached.state,
+        trade:{
+          ...(cached.state.trade || {}),
+          action:'WAIT',
+          side:null,
+          reason:'RESTORED CACHED VIEW — WAITING FOR LIVE REFRESH',
+        },
+        setup:{
+          ...(cached.state.setup || {}),
+          status:'WAIT',
+          reason:'RESTORED CACHED VIEW — WAITING FOR LIVE REFRESH',
+        },
+        __restored_cache:true,
+      };
+      renderState(restored, false);
       return true;
     } catch (_) {
       try { sessionStorage.removeItem(LIVE_STATE_CACHE_KEY); } catch (_) {}
