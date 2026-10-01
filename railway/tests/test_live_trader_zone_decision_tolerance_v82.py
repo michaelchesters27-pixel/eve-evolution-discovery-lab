@@ -13,7 +13,7 @@ def test_zone_decision_tolerance_is_display_only_and_time_bounded():
     assert canonical == production
     assert "const TOLERANCE_ATR = 0.35" in canonical
     assert "const HOLD_MS = 20 * 60 * 1000" in canonical
-    assert "EARLY REJECTION — WAIT" in canonical
+    assert "BROWSER-OBSERVED MOVE — WAIT" in canonical
     assert "REJECTION BUILDING" in canonical
     assert "BREAK BUILDING" in canonical
     assert "REJECTION CONFIRMED" in canonical
@@ -90,3 +90,13 @@ def test_zone_decision_rejects_bad_status_ids_atr_and_stale_wall_clock():
     assert "MAX_DECISION_AGE_MINUTES = 15" in source
     assert "tickAgeSeconds <= MAX_TICK_AGE_SECONDS" in source
     assert "decisionAgeMinutes <= MAX_DECISION_AGE_MINUTES" in source
+
+
+
+def test_zone_decision_states_browser_sampling_limit_for_early_move():
+    root = _repo_root()
+    source = (root / "frontend" / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
+
+    assert "BROWSER-OBSERVED MOVE — WAIT" in source
+    assert "not reconstructed complete tick history" in source
+    assert "ACTIVE 20 MIN AFTER BROWSER-OBSERVED ENTRY" in source
