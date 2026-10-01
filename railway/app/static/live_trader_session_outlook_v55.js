@@ -487,7 +487,7 @@
     return `${fmt(low - price)} PTS ABOVE PRICE`;
   }
 
-  function zoneReactionRead(state, kind) {
+  function zoneStructureRead(state, kind) {
     const m5 = timeframeDirection(state, 'M5');
     const m15 = timeframeDirection(state, 'M15');
     const desired = kind === 'demand' ? 'bullish' : 'bearish';
@@ -496,31 +496,34 @@
     const tf = `M5 ${m5 ? m5.toUpperCase() : 'UNKNOWN'} · M15 ${m15 ? m15.toUpperCase() : 'UNKNOWN'}`;
 
     if (m5 === desired && m15 === desired) {
-      return {tone:'supporting', text:`${tf} · SUPPORTING ${side} REACTION`};
+      return {tone:'supporting', text:`${tf} · CURRENT STRUCTURE FAVOURS ${side}`};
     }
     if (m5 === opposite && m15 === opposite) {
-      return {tone:'against', text:`${tf} · PRESSURE AGAINST ${side}`};
+      return {tone:'against', text:`${tf} · CURRENT STRUCTURE IS AGAINST ${side}`};
     }
-    return {tone:'mixed', text:`${tf} · MIXED / NO CONFIRMATION`};
+    return {tone:'mixed', text:`${tf} · MIXED CURRENT STRUCTURE`};
   }
 
   function nearestOpposingZone(state, kind, low, high) {
     const oppositeKind = kind === 'demand' ? 'supply' : 'demand';
-    const opposing = activeChartZones(state, oppositeKind);
+    const opposing = activeChartZones(state, oppositeKind)
+      .map(zone => ({zone, low:number(zone?.low), high:number(zone?.high)}))
+      .filter(item => item.low != null && item.high != null);
     if (!opposing.length) return null;
 
+    const overlaps = opposing
+      .filter(item => item.low <= high && item.high >= low)
+      .map(item => ({...item, gap:0}))
+      .sort((a,b) => Math.abs(((a.low+a.high)/2)-((low+high)/2)) - Math.abs(((b.low+b.high)/2)-((low+high)/2)));
+    if (overlaps.length) return overlaps[0];
+
     const directional = opposing
-      .map(zone => ({zone, low:number(zone?.low), high:number(zone?.high)}))
-      .filter(item => item.low != null && item.high != null)
-      .filter(item => kind === 'demand' ? item.high >= high : item.low <= low)
+      .filter(item => kind === 'demand' ? item.low > high : item.high < low)
       .map(item => ({
         ...item,
-        gap: kind === 'demand'
-          ? Math.max(0, item.low - high)
-          : Math.max(0, low - item.high),
+        gap:kind === 'demand' ? item.low - high : low - item.high,
       }))
       .sort((a,b) => a.gap - b.gap);
-
     return directional[0] || null;
   }
 
@@ -569,14 +572,16 @@
           distance,
           distanceLabel:zoneDistanceLabel(price, low, high),
           quality:number(zone?.quality),
+          rankScore:number(zone?.rank_score),
           retests:Math.max(0, Number(zone?.retests || 0)),
           fresh:zone?.fresh === true,
+          originTime:String(zone?.origin_time || ''),
           backing:chartZoneBacking(zone),
           chartState:String(zone?.chart_state || zone?.status || 'ACTIVE').toUpperCase(),
           invalidationText:kind === 'demand'
             ? `BROKEN IF M5 CLOSES < ${fmt(low)}`
             : `BROKEN IF M5 CLOSES > ${fmt(high)}`,
-          reaction:zoneReactionRead(state, kind),
+          structureRead:zoneStructureRead(state, kind),
           opposing:opposing ? {
             side:kind === 'demand' ? 'SELL' : 'BUY',
             low:opposing.low,
@@ -595,19 +600,20 @@
     if (!rows.length) {
       return `<div class="lt-chart-zone-column ${side.toLowerCase()}"><h4>${side} ZONES</h4><div class="lt-chart-zone-empty">No current ${safe(kind)} zones are available from this snapshot.</div></div>`;
     }
-    const strongestQuality = Math.max(...rows.map(zone => zone.quality == null ? -1 : zone.quality));
+    const bestRankScore = Math.max(...rows.map(zone => zone.rankScore == null ? -1 : zone.rankScore));
     return `
       <div class="lt-chart-zone-column ${side.toLowerCase()}">
         <h4>${side} ZONES</h4>
         ${rows.map((zone, index) => {
-          const quality = zone.quality == null ? 'QUALITY —' : `QUALITY ${Math.round(zone.quality)}/100`;
-          const retests = `${zone.retests} RETEST${zone.retests === 1 ? '' : 'S'}`;
-          const freshness = zone.fresh ? 'FRESH' : 'USED';
+          const quality = zone.quality == null ? 'HEURISTIC QUALITY —' : `HEURISTIC QUALITY ${Math.round(zone.quality)}/100`;
+          const rank = zone.rankScore == null ? 'RANK —' : `RANK ${zone.rankScore.toFixed(2)}`;
+          const touches = `${zone.retests} TOUCH BAR${zone.retests === 1 ? '' : 'S'}`;
+          const freshness = zone.fresh ? 'FRESH / UNTOUCHED' : 'USED';
           const chartState = zone.chartState === 'UNDER PRESSURE' ? ' · UNDER PRESSURE' : zone.chartState === 'IN ZONE' ? ' · IN ZONE' : '';
           const badges = [
             index === 0 ? '<span class="lt-chart-zone-badge nearest">NEAREST</span>' : '',
-            zone.quality != null && zone.quality === strongestQuality ? '<span class="lt-chart-zone-badge strongest">STRONGEST</span>' : '',
-            zone.fresh ? '<span class="lt-chart-zone-badge fresh">FRESH</span>' : '<span class="lt-chart-zone-badge used">USED</span>',
+            zone.rankScore != null && zone.rankScore === bestRankScore ? '<span class="lt-chart-zone-badge strongest">BEST RANKED</span>' : '',
+            zone.fresh ? '<span class="lt-chart-zone-badge fresh">UNTOUCHED</span>' : '<span class="lt-chart-zone-badge used">USED</span>',
           ].filter(Boolean).join('');
           const opposing = zone.opposing
             ? `NEXT ${zone.opposing.side} ${fmt(zone.opposing.low)}–${fmt(zone.opposing.high)} · GAP ${fmt(zone.opposing.gap)} PTS`
@@ -616,12 +622,12 @@
             <div class="lt-chart-zone-row">
               <div class="lt-chart-zone-price">${index + 1}. ${safe(fmt(zone.low))} – ${safe(fmt(zone.high))}</div>
               <div class="lt-chart-zone-badges">${badges}</div>
-              <div class="lt-chart-zone-meta">${safe(zone.backing)} · ${safe(quality)} · ${safe(retests)} · ${safe(freshness)}${safe(chartState)}</div>
+              <div class="lt-chart-zone-meta">${safe(zone.backing)} · ${safe(quality)} · ${safe(rank)} · ${safe(touches)} · ${safe(freshness)}${safe(chartState)} · ORIGIN ${safe(utcClock(zone.originTime))} · ID ${safe(zone.id.slice(0,8))}</div>
               <div class="lt-chart-zone-live">
                 <div class="lt-chart-zone-fact"><span>DISTANCE</span><strong>${safe(zone.distanceLabel)}</strong></div>
                 <div class="lt-chart-zone-fact break"><span>INVALIDATION</span><strong>${safe(zone.invalidationText)}</strong></div>
                 <div class="lt-chart-zone-fact"><span>OPPOSING ZONE</span><strong>${safe(opposing)}</strong></div>
-                <div class="lt-chart-zone-fact reaction ${safe(zone.reaction?.tone || 'mixed')}"><span>M5 / M15 REACTION</span><strong>${safe(zone.reaction?.text || 'NO CONFIRMATION')}</strong></div>
+                <div class="lt-chart-zone-fact reaction ${safe(zone.structureRead?.tone || 'mixed')}"><span>CURRENT M5 / M15 STRUCTURE</span><strong>${safe(zone.structureRead?.text || 'STRUCTURE UNAVAILABLE')}</strong></div>
               </div>
               <div class="lt-chart-zone-sl"><strong>${zone.slRef?.available === false ? 'SL REF UNAVAILABLE' : `SL REF ${safe(fmt(zone.slRef?.level))}`}</strong><small>${safe(zone.slRef?.basis || 'STRUCTURAL REF')} · ${safe(zone.slRef?.detail || '')}</small></div>
             </div>`;
@@ -649,7 +655,7 @@
           ${chartZoneColumn(state, 'demand', 'BUY')}
           ${chartZoneColumn(state, 'supply', 'SELL')}
         </div>
-        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. Reaction describes M5/M15 context only. SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
+        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. M5/M15 is current global structure, not proof that price reacted to a particular zone. SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
       </div>`;
   }
 
