@@ -120,6 +120,9 @@ def test_final_wrapper_defers_inner_persist_and_writes_complete_state(monkeypatc
     assert persisted["state_authority"]["persisted_after_all_runtime_wrappers"] is True
     assert persisted["state_authority"]["chart_zones_persisted_in_final_state"] is True
     assert persisted["state_authority"]["chart_zones_available"] is True
+    assert persisted["state_authority"]["chart_zones_source"] == "stable_origin_atr_pool"
+    assert persisted["state_authority"]["chart_zones_geometry_version"] == "eve-chart-zone-origin-atr-v1"
+    assert persisted["state_authority"]["chart_zones_invalidation_version"] == "completed_m5_close_actual_edge_v1"
     assert persisted["state_authority"]["chart_zones_fallback_used"] is False
     assert persisted["chart_zones_status"]["available"] is True
     assert persisted["chart_zones_status"]["source"] == "stable_origin_atr_pool"
