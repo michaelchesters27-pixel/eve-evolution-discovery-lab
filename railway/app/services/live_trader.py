@@ -49,6 +49,25 @@ def rounded(value: Any, digits: int = 2) -> float:
     return round(number(value), digits)
 
 
+def analysis_input_signature(rows: list[dict[str, Any]], *, limit: int = 360) -> str:
+    """Fingerprint the exact M5 fields used by zone/structure calculations."""
+    payload = []
+    for row in list(rows[-limit:]):
+        payload.append(
+            {
+                "candle_time": row.get("candle_time"),
+                "open": row.get("open"),
+                "high": row.get("high"),
+                "low": row.get("low"),
+                "close": row.get("close"),
+                "atr_14": row.get("atr_14"),
+                "session": row.get("session"),
+            }
+        )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class LiveTrader:
     """Real-time manual trading assistant.
 
@@ -599,6 +618,22 @@ class LiveTrader:
                 "return_48_pct": rounded(latest.get("return_48_pct"), 3),
                 "magnet": magnet,
                 "fabric_time": latest.get("candle_time"),
+                "analysis_input": {
+                    "source_contract": "completed_m5_rows_consumed_by_live_trader",
+                    "latest_row": {
+                        "candle_time": latest.get("candle_time"),
+                        "open": latest.get("open"),
+                        "high": latest.get("high"),
+                        "low": latest.get("low"),
+                        "close": latest.get("close"),
+                        "atr_14": latest.get("atr_14"),
+                        "session": latest.get("session"),
+                    },
+                    "zone_source_row_count": min(len(rows), 360),
+                    "zone_source_sha256": analysis_input_signature(rows, limit=360),
+                    "chart_zone_geometry_version": "eve-chart-zone-origin-atr-v1",
+                    "chart_zone_invalidation_version": "completed_m5_close_actual_edge_v1",
+                },
             },
             "zones": zones,
             "chart_zones": getattr(self, "_chart_zones_v95", zones),
