@@ -1,7 +1,7 @@
 (() => {
   const css = document.createElement('link');
   css.rel = 'stylesheet';
-  css.href = 'live_trader.css?v=100';
+  css.href = 'live_trader.css?v=101';
   document.head.appendChild(css);
 
   const nav = document.querySelector('#nav');

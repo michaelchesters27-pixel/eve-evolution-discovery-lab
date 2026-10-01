@@ -224,8 +224,7 @@
   }
 
   function start() {
-    clearInterval(timer);
-    clearInterval(learningProgressTimer);
+    if (timer || learningProgressTimer) return;
     refresh();
     refreshLearningProgress();
     timer = setInterval(refresh, 2500);

@@ -121,7 +121,7 @@
   }
 
   function start() {
-    clearInterval(timer);
+    if (timer) return;
     refresh();
     timer = setInterval(refresh, 2500);
   }
