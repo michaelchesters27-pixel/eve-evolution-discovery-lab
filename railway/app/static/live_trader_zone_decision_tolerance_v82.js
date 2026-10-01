@@ -6,8 +6,12 @@
   const TOLERANCE_ATR = 0.35;
   const EARLY_REACTION_ATR = 0.20;
   let active = null;
+  let expiredZoneId = null;
+  const MAX_TICK_AGE_SECONDS = 90;
+  const MAX_DECISION_AGE_MINUTES = 15;
 
   const num = value => {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
   };
@@ -25,14 +29,17 @@
 
   const sameZone = (left, right) => {
     if (!left || !right || left.kind !== right.kind) return false;
-    if (left.id && right.id) return left.id === right.id;
-    return Math.abs(left.low - right.low) <= 0.001 && Math.abs(left.high - right.high) <= 0.001;
+    const leftId = String(left.id || '').trim();
+    const rightId = String(right.id || '').trim();
+    return leftId.length > 0 && rightId.length > 0 && leftId === rightId
+      && Math.abs(left.low - right.low) <= 0.001
+      && Math.abs(left.high - right.high) <= 0.001;
   };
 
   function candidates(state) {
     const price = num(state?.price);
-    const atr = Math.max(num(state?.market?.atr) || 0, 0.01);
-    if (price == null) return [];
+    const atr = num(state?.market?.atr);
+    if (price == null || price <= 0 || atr == null || atr <= 0) return [];
     const out = [];
     for (const kind of ['demand', 'supply']) {
       // ZONE TEST must use the exact same active-zone truth as RELEVANT CHART
@@ -40,13 +47,16 @@
       // fall back to the more tolerant trade-facing zones array.
       const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
       for (const zone of zones) {
+        const id = String(zone?.id || '').trim();
         const low = num(zone?.low);
         const high = num(zone?.high);
-        if (low == null || high == null || high < low) continue;
+        const status = String(zone?.status || '').toUpperCase();
+        if (!id || low == null || high == null || low <= 0 || high <= 0 || high < low) continue;
+        if (['BROKEN','INVALID','EXPIRED'].includes(status)) continue;
         const inZone = low <= price && price <= high;
         const distance = inZone ? 0 : price < low ? low - price : price - high;
         out.push({
-          id: String(zone?.id || ''),
+          id,
           kind, low, high, atr, price, inZone,
           distance,
           tolerance: Math.max(atr * TOLERANCE_ATR, 0.25),
@@ -65,10 +75,20 @@
   function armOrUpdate(state) {
     const now = Date.now();
     const all = candidates(state);
+    const near = all
+      .filter(item => item.distance <= item.tolerance)
+      .sort((a, b) => (a.distance / a.atr) - (b.distance / b.atr))[0] || null;
+
+    if (expiredZoneId && (!near || near.id !== expiredZoneId)) expiredZoneId = null;
 
     if (active) {
       const current = all.find(item => sameZone(item, active));
-      if (current && now < active.until) {
+      if (!current) {
+        active = null;
+      } else if (now >= active.until) {
+        expiredZoneId = active.id;
+        active = null;
+      } else {
         active.low = current.low;
         active.high = current.high;
         active.atr = current.atr;
@@ -86,19 +106,25 @@
           : Math.max(active.extreme, current.price);
         return active;
       }
-      active = null;
     }
 
-    const near = all
-      .filter(item => item.distance <= item.tolerance)
-      .sort((a, b) => (a.distance / a.atr) - (b.distance / b.atr))[0];
     if (!near) return null;
+
+    if (expiredZoneId === near.id) {
+      return {...near, started:null, until:null, wasInside:true, tracking:false, expired:true, extreme:near.price};
+    }
+
+    if (!near.inZone) {
+      return {...near, started:null, until:null, wasInside:false, tracking:false, expired:false, extreme:near.price};
+    }
 
     active = {
       ...near,
       started: now,
       until: now + HOLD_MS,
-      wasInside: near.inZone,
+      wasInside: true,
+      tracking: true,
+      expired: false,
       extreme: near.price,
     };
     return active;
@@ -117,15 +143,44 @@
     const tradeSide = String(trade.side || '').toUpperCase();
     const specialist = String(trade.strategy_key || '') === 'zone_retrace_v1' || String(trade.execution_class || '') === 'zone_retrace_confirmation';
     const actionable = !['', 'WAIT', 'NO TRADE'].includes(action);
-    const confirmed = actionable && specialist && (tradeSide === side || action === side || action.startsWith(side));
-    const reaction = test.kind === 'demand' ? test.price - test.extreme : test.extreme - test.price;
-    const reactionAtr = Math.max(0, reaction) / Math.max(test.atr, 0.01);
+    const sourceZone = trade?.source_zone || {};
+    const sourceZoneId = String(sourceZone?.id || '').trim();
+    const sourceZoneLow = num(sourceZone?.low);
+    const sourceZoneHigh = num(sourceZone?.high);
+    const sourceMatches = sourceZoneId.length > 0
+      && sourceZoneId === test.id
+      && sourceZoneLow != null
+      && sourceZoneHigh != null
+      && Math.abs(sourceZoneLow - test.low) <= 0.001
+      && Math.abs(sourceZoneHigh - test.high) <= 0.001;
+    const confirmed = actionable && specialist && test.wasInside === true && sourceMatches
+      && (tradeSide === side || action === side || action.startsWith(side));
+    const reaction = test.wasInside === true
+      ? (test.kind === 'demand' ? test.price - test.extreme : test.extreme - test.price)
+      : 0;
+    const reactionAtr = test.atr > 0 ? Math.max(0, reaction) / test.atr : 0;
 
     if (confirmed) return {
       tone: desired,
       arrow: desiredArrow,
       title: `${desired.toUpperCase()} REJECTION CONFIRMED`,
       note: `EVE's existing live retracement strategy has confirmed the ${side}.`,
+      m5, m15,
+    };
+
+    if (test.expired === true) return {
+      tone:'undecided',
+      arrow:'↕',
+      title:'TEST WINDOW EXPIRED — WAIT',
+      note:'The previous 20-minute test window has expired. EVE will not re-arm this zone until price leaves the test area and later returns.',
+      m5, m15,
+    };
+
+    if (test.wasInside !== true) return {
+      tone:'undecided',
+      arrow:'↕',
+      title:'APPROACHING ZONE — WAIT',
+      note:`Price is near ${test.kind} but has not entered this exact zone yet. No rejection or break claim is active.`,
       m5, m15,
     };
 
@@ -200,6 +255,13 @@
     const dq = state?.bias?.data_quality || {};
     const ctx = state?.live_context_freshness || {};
     const lag = num(ctx.context_lag_minutes ?? dq.live_context_lag_minutes);
+    const tickMs = Date.parse(String(ctx.live_tick_at || feed.last_tick_at || ''));
+    const decisionMs = Date.parse(String(ctx.effective_decision_time || ''));
+    const now = Date.now();
+    const tickAgeSeconds = Number.isFinite(tickMs) ? Math.max(0, (now - tickMs) / 1000) : null;
+    const decisionAgeMinutes = Number.isFinite(decisionMs) ? Math.max(0, (now - decisionMs) / 60000) : null;
+    const price = num(state?.price);
+    const atr = num(state?.market?.atr);
     return feed.status === 'live'
       && feed.connected === true
       && ctx.context_valid === true
@@ -208,7 +270,15 @@
       && dq.trade_bias_blocked !== true
       && lag != null
       && lag >= 0
-      && lag <= 10;
+      && lag <= 10
+      && tickAgeSeconds != null
+      && tickAgeSeconds <= MAX_TICK_AGE_SECONDS
+      && decisionAgeMinutes != null
+      && decisionAgeMinutes <= MAX_DECISION_AGE_MINUTES
+      && price != null
+      && price > 0
+      && atr != null
+      && atr > 0;
   }
 
   function render(state) {
@@ -255,7 +325,7 @@
         <div class="lt-zone-decision-range">${test.kind.toUpperCase()} ${fmt(test.low)} – ${fmt(test.high)}</div>
         <div class="lt-zone-decision-meta">${backing} · ${quality} · ${retests} · ${freshness}</div>
         <p class="lt-zone-decision-note">${decision.note}</p>
-        <div class="lt-zone-decision-tfs">M5 ${tfLabel(decision.m5)} · M15 ${tfLabel(decision.m15)} · ACTIVE FOR 20 MIN AFTER TEST</div>
+        <div class="lt-zone-decision-tfs">M5 ${tfLabel(decision.m5)} · M15 ${tfLabel(decision.m15)} · ${test.tracking ? 'ACTIVE FOR 20 MIN AFTER ACTUAL TOUCH' : test.expired ? 'WAITING FOR A NEW RETEST' : 'NOT YET TOUCHED'}</div>
       </div>`;
   }
 
