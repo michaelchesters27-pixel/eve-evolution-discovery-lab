@@ -121,7 +121,7 @@
     const ctx = state?.live_context_freshness || {};
     const dq = state?.bias?.data_quality || {};
     const lag = strictNumber(ctx.context_lag_minutes ?? dq.live_context_lag_minutes);
-    const tickText = String(feed.last_tick_received_at || feed.last_tick_received_at || ctx.live_tick_at || feed.last_tick_at || '');
+    const tickText = String(feed.last_tick_received_at || ctx.live_tick_at || feed.last_tick_at || '');
     const decisionText = String(ctx.effective_decision_time || '');
     const tickMs = Date.parse(tickText);
     const decisionMs = Date.parse(decisionText);
