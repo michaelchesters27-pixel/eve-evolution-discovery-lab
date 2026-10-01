@@ -45,8 +45,8 @@
       </div>
 
       <div class="lt-grid">
-        <article class="lt-card"><div class="panel-head"><div><p class="eyebrow">BEST DEMAND</p><h3>Zones EVE would consider buying</h3></div></div><div class="lt-zones" id="ltDemand"></div></article>
-        <article class="lt-card"><div class="panel-head"><div><p class="eyebrow">BEST SUPPLY</p><h3>Zones EVE would consider selling</h3></div></div><div class="lt-zones" id="ltSupply"></div></article>
+        <article class="lt-card"><div class="panel-head"><div><p class="eyebrow">TRADE-FACING DEMAND</p><h3>Internal execution candidates · not the chart map</h3></div></div><div class="lt-zones" id="ltDemand"></div></article>
+        <article class="lt-card"><div class="panel-head"><div><p class="eyebrow">TRADE-FACING SUPPLY</p><h3>Internal execution candidates · not the chart map</h3></div></div><div class="lt-zones" id="ltSupply"></div></article>
       </div>
 
       <article class="lt-card lt-trade-card">
@@ -100,6 +100,10 @@
   const formatPct = value => {
     const parsed = strictNumber(value);
     return parsed == null ? '—' : `${parsed.toFixed(3)}%`;
+  };
+  const formatZoneEdge = value => {
+    const parsed = strictNumber(value);
+    return parsed == null ? '—' : parsed.toLocaleString('en-GB',{minimumFractionDigits:3,maximumFractionDigits:3});
   };
   const label = value => String(value || '—').replaceAll('_',' ').replace(/\b\w/g, c => c.toUpperCase());
   const timeText = value => {
@@ -267,14 +271,36 @@
   const voice = buildVoiceGovernor();
   const speak = (text, options = {}) => voice.say(text, options);
 
+  function validTradeZoneForDisplay(zone, kind) {
+    const id = String(zone?.id || '').trim();
+    const zoneKind = String(zone?.kind || '').toLowerCase();
+    const low = strictNumber(zone?.low);
+    const high = strictNumber(zone?.high);
+    const quality = strictNumber(zone?.quality);
+    const retests = strictNumber(zone?.retests);
+    const status = String(zone?.status || '').toUpperCase();
+    return id.length > 0
+      && zoneKind === kind
+      && low != null && high != null && low > 0 && high > 0 && high >= low
+      && quality != null && quality >= 1 && quality <= 99
+      && retests != null && Number.isInteger(retests) && retests >= 0
+      && !['BROKEN','INVALID','EXPIRED'].includes(status);
+  }
+
   function zoneHtml(zone, kind) {
     const statusClass = String(zone.status || '').toLowerCase().replaceAll(' ','-');
-    return `<div class="lt-zone ${esc(kind)} ${esc(statusClass)}"><div><strong>${esc(formatPrice(zone.low))} – ${esc(formatPrice(zone.high))}</strong><small>${esc(zone.status || 'ACTIVE')} · ${esc(zone.fresh ? 'Fresh' : `${zone.retests || 0} retests`)} · departure ${esc(zone.departure_atr || '—')} ATR · ${esc(zone.distance_atr || '—')} ATR away</small></div><span class="quality">${esc(zone.quality_label || 'MEDIUM')} ${esc(zone.quality || '—')}</span></div>`;
+    const retests = strictNumber(zone.retests);
+    const touchText = retests === 0 ? 'FRESH · 0 TOUCH BARS' : `${retests} TOUCH BAR${retests === 1 ? '' : 'S'}`;
+    const quality = strictNumber(zone.quality);
+    return `<div class="lt-zone ${esc(kind)} ${esc(statusClass)}"><div><strong>${esc(formatZoneEdge(zone.low))} – ${esc(formatZoneEdge(zone.high))}</strong><small>${esc(zone.status || 'ACTIVE')} · ${esc(touchText)} · departure ${esc(zone.departure_atr ?? '—')} ATR · ${esc(zone.distance_atr ?? '—')} ATR away</small></div><span class="quality" title="Heuristic quality score; not a win probability">Q ${esc(quality == null ? '—' : Math.round(quality))}/100</span></div>`;
   }
 
   function renderZones(kind, zones) {
     const target = byId(kind === 'demand' ? 'ltDemand' : 'ltSupply');
-    target.innerHTML = zones?.length ? zones.slice(0,3).map(z => zoneHtml(z, kind)).join('') : `<div class="lt-empty">No ${esc(kind)} zone is clean and relevant enough right now.</div>`;
+    const valid = Array.isArray(zones) ? zones.filter(zone => validTradeZoneForDisplay(zone, kind)) : [];
+    target.innerHTML = valid.length
+      ? valid.slice(0,3).map(z => zoneHtml(z, kind)).join('')
+      : `<div class="lt-empty">No validated trade-facing ${esc(kind)} zone is available right now.</div>`;
   }
 
   function renderTrade(trade = {}) {
