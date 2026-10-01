@@ -255,8 +255,10 @@ async def _refresh_state_v94(self: core.LiveTrader, *, force_rows: bool = False)
         self._authoritative_refresh_active_v94 = False
 
     chart_zones = getattr(self, "_chart_zones_v95", None)
+    chart_status = dict(getattr(self, "_chart_zones_status_v99", {}) or {})
     chart_zones_available = (
-        isinstance(chart_zones, dict)
+        chart_status.get("available") is True
+        and isinstance(chart_zones, dict)
         and isinstance(chart_zones.get("demand"), list)
         and isinstance(chart_zones.get("supply"), list)
     )
@@ -267,7 +269,9 @@ async def _refresh_state_v94(self: core.LiveTrader, *, force_rows: bool = False)
         }
         state["chart_zones_status"] = {
             "available": True,
-            "source": "strict_chart_zones_v95",
+            "source": chart_status.get("source") or "stable_origin_atr_pool",
+            "geometry_version": chart_status.get("geometry_version"),
+            "invalidation_version": chart_status.get("invalidation_version"),
             "fallback_used": False,
             "error": None,
         }
@@ -278,9 +282,11 @@ async def _refresh_state_v94(self: core.LiveTrader, *, force_rows: bool = False)
         state["chart_zones"] = {"demand": [], "supply": []}
         state["chart_zones_status"] = {
             "available": False,
-            "source": "strict_chart_zones_v95",
+            "source": chart_status.get("source") or "stable_origin_atr_pool",
+            "geometry_version": chart_status.get("geometry_version"),
+            "invalidation_version": chart_status.get("invalidation_version"),
             "fallback_used": False,
-            "error": "strict_chart_zone_feed_unavailable",
+            "error": chart_status.get("error") or "strict_chart_zone_feed_unavailable",
         }
 
     academy_result = await _academy_snapshot(self)
