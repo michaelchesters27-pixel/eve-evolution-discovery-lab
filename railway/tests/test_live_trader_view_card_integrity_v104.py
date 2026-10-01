@@ -161,6 +161,7 @@ def test_eve_view_chart_zones_have_zone_specific_sweep_aware_sl_refs() -> None:
     assert "ZONE EDGE + ATR BUFFER" in session
     assert "SL REF UNAVAILABLE" in session
     assert "ATR DATA INVALID" in session
+    assert "design parameters, not proven optimal stop settings" in session
     assert "Math.abs(level - edge) <= huntBand" in session
     assert "Math.abs(extreme - edge) <= huntBand" in session
     assert "Only AUTHORITATIVE TRADE ACTION is execution authority" in session
