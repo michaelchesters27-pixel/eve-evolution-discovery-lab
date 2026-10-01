@@ -47,12 +47,17 @@
       // ZONES. Fail closed if the dedicated chart feed is unavailable; never
       // fall back to the more tolerant trade-facing zones array.
       const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
+      const idCounts = new Map();
+      zones.forEach(zone => {
+        const id = String(zone?.id || '').trim();
+        if (id) idCounts.set(id, (idCounts.get(id) || 0) + 1);
+      });
       for (const zone of zones) {
         const id = String(zone?.id || '').trim();
         const low = num(zone?.low);
         const high = num(zone?.high);
         const status = String(zone?.status || '').toUpperCase();
-        if (!id || low == null || high == null || low <= 0 || high <= 0 || high < low) continue;
+        if (!id || idCounts.get(id) !== 1 || low == null || high == null || low <= 0 || high <= 0 || high < low) continue;
         if (['BROKEN','INVALID','EXPIRED'].includes(status)) continue;
         const inZone = low <= price && price <= high;
         const distance = inZone ? 0 : price < low ? low - price : price - high;
