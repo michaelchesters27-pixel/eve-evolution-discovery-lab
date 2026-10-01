@@ -255,19 +255,32 @@ async def _refresh_state_v94(self: core.LiveTrader, *, force_rows: bool = False)
         self._authoritative_refresh_active_v94 = False
 
     chart_zones = getattr(self, "_chart_zones_v95", None)
-    if isinstance(chart_zones, dict):
+    chart_zones_available = (
+        isinstance(chart_zones, dict)
+        and isinstance(chart_zones.get("demand"), list)
+        and isinstance(chart_zones.get("supply"), list)
+    )
+    if chart_zones_available:
         state["chart_zones"] = {
             "demand": [dict(zone) for zone in list(chart_zones.get("demand") or [])],
             "supply": [dict(zone) for zone in list(chart_zones.get("supply") or [])],
         }
-    elif "chart_zones" not in state:
-        # Fail safe to the existing trade-facing zones if an older runtime path
-        # has not produced the dedicated chart feed yet.  This preserves the
-        # field contract without manufacturing any new zone.
-        fallback = dict(state.get("zones") or {})
-        state["chart_zones"] = {
-            "demand": [dict(zone) for zone in list(fallback.get("demand") or [])],
-            "supply": [dict(zone) for zone in list(fallback.get("supply") or [])],
+        state["chart_zones_status"] = {
+            "available": True,
+            "source": "strict_chart_zones_v95",
+            "fallback_used": False,
+            "error": None,
+        }
+    else:
+        # Public chart-zone displays must never silently inherit the more
+        # tolerant trade-facing zones contract. If the strict feed is absent,
+        # publish an explicit unavailable state and no mapped zones.
+        state["chart_zones"] = {"demand": [], "supply": []}
+        state["chart_zones_status"] = {
+            "available": False,
+            "source": "strict_chart_zones_v95",
+            "fallback_used": False,
+            "error": "strict_chart_zone_feed_unavailable",
         }
 
     academy_result = await _academy_snapshot(self)
@@ -300,7 +313,11 @@ async def _refresh_state_v94(self: core.LiveTrader, *, force_rows: bool = False)
 
     telemetry = await _stage_telemetry_snapshot(self)
     state["bounded_research_telemetry"] = telemetry
-    state["state_authority"] = _authority_metadata(academy_result, policy_summary, telemetry)
+    authority = _authority_metadata(academy_result, policy_summary, telemetry)
+    authority["chart_zones_available"] = bool(chart_zones_available)
+    authority["chart_zones_source"] = "strict_chart_zones_v95"
+    authority["chart_zones_fallback_used"] = False
+    state["state_authority"] = authority
 
     self._latest_state = state
     await _persist_final_state(self, state)
