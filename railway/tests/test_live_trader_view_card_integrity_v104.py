@@ -292,3 +292,37 @@ def test_browser_watchdog_expires_stale_actionable_display_without_new_api_state
     assert "window.addEventListener('focus', enforceFreshness)" in base
     assert "visibilitychange" in base
     assert "freshness watchdog:" in base
+
+
+
+def test_public_ui_cache_and_trade_zone_semantics_are_versioned() -> None:
+    frontend = _frontend()
+    index = (frontend / "index.html").read_text(encoding="utf-8")
+    base = (frontend / "live_trader.js").read_text(encoding="utf-8")
+
+    assert 'live_trader.js?v=99' in index
+    assert 'live_trader_session_outlook_v55.js?v=99' in index
+    assert 'live_trader_intelligence_meter.js?v=99' in index
+    assert "live_trader.css?v=99" in base
+    assert "TRADE-FACING DEMAND" in base
+    assert "TRADE-FACING SUPPLY" in base
+    assert "Internal execution candidates · not the chart map" in base
+    assert "TOUCH BAR" in base
+    assert "Heuristic quality score; not a win probability" in base
+    assert "validTradeZoneForDisplay" in base
+
+
+def test_backend_persists_reproducible_analysis_and_zone_score_lineage() -> None:
+    root = Path(__file__).resolve().parents[2]
+    core = (root / "railway" / "app" / "services" / "live_trader.py").read_text(encoding="utf-8")
+    zones = (root / "railway" / "app" / "services" / "live_trader_mtf_zones_v63.py").read_text(encoding="utf-8")
+
+    assert "analysis_input_signature" in core
+    assert "zone_source_sha256" in core
+    assert "source_contract" in core
+    assert "latest_row" in core
+    assert "origin_atr_14" in zones
+    assert "quality_version" in zones
+    assert "quality_inputs" in zones
+    assert "rank_version" in zones
+    assert "rank_inputs" in zones
