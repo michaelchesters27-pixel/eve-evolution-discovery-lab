@@ -628,13 +628,13 @@
         <h4>${side} ZONES</h4>
         ${rows.map((zone, index) => {
           const quality = zone.quality == null ? 'HEURISTIC QUALITY —' : `HEURISTIC QUALITY ${Math.round(zone.quality)}/100`;
-          const rank = zone.rankScore == null ? 'RANK —' : `RANK ${zone.rankScore.toFixed(2)}`;
+          const rank = zone.rankScore == null ? 'RANK —' : `MTF RANK ${zone.rankScore.toFixed(2)}`;
           const touches = `${zone.retests} TOUCH BAR${zone.retests === 1 ? '' : 'S'}`;
           const freshness = zone.fresh ? 'FRESH / UNTOUCHED' : 'USED';
           const chartState = zone.chartState === 'UNDER PRESSURE' ? ' · UNDER PRESSURE' : zone.chartState === 'IN ZONE' ? ' · IN ZONE' : '';
           const badges = [
             index === 0 ? '<span class="lt-chart-zone-badge nearest">NEAREST</span>' : '',
-            zone.rankScore != null && zone.rankScore === bestRankScore ? '<span class="lt-chart-zone-badge strongest">BEST RANKED</span>' : '',
+            zone.rankScore != null && zone.rankScore === bestRankScore ? '<span class="lt-chart-zone-badge strongest">BEST MTF RANK</span>' : '',
             zone.fresh ? '<span class="lt-chart-zone-badge fresh">UNTOUCHED</span>' : '<span class="lt-chart-zone-badge used">USED</span>',
           ].filter(Boolean).join('');
           const opposing = zone.opposing
@@ -677,7 +677,7 @@
           ${chartZoneColumn(state, 'demand', 'BUY')}
           ${chartZoneColumn(state, 'supply', 'SELL')}
         </div>
-        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. M5/M15 is current global structure, not proof that price reacted to a particular zone. SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
+        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. M5/M15 is current global structure, not proof that price reacted to a particular zone. HEURISTIC QUALITY is not a win probability. BACKED means overlap with an eligible H1/M15 zone, not directional confirmation. SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
       </div>`;
   }
 
