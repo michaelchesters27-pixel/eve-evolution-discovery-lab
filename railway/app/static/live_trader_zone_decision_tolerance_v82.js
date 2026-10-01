@@ -37,6 +37,7 @@
   };
 
   function candidates(state) {
+    if (state?.chart_zones_status?.available !== true) return [];
     const price = num(state?.price);
     const atr = num(state?.market?.atr);
     if (price == null || price <= 0 || atr == null || atr <= 0) return [];
