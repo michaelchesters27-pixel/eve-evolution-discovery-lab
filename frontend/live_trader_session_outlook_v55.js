@@ -4,6 +4,8 @@
 
   const CARD_INTEGRITY_VERSION = 'eve-live-view-card-integrity-v1';
   const MAX_CONTEXT_LAG_MINUTES = 10;
+  const MAX_TICK_AGE_SECONDS = 90;
+  const MAX_DECISION_AGE_MINUTES = 15;
   const LIVE_ZONE_MAX_DISTANCE_ATR = 1.8;
   const LIVE_ZONE_MIN_QUALITY = 58;
   const ZONE_SL_HUNT_BAND_ATR = 1.25;
@@ -122,6 +124,7 @@
   }
 
   function number(value) {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
   }
@@ -141,30 +144,37 @@
     const dq = state?.bias?.data_quality || {};
     const ctx = state?.live_context_freshness || {};
     const lag = number(ctx.context_lag_minutes ?? dq.live_context_lag_minutes);
-    const valid = feed.status === 'live'
-      && feed.connected === true
-      && ctx.context_valid === true
-      && ctx.fresh === true
-      && dq.live_context_stale !== true
-      && dq.trade_bias_blocked !== true
-      && lag != null
-      && lag >= 0
-      && lag <= MAX_CONTEXT_LAG_MINUTES;
+    const tick = ctx.live_tick_at || feed.last_tick_at;
+    const m5 = ctx.effective_latest_m5 || state?.market?.fabric_time;
+    const decision = ctx.effective_decision_time;
+    const tickMs = Date.parse(String(tick || ''));
+    const decisionMs = Date.parse(String(decision || ''));
+    const now = Date.now();
+    const tickAgeSeconds = Number.isFinite(tickMs) ? Math.max(0, (now - tickMs) / 1000) : null;
+    const decisionAgeMinutes = Number.isFinite(decisionMs) ? Math.max(0, (now - decisionMs) / 60000) : null;
+    const price = number(state?.price);
+    const atr = number(state?.market?.atr);
 
     let reason = '';
-    if (feed.status !== 'live' || feed.connected !== true) reason = 'Live price feed is not currently fresh.';
+    if (feed.status !== 'live' || feed.connected !== true) reason = 'Live price feed is unavailable.';
     else if (ctx.context_valid !== true) reason = `M5 context is not validated${ctx.validation_error ? `: ${ctx.validation_error}` : '.'}`;
     else if (ctx.fresh !== true || dq.live_context_stale === true) reason = 'M5/MTF context is stale.';
     else if (dq.trade_bias_blocked === true) reason = 'Trading bias is blocked by data quality.';
-    else if (lag == null || lag < 0 || lag > MAX_CONTEXT_LAG_MINUTES) reason = 'Context lag is outside the accepted live range.';
+    else if (lag == null || lag < 0 || lag > MAX_CONTEXT_LAG_MINUTES) reason = 'Context lag is unavailable or outside the accepted live range.';
+    else if (tickAgeSeconds == null || tickAgeSeconds > MAX_TICK_AGE_SECONDS) reason = 'Live tick timestamp is unavailable or too old.';
+    else if (decisionAgeMinutes == null || decisionAgeMinutes > MAX_DECISION_AGE_MINUTES) reason = 'Decision snapshot timestamp is unavailable or too old.';
+    else if (price == null || price <= 0) reason = 'Live price is unavailable.';
+    else if (atr == null || atr <= 0) reason = 'ATR is unavailable.';
 
     return {
-      valid,
+      valid: !reason,
       reason,
       lag,
-      tick: ctx.live_tick_at || feed.last_tick_at,
-      m5: ctx.effective_latest_m5 || state?.market?.fabric_time,
-      decision: ctx.effective_decision_time,
+      tick,
+      m5,
+      decision,
+      tickAgeSeconds,
+      decisionAgeMinutes,
     };
   }
 
@@ -203,7 +213,7 @@
 
   function retracePlan(state, direction) {
     const price = number(state?.price);
-    const atr = Math.max(number(state?.market?.atr) || 0, 0.01);
+    const atr = number(state?.market?.atr);
     const biasDirection = String(state?.bias?.overall || 'neutral').toLowerCase();
     const zones = state?.zones || {};
     const kind = direction === 'bearish' ? 'supply' : 'demand';
@@ -214,7 +224,8 @@
     const action = String(trade.action || 'WAIT').toUpperCase();
     const actionable = !['', 'WAIT', 'NO TRADE'].includes(action);
 
-    if (price == null) return {available:false, reason:'Current price is unavailable.'};
+    if (price == null || price <= 0) return {available:false, reason:'Current price is unavailable.'};
+    if (atr == null || atr <= 0) return {available:false, reason:'ATR is unavailable; retrace geometry cannot be validated.'};
     if (biasDirection !== direction) {
       return {available:false, reason:`Session lean is ${direction.toUpperCase()} but trade bias is ${biasDirection.toUpperCase()}. No directional retrace plan is shown while they disagree.`};
     }
@@ -229,7 +240,8 @@
       .filter(item => item.low != null && item.high != null && item.high >= item.low)
       .filter(item => item.zone?.fresh !== false)
       .filter(item => !['BROKEN','INVALID','EXPIRED'].includes(String(item.zone?.status || '').toUpperCase()))
-      .filter(item => item.quality == null || item.quality >= LIVE_ZONE_MIN_QUALITY)
+      .filter(item => String(item.zone?.id || '').trim().length > 0)
+      .filter(item => item.quality != null && item.quality >= LIVE_ZONE_MIN_QUALITY)
       .map(item => ({...item, distanceAtr:zoneDistanceAtr(item, price, atr)}))
       .filter(item => item.distanceAtr <= LIVE_ZONE_MAX_DISTANCE_ATR);
 
@@ -371,8 +383,11 @@
   }
 
   function zoneSpecificSlReference(state, kind, low, high) {
-    const atr = Math.max(number(state?.market?.atr) || 0, 0.01);
-    const buffer = Math.max(atr * ZONE_SL_BUFFER_ATR, 0.01);
+    const atr = number(state?.market?.atr);
+    if (atr == null || atr <= 0) {
+      return {level:null, available:false, basis:'SL REF UNAVAILABLE', detail:'ATR DATA INVALID', usedSweep:false};
+    }
+    const buffer = atr * ZONE_SL_BUFFER_ATR;
     const huntBand = atr * ZONE_SL_HUNT_BAND_ATR;
     const liquidity = state?.liquidity || {};
     const buy = kind === 'demand';
@@ -423,6 +438,7 @@
     if (!candidates.length) {
       return {
         level:buy ? edge - buffer : edge + buffer,
+        available:true,
         basis:'ZONE EDGE + ATR BUFFER',
         detail:`No relevant liquidity/sweep level exists within ${ZONE_SL_HUNT_BAND_ATR.toFixed(2)} ATR beyond this zone.`,
         usedSweep:false,
@@ -437,6 +453,7 @@
     const labels = [...new Set(relevant.map(item => item.label))];
     return {
       level:buy ? anchor - buffer : anchor + buffer,
+      available:true,
       basis:usedSweep ? 'SWEEP-PROTECTED STRUCTURAL REF' : 'LIQUIDITY-PROTECTED STRUCTURAL REF',
       detail:`Beyond ${labels.join(' + ')} + ${ZONE_SL_BUFFER_ATR.toFixed(2)} ATR buffer.`,
       usedSweep,
@@ -453,10 +470,12 @@
   function activeChartZones(state, kind) {
     const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
     return zones.filter(zone => {
+      const id = String(zone?.id || '').trim();
       const low = number(zone?.low);
       const high = number(zone?.high);
       const status = String(zone?.status || '').toUpperCase();
-      return low != null && high != null && high >= low && !['BROKEN','INVALID','EXPIRED'].includes(status);
+      return id.length > 0 && low != null && high != null && low > 0 && high > 0 && high >= low
+        && !['BROKEN','INVALID','EXPIRED'].includes(status);
     });
   }
 
@@ -603,7 +622,7 @@
                 <div class="lt-chart-zone-fact"><span>OPPOSING ZONE</span><strong>${safe(opposing)}</strong></div>
                 <div class="lt-chart-zone-fact reaction ${safe(zone.reaction?.tone || 'mixed')}"><span>M5 / M15 REACTION</span><strong>${safe(zone.reaction?.text || 'NO CONFIRMATION')}</strong></div>
               </div>
-              <div class="lt-chart-zone-sl"><strong>SL REF ${safe(fmt(zone.slRef?.level))}</strong><small>${safe(zone.slRef?.basis || 'STRUCTURAL REF')} · ${safe(zone.slRef?.detail || '')}</small></div>
+              <div class="lt-chart-zone-sl"><strong>${zone.slRef?.available === false ? 'SL REF UNAVAILABLE' : `SL REF ${safe(fmt(zone.slRef?.level))}`}</strong><small>${safe(zone.slRef?.basis || 'STRUCTURAL REF')} · ${safe(zone.slRef?.detail || '')}</small></div>
             </div>`;
         }).join('')}
       </div>`;
@@ -614,7 +633,7 @@
       <div class="lt-chart-zones">
         <div class="lt-chart-zones-head">
           <strong>RELEVANT CHART ZONES</strong>
-          <small>SAME SNAPSHOT · NEAREST FIRST</small>
+          <small>LIVE PRICE + COMPLETED M5 MAP · NEAREST FIRST</small>
         </div>
         ${zoneCockpitSummary(state)}
         <div class="lt-chart-zones-grid">
@@ -690,12 +709,16 @@
     return panel;
   }
 
-  function authorityHtml(state) {
+  function authorityHtml(state, integrity = null) {
     const trade = state?.trade || {};
-    const action = String(trade.action || 'WAIT').toUpperCase();
+    const forceWait = integrity && integrity.valid !== true;
+    const rawAction = String(trade.action || 'WAIT').toUpperCase();
+    const action = forceWait ? 'WAIT' : rawAction;
     const waiting = action === 'WAIT' || action === 'NO TRADE' || !action;
     const tone = waiting ? 'wait' : action.includes('SELL') ? 'sell' : 'buy';
-    const reason = String(trade.reason || state?.setup?.reason || '');
+    const reason = forceWait
+      ? `DATA NOT VALID — ${integrity?.reason || 'live context unavailable'}`
+      : String(trade.reason || state?.setup?.reason || '');
     return `
       <div class="lt-session-authority">
         <span>AUTHORITATIVE TRADE ACTION</span>
@@ -708,7 +731,7 @@
     if (!integrity.valid) {
       return `<div class="lt-session-integrity bad">DATA CHECK FAILED · ${safe(integrity.reason || 'Live context is not validated.')}</div>`;
     }
-    return `<div class="lt-session-integrity">DATA FRESH · SAME SNAPSHOT · M5 ${safe(utcClock(integrity.m5))} · DECISION ${safe(utcClock(integrity.decision))} · LAG ${safe(integrity.lag)}m</div>`;
+    return `<div class="lt-session-integrity">DATA FRESH · PRICE TICK ${safe(utcClock(integrity.tick))} · COMPLETED M5 ${safe(utcClock(integrity.m5))} · DECISION ${safe(utcClock(integrity.decision))} · CONTEXT LAG ${safe(integrity.lag)}m</div>`;
   }
 
   function renderInvalid(state, integrity) {
@@ -720,7 +743,7 @@
         <div><span>SESSION LEAN</span><div class="lt-session-outlook-direction wait">WAIT — DATA NOT VALID</div></div>
       </div>
       ${integrityHtml(integrity)}
-      ${authorityHtml(state)}
+      ${authorityHtml(state, integrity)}
       <p class="lt-session-outlook-note">Directional outlook, BOS/CHoCH, retrace zones and stop references must not be trusted until the live-context check is valid again.</p>`;
   }
 
@@ -741,7 +764,7 @@
       panel.innerHTML = `
         <span>SESSION LEAN</span>
         ${integrityHtml(integrity)}
-        ${authorityHtml(state)}
+        ${authorityHtml(state, integrity)}
         <div class="lt-session-outlook-meta">No directional session lean is currently available.</div>
         ${chartZonesHtml(state)}`;
       return;
@@ -775,14 +798,14 @@
 
     const retraceHtml = retrace?.available ? `
       <div class="lt-session-outlook-retrace">
-        <div class="lt-session-outlook-retrace-head"><span>${safe(retrace.title)}</span><small>SAME SNAPSHOT · AUTO-UPDATING</small></div>
+        <div class="lt-session-outlook-retrace-head"><span>${safe(retrace.title)}</span><small>COMPLETED-M5 GEOMETRY · LIVE PRICE</small></div>
         <div class="lt-session-outlook-retrace-range ${safe(direction)}">${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
         <div class="lt-session-outlook-retrace-meta">CURRENT ${safe(retrace.kind)}${retrace.quality == null ? '' : ` · QUALITY ${safe(Math.round(retrace.quality))}/100`} · ${safe(retrace.distanceAtr.toFixed(2))} ATR</div>
         <p class="lt-session-outlook-retrace-note">${safe(retrace.note)}</p>
         ${zoneDecisionHtml(decision, retrace)}
       </div>` : `
       <div class="lt-session-outlook-retrace">
-        <div class="lt-session-outlook-retrace-head"><span>NO QUALIFIED RETRACE PLAN</span><small>SAME SNAPSHOT</small></div>
+        <div class="lt-session-outlook-retrace-head"><span>NO QUALIFIED RETRACE PLAN</span><small>COMPLETED-M5 CONTEXT</small></div>
         <p class="lt-session-outlook-retrace-note">${safe(retrace?.reason || 'No qualified current retrace zone is available.')}</p>
       </div>`;
 
@@ -793,7 +816,7 @@
       </div>
       <div class="lt-session-outlook-meta">${safe(conviction)} lean · ${safe(session)} session</div>
       ${integrityHtml(integrity)}
-      ${authorityHtml(state)}
+      ${authorityHtml(state, integrity)}
       <p class="lt-session-outlook-reasons">${momentumReasonsHtml(reasons)}</p>
       ${headwinds.length ? `<p class="lt-session-headwinds"><b>HEADWINDS / OPPOSING EVIDENCE</b><br>${safe(headwinds.join(' '))}</p>` : ''}
       ${structureHtml}
