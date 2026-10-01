@@ -37,6 +37,13 @@ def test_final_wrapper_defers_inner_persist_and_writes_complete_state(monkeypatc
         "demand": [{"id": "mapped-demand", "low": 4151.272, "high": 4154.526}],
         "supply": [{"id": "mapped-supply", "low": 4160.15, "high": 4163.123}],
     }
+    item._chart_zones_status_v99 = {
+        "available": True,
+        "source": "stable_origin_atr_pool",
+        "geometry_version": "eve-chart-zone-origin-atr-v1",
+        "invalidation_version": "completed_m5_close_actual_edge_v1",
+        "error": None,
+    }
 
     async def inner_refresh(self, *, force_rows: bool = False):
         state = {
@@ -112,6 +119,10 @@ def test_final_wrapper_defers_inner_persist_and_writes_complete_state(monkeypatc
     assert persisted["state_authority"]["authoritative"] is True
     assert persisted["state_authority"]["persisted_after_all_runtime_wrappers"] is True
     assert persisted["state_authority"]["chart_zones_persisted_in_final_state"] is True
+    assert persisted["state_authority"]["chart_zones_available"] is True
+    assert persisted["state_authority"]["chart_zones_fallback_used"] is False
+    assert persisted["chart_zones_status"]["available"] is True
+    assert persisted["chart_zones_status"]["source"] == "stable_origin_atr_pool"
     assert persisted["chart_zones"]["demand"][0]["id"] == "mapped-demand"
     assert persisted["chart_zones"]["supply"][0]["id"] == "mapped-supply"
     assert persisted["state_authority"]["current_policy_academy_status"] == "caught_up_not_promoted"
@@ -164,3 +175,8 @@ def test_authoritative_state_marks_missing_academy_explicitly(monkeypatch) -> No
     assert academy_state["cohort_id"] == "coh_expected"
     assert state["state_authority"]["current_policy_academy_status"] == "waiting_for_first_scan"
     assert state["chart_zones"] == {"demand": [], "supply": []}
+    assert state["chart_zones_status"]["available"] is False
+    assert state["chart_zones_status"]["fallback_used"] is False
+    assert state["chart_zones_status"]["error"] == "strict_chart_zone_feed_unavailable"
+    assert state["state_authority"]["chart_zones_available"] is False
+    assert state["state_authority"]["chart_zones_fallback_used"] is False
