@@ -468,6 +468,7 @@
   }
 
   function activeChartZones(state, kind) {
+    if (state?.chart_zones_status?.available !== true) return [];
     const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
     return zones.filter(zone => {
       const id = String(zone?.id || '').trim();
@@ -629,6 +630,14 @@
   }
 
   function chartZonesHtml(state) {
+    if (state?.chart_zones_status?.available !== true) {
+      const error = String(state?.chart_zones_status?.error || 'strict chart-zone feed unavailable');
+      return `
+        <div class="lt-chart-zones">
+          <div class="lt-chart-zones-head"><strong>RELEVANT CHART ZONES</strong><small>UNAVAILABLE</small></div>
+          <div class="lt-chart-zone-empty">ZONE DATA UNAVAILABLE · ${safe(error)}. EVE will not substitute trade-facing zones.</div>
+        </div>`;
+    }
     return `
       <div class="lt-chart-zones">
         <div class="lt-chart-zones-head">
