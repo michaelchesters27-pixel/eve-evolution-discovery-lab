@@ -80,7 +80,10 @@
       .filter(item => item.distance <= item.tolerance)
       .sort((a, b) => (a.distance / a.atr) - (b.distance / b.atr))[0] || null;
 
-    if (expiredZoneId && (!near || near.id !== expiredZoneId)) expiredZoneId = null;
+    if (expiredZoneId) {
+      const expiredCurrent = all.find(item => item.id === expiredZoneId) || null;
+      if (!expiredCurrent || expiredCurrent.distance > expiredCurrent.tolerance) expiredZoneId = null;
+    }
 
     if (active) {
       const current = all.find(item => sameZone(item, active));
