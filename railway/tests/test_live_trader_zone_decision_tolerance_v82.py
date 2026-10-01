@@ -18,7 +18,8 @@ def test_zone_decision_tolerance_is_display_only_and_time_bounded():
     assert "BREAK BUILDING" in canonical
     assert "REJECTION CONFIRMED" in canonical
     assert "state?.market?.atr" in canonical
-    assert "state?.chart_zones?.[kind]" in canonical
+    assert "window.eveChartZoneContractV99" in canonical
+    assert "contract.eligibleZones(state, kind)" in canonical
     assert "state?.zones?.[kind]" not in canonical
     assert ".slice(0, 3)" not in canonical
     assert "leftId.length > 0 && rightId.length > 0" in canonical
@@ -54,9 +55,9 @@ def test_zone_decision_can_only_use_a_zone_present_in_relevant_chart_zones():
     root = _repo_root()
     source = (root / "frontend" / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
 
-    assert "state?.chart_zones?.[kind]" in source
+    assert "window.eveChartZoneContractV99" in source
+    assert "contract.eligibleZones(state, kind)" in source
     assert "state?.zones?.[kind]" not in source
-    assert "idCounts.get(id) !== 1" in source
     assert "id," in source
     assert "leftId.length > 0 && rightId.length > 0" in source
 
@@ -81,7 +82,7 @@ def test_zone_decision_rejects_bad_status_ids_atr_and_stale_wall_clock():
     source = (root / "frontend" / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
 
     assert "['BROKEN','INVALID','EXPIRED'].includes(status)" in source
-    assert "idCounts.get(id) !== 1" in source
+    assert "contract.eligibleZones(state, kind)" in source
     assert "atr == null || atr <= 0" in source
     assert "MAX_TICK_AGE_SECONDS = 90" in source
     assert "MAX_DECISION_AGE_MINUTES = 15" in source
