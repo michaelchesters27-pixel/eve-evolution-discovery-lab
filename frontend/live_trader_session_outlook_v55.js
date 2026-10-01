@@ -569,7 +569,7 @@
         <div class="lt-chart-now-item"><span>TRADE ACTION</span><strong>${safe(action)}</strong></div>
         <div class="lt-chart-now-item"><span>NEAREST BUY</span><strong>${safe(zoneSummary(buy))}</strong></div>
         <div class="lt-chart-now-item"><span>NEAREST SELL</span><strong>${safe(zoneSummary(sell))}</strong></div>
-        <div class="lt-chart-now-item"><span>REACTION</span><strong>M5 ${safe((m5 || 'unknown').toUpperCase())} · M15 ${safe((m15 || 'unknown').toUpperCase())}</strong></div>
+        <div class="lt-chart-now-item"><span>CURRENT STRUCTURE</span><strong>M5 ${safe((m5 || 'unknown').toUpperCase())} · M15 ${safe((m15 || 'unknown').toUpperCase())}</strong></div>
       </div>`;
   }
 
