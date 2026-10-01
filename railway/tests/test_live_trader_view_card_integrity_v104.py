@@ -207,7 +207,7 @@ def test_chart_zone_panel_is_easy_live_trading_cockpit() -> None:
     assert "NEXT ${zone.opposing.side}" in session
     assert "GAP ${fmt(zone.opposing.gap)} PTS" in session
     assert "NEAREST</span>" in session
-    assert "BEST RANKED</span>" in session
+    assert "BEST MTF RANK</span>" in session
     assert "CURRENT STRUCTURE FAVOURS ${side}" in session
     assert "CURRENT STRUCTURE IS AGAINST ${side}" in session
     assert "MIXED CURRENT STRUCTURE" in session
@@ -241,7 +241,7 @@ def test_public_copilot_fail_closed_countermeasures_are_present() -> None:
 def test_chart_zone_public_semantics_name_actual_metrics() -> None:
     session = (_frontend() / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
 
-    assert "BEST RANKED" in session
+    assert "BEST MTF RANK" in session
     assert "STRONGEST" not in session
     assert "HEURISTIC QUALITY" in session
     assert "TOUCH BAR" in session
