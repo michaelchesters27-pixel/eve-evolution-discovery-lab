@@ -41,28 +41,19 @@
   };
 
   function candidates(state) {
+    const contract = window.eveChartZoneContractV99;
+    if (!contract || typeof contract.eligibleZones !== 'function') return [];
     if (state?.chart_zones_status?.available !== true) return [];
     const price = num(state?.price);
     const atr = num(state?.market?.atr);
     if (price == null || price <= 0 || atr == null || atr <= 0) return [];
     const out = [];
     for (const kind of ['demand', 'supply']) {
-      // ZONE TEST must use the exact same active-zone truth as RELEVANT CHART
-      // ZONES. Fail closed if the dedicated chart feed is unavailable; never
-      // fall back to the more tolerant trade-facing zones array.
-      const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
-      const idCounts = new Map();
-      zones.forEach(zone => {
-        const id = String(zone?.id || '').trim();
-        if (id) idCounts.set(id, (idCounts.get(id) || 0) + 1);
-      });
+      const zones = contract.eligibleZones(state, kind);
       for (const zone of zones) {
-        const id = String(zone?.id || '').trim();
-        const low = num(zone?.low);
-        const high = num(zone?.high);
-        const status = String(zone?.status || '').toUpperCase();
-        if (!id || idCounts.get(id) !== 1 || low == null || high == null || low <= 0 || high <= 0 || high < low) continue;
-        if (['BROKEN','INVALID','EXPIRED'].includes(status)) continue;
+        const id = String(zone.id);
+        const low = num(zone.low);
+        const high = num(zone.high);
         const inZone = low <= price && price <= high;
         const distance = inZone ? 0 : price < low ? low - price : price - high;
         out.push({
@@ -70,12 +61,12 @@
           kind, low, high, atr, price, inZone,
           distance,
           tolerance: Math.max(atr * TOLERANCE_ATR, 0.25),
-          quality: num(zone?.quality),
-          fresh: zone?.fresh === true,
-          retests: Math.max(0, Number(zone?.retests || 0)),
-          zoneRole: String(zone?.zone_role || 'M5_ONLY'),
-          h1Confluence: zone?.h1_confluence === true,
-          m15Confluence: zone?.m15_confluence === true,
+          quality: num(zone.quality),
+          fresh: zone.fresh === true,
+          retests: num(zone.retests) || 0,
+          zoneRole: String(zone.zone_role || 'M5_ONLY'),
+          h1Confluence: zone.h1_confluence === true,
+          m15Confluence: zone.m15_confluence === true,
         });
       }
     }
