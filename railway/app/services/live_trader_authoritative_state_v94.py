@@ -321,7 +321,9 @@ async def _refresh_state_v94(self: core.LiveTrader, *, force_rows: bool = False)
     state["bounded_research_telemetry"] = telemetry
     authority = _authority_metadata(academy_result, policy_summary, telemetry)
     authority["chart_zones_available"] = bool(chart_zones_available)
-    authority["chart_zones_source"] = "strict_chart_zones_v95"
+    authority["chart_zones_source"] = state["chart_zones_status"].get("source")
+    authority["chart_zones_geometry_version"] = state["chart_zones_status"].get("geometry_version")
+    authority["chart_zones_invalidation_version"] = state["chart_zones_status"].get("invalidation_version")
     authority["chart_zones_fallback_used"] = False
     state["state_authority"] = authority
 
