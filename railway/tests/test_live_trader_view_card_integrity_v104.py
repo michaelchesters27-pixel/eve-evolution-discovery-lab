@@ -351,3 +351,9 @@ def test_live_trader_state_remains_resident_across_internal_page_switches() -> N
     assert "restoreCachedState()" in base
     assert "contextHealth(cached.state).valid" in base
     assert "LIVE_STATE_CACHE_MAX_AGE_MS = MAX_TICK_AGE_SECONDS * 1000" in base
+
+    # Browser reload restoration is continuity-only: cached execution authority
+    # is forced to WAIT until a fresh /live-trader response arrives.
+    assert "RESTORED CACHED VIEW — WAITING FOR LIVE REFRESH" in base
+    assert "__restored_cache:true" in base
+    assert "state.__restored_cache === true" in base
