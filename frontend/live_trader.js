@@ -84,11 +84,105 @@
   let recognition = null;
 
   const byId = id => document.getElementById(id);
-  const formatPrice = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—';
+  const MAX_CONTEXT_LAG_MINUTES = 10;
+  const MAX_TICK_AGE_SECONDS = 90;
+  const MAX_DECISION_AGE_MINUTES = 15;
+  const strictNumber = value => {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const formatPrice = value => {
+    const parsed = strictNumber(value);
+    return parsed == null ? '—' : parsed.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});
+  };
+  const formatPct = value => {
+    const parsed = strictNumber(value);
+    return parsed == null ? '—' : `${parsed.toFixed(3)}%`;
+  };
   const label = value => String(value || '—').replaceAll('_',' ').replace(/\b\w/g, c => c.toUpperCase());
-  const timeText = value => value ? new Date(value).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
-  const number = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const timeText = value => {
+    const ms = Date.parse(String(value || ''));
+    return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
+  };
+  const number = (value, fallback = 0) => {
+    const parsed = strictNumber(value);
+    return parsed == null ? fallback : parsed;
+  };
   const actionable = action => !['NO TRADE','WAIT',''].includes(String(action || '').toUpperCase());
+
+  function contextHealth(state) {
+    const feed = state?.feed || {};
+    const ctx = state?.live_context_freshness || {};
+    const dq = state?.bias?.data_quality || {};
+    const lag = strictNumber(ctx.context_lag_minutes ?? dq.live_context_lag_minutes);
+    const tickText = String(ctx.live_tick_at || feed.last_tick_at || '');
+    const decisionText = String(ctx.effective_decision_time || '');
+    const tickMs = Date.parse(tickText);
+    const decisionMs = Date.parse(decisionText);
+    const now = Date.now();
+    const tickAgeSeconds = Number.isFinite(tickMs) ? Math.max(0, (now - tickMs) / 1000) : null;
+    const decisionAgeMinutes = Number.isFinite(decisionMs) ? Math.max(0, (now - decisionMs) / 60000) : null;
+    const price = strictNumber(state?.price);
+    const atr = strictNumber(state?.market?.atr);
+
+    let reason = '';
+    if (feed.status !== 'live' || feed.connected !== true) reason = 'live feed unavailable';
+    else if (ctx.context_valid !== true || ctx.fresh !== true) reason = 'live context is not validated and fresh';
+    else if (dq.live_context_stale === true || dq.trade_bias_blocked === true) reason = 'data quality has blocked live trading context';
+    else if (lag == null || lag < 0 || lag > MAX_CONTEXT_LAG_MINUTES) reason = 'context lag is unavailable or outside the accepted range';
+    else if (tickAgeSeconds == null || tickAgeSeconds > MAX_TICK_AGE_SECONDS) reason = 'live tick is too old or unavailable';
+    else if (decisionAgeMinutes == null || decisionAgeMinutes > MAX_DECISION_AGE_MINUTES) reason = 'decision snapshot is too old or unavailable';
+    else if (price == null || price <= 0) reason = 'live price is unavailable';
+    else if (atr == null || atr <= 0) reason = 'ATR is unavailable';
+
+    return {valid:!reason, reason, lag, tickAgeSeconds, decisionAgeMinutes};
+  }
+
+  function failClosedState(source, reason) {
+    const state = source && typeof source === 'object' ? source : {};
+    const message = `DATA NOT VALID — ${reason || 'live service unavailable'}`;
+    return {
+      symbol: state.symbol || 'XAU/USD',
+      as_of: new Date().toISOString(),
+      price: null,
+      opinion: `EVE cannot provide a live trading view: ${reason || 'live service unavailable'}.`,
+      feed: {...(state.feed || {}), status:'offline', connected:false, tradable:false},
+      bias: {
+        ...(state.bias || {}),
+        overall:'neutral',
+        confidence:null,
+        data_quality:{
+          ...((state.bias || {}).data_quality || {}),
+          live_context_stale:true,
+          live_context_valid:false,
+          trade_bias_blocked:true,
+        },
+      },
+      market:{
+        ...(state.market || {}),
+        atr:null,
+        magnet:null,
+        return_12_pct:null,
+        return_48_pct:null,
+        fabric_time:null,
+      },
+      trade:{action:'WAIT', order_type:'none', side:null, reason:message, manual_only:true, automatic_order_placement:false},
+      setup:{status:'WAIT', reason:message},
+      zones:{demand:[], supply:[]},
+      chart_zones:{demand:[], supply:[]},
+      liquidity:{},
+      session_outlook:{},
+      live_context_freshness:{
+        ...((state.live_context_freshness) || {}),
+        fresh:false,
+        context_valid:false,
+        validation_error:reason || 'live service unavailable',
+        context_lag_minutes:null,
+      },
+      __display_fail_closed:true,
+    };
+  }
 
   function buildVoiceGovernor() {
     if (window.eveLiveVoice) return window.eveLiveVoice;
@@ -285,8 +379,13 @@
   }
 
   function renderState(state, allowSpeak = true) {
+    const health = contextHealth(state);
+    const displayState = health.valid || state?.__display_fail_closed === true
+      ? state
+      : failClosedState(state, health.reason);
     const previousState = lastState;
-    lastState = state;
+    lastState = displayState;
+    state = displayState;
     const feed = state.feed || {};
     byId('ltSymbol').textContent = state.symbol || 'XAU/USD';
     byId('ltPrice').textContent = formatPrice(state.price);
@@ -310,8 +409,8 @@
     byId('ltSetupGate').textContent = `Setup gate: ${state.setup?.status || 'WATCHING'}`;
     byId('ltMarketLine').innerHTML = [
       `ATR ${formatPrice(market.atr)}`,
-      `12-bar ${Number(market.return_12_pct || 0).toFixed(3)}%`,
-      `48-bar ${Number(market.return_48_pct || 0).toFixed(3)}%`,
+      `12-bar ${formatPct(market.return_12_pct)}`,
+      `48-bar ${formatPct(market.return_48_pct)}`,
       `Fabric ${timeText(market.fabric_time)}`
     ].map(x=>`<span>${esc(x)}</span>`).join('');
     renderZones('demand', state.zones?.demand || []);
@@ -382,8 +481,7 @@
       const state = await api('/live-trader');
       renderState(state, allowSpeak);
     } catch (error) {
-      byId('ltFeed').querySelector('b').textContent = 'OFFLINE';
-      byId('ltOpinion').textContent = `Micky, I cannot read the Live Trader service right now: ${error.message}`;
+      renderState(failClosedState(lastState, `API failure: ${error.message}`), false);
     }
   }
 
