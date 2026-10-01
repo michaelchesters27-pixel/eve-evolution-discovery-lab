@@ -486,12 +486,18 @@
   function activeChartZones(state, kind) {
     if (state?.chart_zones_status?.available !== true) return [];
     const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
+    const idCounts = new Map();
+    zones.forEach(zone => {
+      const id = String(zone?.id || '').trim();
+      if (id) idCounts.set(id, (idCounts.get(id) || 0) + 1);
+    });
     return zones.filter(zone => {
       const id = String(zone?.id || '').trim();
       const low = number(zone?.low);
       const high = number(zone?.high);
       const status = String(zone?.status || '').toUpperCase();
-      return id.length > 0 && low != null && high != null && low > 0 && high > 0 && high >= low
+      return id.length > 0 && idCounts.get(id) === 1
+        && low != null && high != null && low > 0 && high > 0 && high >= low
         && !['BROKEN','INVALID','EXPIRED'].includes(status);
     });
   }
