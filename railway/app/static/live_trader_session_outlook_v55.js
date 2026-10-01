@@ -369,8 +369,8 @@
         : retrace.m15Confluence
           ? 'M15 BACKED'
           : 'M5 ONLY';
-    const quality = retrace.quality == null ? 'QUALITY —' : `QUALITY ${Math.round(retrace.quality)}/100`;
-    const retests = `${retrace.retests} RETEST${retrace.retests === 1 ? '' : 'S'}`;
+    const quality = retrace.quality == null ? 'QUALITY —' : `HEURISTIC QUALITY ${Math.round(retrace.quality)}/100`;
+    const retests = `${retrace.retests} TOUCH BAR${retrace.retests === 1 ? '' : 'S'}`;
     const freshness = retrace.fresh ? 'FRESH' : 'USED';
     return `
       <div class="lt-zone-decision ${safe(decision.tone)}">
@@ -831,7 +831,7 @@
       <div class="lt-session-outlook-retrace">
         <div class="lt-session-outlook-retrace-head"><span>${safe(retrace.title)}</span><small>COMPLETED-M5 GEOMETRY · LIVE PRICE</small></div>
         <div class="lt-session-outlook-retrace-range ${safe(direction)}">${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
-        <div class="lt-session-outlook-retrace-meta">CURRENT ${safe(retrace.kind)}${retrace.quality == null ? '' : ` · QUALITY ${safe(Math.round(retrace.quality))}/100`} · ${safe(retrace.distanceAtr.toFixed(2))} ATR</div>
+        <div class="lt-session-outlook-retrace-meta">CURRENT ${safe(retrace.kind)}${retrace.quality == null ? '' : ` · HEURISTIC QUALITY ${safe(Math.round(retrace.quality))}/100`} · ${safe(retrace.distanceAtr.toFixed(2))} ATR</div>
         <p class="lt-session-outlook-retrace-note">${safe(retrace.note)}</p>
         ${zoneDecisionHtml(decision, retrace)}
       </div>` : `
