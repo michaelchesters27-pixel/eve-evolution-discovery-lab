@@ -136,8 +136,19 @@ def _confluence(zone: dict[str, Any], h1: list[dict[str, Any]], m15: list[dict[s
     result["mtf_confluence_count"] = int(bool(h1_best)) + int(bool(m15_best))
     result["h1_zone"] = h1_best
     result["m15_zone"] = m15_best
+    base_rank = _num(result.get("rank_score"), _num(result.get("quality")))
     result["mtf_rank_boost"] = round(boost, 2)
-    result["rank_score"] = round(_num(result.get("rank_score"), _num(result.get("quality"))) + boost, 2)
+    result["rank_score"] = round(base_rank + boost, 2)
+    result["rank_version"] = "eve-chart-zone-mtf-rank-v1"
+    result["rank_inputs"] = {
+        "base_rank": round(base_rank, 4),
+        "base_quality": _num(result.get("quality")),
+        "h1_quality": _num((h1_best or {}).get("quality")) if h1_best else None,
+        "m15_quality": _num((m15_best or {}).get("quality")) if m15_best else None,
+        "h1_confluence": bool(h1_best),
+        "m15_confluence": bool(m15_best),
+        "mtf_rank_boost": round(boost, 4),
+    }
     if h1_best and m15_best:
         result["zone_role"] = "H1_ZONE_M15_REFINEMENT_M5_EXECUTION"
     elif h1_best:
@@ -149,11 +160,163 @@ def _confluence(zone: dict[str, Any], h1: list[dict[str, Any]], m15: list[dict[s
     return result
 
 
+def _stable_chart_zone_pool(
+    self: core.LiveTrader,
+    rows: list[dict[str, Any]],
+    price: float,
+    bias: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    """Build chart zones from immutable origin-bar ATR, never current ATR.
+
+    Trade-facing zones keep their existing policy.  The public chart map needs
+    stable identity/geometry so an old mapped zone cannot disappear and return
+    merely because current volatility changes.
+    """
+    source = list(rows[-360:])
+    if len(source) < 20:
+        return {"demand": [], "supply": []}
+
+    latest_atr = _num(source[-1].get("atr_14"))
+    if latest_atr <= 0:
+        return {"demand": [], "supply": []}
+
+    htf = dict((bias or {}).get("timeframes") or {})
+    demand: list[dict[str, Any]] = []
+    supply: list[dict[str, Any]] = []
+    window = 2
+
+    for index in range(window, len(source) - 8):
+        row = source[index]
+        origin_atr = _num(row.get("atr_14"))
+        if origin_atr <= 0:
+            continue
+        low = _num(row.get("low"))
+        high = _num(row.get("high"))
+        open_ = _num(row.get("open"))
+        close = _num(row.get("close"))
+        if min(low, high, open_, close) <= 0 or high < low:
+            continue
+
+        nearby = source[index - window:index + window + 1]
+        future = source[index + 1:index + 9]
+        prior = source[max(0, index - 12):index]
+        later = source[index + 9:]
+
+        is_low = low <= min(_num(item.get("low")) for item in nearby)
+        is_high = high >= max(_num(item.get("high")) for item in nearby)
+
+        if is_low and future:
+            future_high = max(_num(item.get("high")) for item in future)
+            departure = (future_high - low) / origin_atr
+            if departure >= 1.15:
+                zone_low = low
+                zone_high = min(max(open_, close), low + origin_atr * 0.55)
+                if zone_high >= zone_low:
+                    retests = sum(
+                        1 for item in later
+                        if _num(item.get("low")) <= zone_high and _num(item.get("high")) >= zone_low
+                    )
+                    broke_structure = bool(prior) and future_high > max(_num(item.get("high")) for item in prior)
+                    alignment = sum(
+                        1 for tf in ("D1", "H4", "H1")
+                        if str((htf.get(tf) or {}).get("direction") or "") == "bullish"
+                    )
+                    quality = core.clamp(
+                        38 + min(departure, 3.5) * 11 + (18 if broke_structure else 0)
+                        + alignment * 4 - min(retests, 4) * 7,
+                        1,
+                        99,
+                    )
+                    zone = self._zone(
+                        "demand", row, zone_low, zone_high, quality, retests,
+                        departure, price, latest_atr,
+                    )
+                    zone.update({
+                        "geometry_version": "eve-chart-zone-origin-atr-v1",
+                        "origin_atr_14": round(origin_atr, 6),
+                        "formation_end_time": future[-1].get("candle_time"),
+                        "departure_extreme": round(future_high, 6),
+                        "broke_prior_structure": bool(broke_structure),
+                        "htf_alignment_count_at_refresh": int(alignment),
+                        "retest_metric": "overlapping_m5_bars",
+                        "quality_version": "eve-chart-zone-quality-v1",
+                        "quality_inputs": {
+                            "base": 38,
+                            "departure_atr": round(departure, 6),
+                            "departure_cap": 3.5,
+                            "departure_weight": 11,
+                            "broke_prior_structure": bool(broke_structure),
+                            "structure_bonus": 18 if broke_structure else 0,
+                            "htf_alignment_count": int(alignment),
+                            "htf_alignment_weight": 4,
+                            "touch_bars": int(retests),
+                            "touch_bar_cap": 4,
+                            "touch_bar_penalty": 7,
+                            "result": round(quality, 6),
+                        },
+                    })
+                    demand.append(zone)
+
+        if is_high and future:
+            future_low = min(_num(item.get("low")) for item in future)
+            departure = (high - future_low) / origin_atr
+            if departure >= 1.15:
+                zone_high = high
+                zone_low = max(min(open_, close), high - origin_atr * 0.55)
+                if zone_high >= zone_low:
+                    retests = sum(
+                        1 for item in later
+                        if _num(item.get("low")) <= zone_high and _num(item.get("high")) >= zone_low
+                    )
+                    broke_structure = bool(prior) and future_low < min(_num(item.get("low")) for item in prior)
+                    alignment = sum(
+                        1 for tf in ("D1", "H4", "H1")
+                        if str((htf.get(tf) or {}).get("direction") or "") == "bearish"
+                    )
+                    quality = core.clamp(
+                        38 + min(departure, 3.5) * 11 + (18 if broke_structure else 0)
+                        + alignment * 4 - min(retests, 4) * 7,
+                        1,
+                        99,
+                    )
+                    zone = self._zone(
+                        "supply", row, zone_low, zone_high, quality, retests,
+                        departure, price, latest_atr,
+                    )
+                    zone.update({
+                        "geometry_version": "eve-chart-zone-origin-atr-v1",
+                        "origin_atr_14": round(origin_atr, 6),
+                        "formation_end_time": future[-1].get("candle_time"),
+                        "departure_extreme": round(future_low, 6),
+                        "broke_prior_structure": bool(broke_structure),
+                        "htf_alignment_count_at_refresh": int(alignment),
+                        "retest_metric": "overlapping_m5_bars",
+                        "quality_version": "eve-chart-zone-quality-v1",
+                        "quality_inputs": {
+                            "base": 38,
+                            "departure_atr": round(departure, 6),
+                            "departure_cap": 3.5,
+                            "departure_weight": 11,
+                            "broke_prior_structure": bool(broke_structure),
+                            "structure_bonus": 18 if broke_structure else 0,
+                            "htf_alignment_count": int(alignment),
+                            "htf_alignment_weight": 4,
+                            "touch_bars": int(retests),
+                            "touch_bar_cap": 4,
+                            "touch_bar_penalty": 7,
+                            "result": round(quality, 6),
+                        },
+                    })
+                    supply.append(zone)
+
+    return {"demand": demand, "supply": supply}
+
+
 def _chart_zone_broken_by_completed_m5_close(
     zone: dict[str, Any],
     kind: str,
     rows: list[dict[str, Any]],
-) -> tuple[bool, str | None, float | None]:
+) -> tuple[bool | None, str | None, float | None]:
     # Core zone creation deliberately reserves the eight M5 bars after the
     # pivot for proving departure. Its own "later" invalidation window begins
     # at origin + 9 bars. Chart mapping uses that identical causal start point,
@@ -166,7 +329,8 @@ def _chart_zone_broken_by_completed_m5_close(
         None,
     )
     if origin_index is None:
-        return False, None, None
+        # Unverifiable history is not equivalent to an intact zone.
+        return None, None, None
 
     low = _num(zone.get("low"))
     high = _num(zone.get("high"))
@@ -189,6 +353,10 @@ def _chart_zones_v95(
 ) -> dict[str, list[dict[str, Any]]]:
     raw_pool = getattr(self, "_chart_zone_raw_v95", None)
     if not isinstance(raw_pool, dict):
+        self._chart_zones_status_v99 = {
+            "available": False,
+            "error": "stable_chart_zone_pool_unavailable",
+        }
         return {"demand": [], "supply": []}
 
     result: dict[str, list[dict[str, Any]]] = {"demand": [], "supply": []}
@@ -196,7 +364,8 @@ def _chart_zones_v95(
         annotated: list[dict[str, Any]] = []
         for raw_zone in list(raw_pool.get(kind) or []):
             broken, broken_at, broken_close = _chart_zone_broken_by_completed_m5_close(raw_zone, kind, rows)
-            if broken:
+            if broken is not False:
+                # True = broken. None = history cannot prove survival.
                 continue
             zone = _confluence(dict(raw_zone), h1[kind], m15[kind], atr)
             zone["chart_invalidation_rule"] = (
@@ -240,12 +409,33 @@ def _chart_zones_v95(
             zone["chart_rank"] = index
         result[kind] = annotated
 
+    self._chart_zones_status_v99 = {
+        "available": True,
+        "error": None,
+        "source": "stable_origin_atr_pool",
+        "geometry_version": "eve-chart-zone-origin-atr-v1",
+        "invalidation_version": "completed_m5_close_actual_edge_v1",
+    }
     return result
 
 
 def _zone_candidates_v63(self: core.LiveTrader, rows: list[dict[str, Any]], price: float, bias: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     base = _BASE_ZONE_CANDIDATES(self, rows, price, bias)
-    atr = max(_num((rows[-1] if rows else {}).get("atr_14")), 0.01)
+    source = list(rows[-360:])
+    atr = _num((source[-1] if source else {}).get("atr_14"))
+    if len(source) < 20:
+        self._chart_zone_raw_v95 = {"demand": [], "supply": []}
+        self._chart_zones_v95 = {"demand": [], "supply": []}
+        self._chart_zones_status_v99 = {"available": False, "error": "insufficient_completed_m5_history"}
+        return base
+    if atr <= 0:
+        self._chart_zone_raw_v95 = {"demand": [], "supply": []}
+        self._chart_zones_v95 = {"demand": [], "supply": []}
+        self._chart_zones_status_v99 = {"available": False, "error": "latest_atr_unavailable"}
+        return base
+
+    stable_chart_pool = _stable_chart_zone_pool(self, source, price, bias)
+    self._chart_zone_raw_v95 = stable_chart_pool
     h1 = _native_zones(rows[-720:], "H1", price)
     m15 = _native_zones(rows[-720:], "M15", price)
 

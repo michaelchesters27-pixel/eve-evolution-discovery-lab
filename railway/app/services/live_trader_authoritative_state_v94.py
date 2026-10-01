@@ -255,19 +255,38 @@ async def _refresh_state_v94(self: core.LiveTrader, *, force_rows: bool = False)
         self._authoritative_refresh_active_v94 = False
 
     chart_zones = getattr(self, "_chart_zones_v95", None)
-    if isinstance(chart_zones, dict):
+    chart_status = dict(getattr(self, "_chart_zones_status_v99", {}) or {})
+    chart_zones_available = (
+        chart_status.get("available") is True
+        and isinstance(chart_zones, dict)
+        and isinstance(chart_zones.get("demand"), list)
+        and isinstance(chart_zones.get("supply"), list)
+    )
+    if chart_zones_available:
         state["chart_zones"] = {
             "demand": [dict(zone) for zone in list(chart_zones.get("demand") or [])],
             "supply": [dict(zone) for zone in list(chart_zones.get("supply") or [])],
         }
-    elif "chart_zones" not in state:
-        # Fail safe to the existing trade-facing zones if an older runtime path
-        # has not produced the dedicated chart feed yet.  This preserves the
-        # field contract without manufacturing any new zone.
-        fallback = dict(state.get("zones") or {})
-        state["chart_zones"] = {
-            "demand": [dict(zone) for zone in list(fallback.get("demand") or [])],
-            "supply": [dict(zone) for zone in list(fallback.get("supply") or [])],
+        state["chart_zones_status"] = {
+            "available": True,
+            "source": chart_status.get("source") or "stable_origin_atr_pool",
+            "geometry_version": chart_status.get("geometry_version"),
+            "invalidation_version": chart_status.get("invalidation_version"),
+            "fallback_used": False,
+            "error": None,
+        }
+    else:
+        # Public chart-zone displays must never silently inherit the more
+        # tolerant trade-facing zones contract. If the strict feed is absent,
+        # publish an explicit unavailable state and no mapped zones.
+        state["chart_zones"] = {"demand": [], "supply": []}
+        state["chart_zones_status"] = {
+            "available": False,
+            "source": chart_status.get("source") or "stable_origin_atr_pool",
+            "geometry_version": chart_status.get("geometry_version"),
+            "invalidation_version": chart_status.get("invalidation_version"),
+            "fallback_used": False,
+            "error": chart_status.get("error") or "strict_chart_zone_feed_unavailable",
         }
 
     academy_result = await _academy_snapshot(self)
@@ -300,7 +319,13 @@ async def _refresh_state_v94(self: core.LiveTrader, *, force_rows: bool = False)
 
     telemetry = await _stage_telemetry_snapshot(self)
     state["bounded_research_telemetry"] = telemetry
-    state["state_authority"] = _authority_metadata(academy_result, policy_summary, telemetry)
+    authority = _authority_metadata(academy_result, policy_summary, telemetry)
+    authority["chart_zones_available"] = bool(chart_zones_available)
+    authority["chart_zones_source"] = state["chart_zones_status"].get("source")
+    authority["chart_zones_geometry_version"] = state["chart_zones_status"].get("geometry_version")
+    authority["chart_zones_invalidation_version"] = state["chart_zones_status"].get("invalidation_version")
+    authority["chart_zones_fallback_used"] = False
+    state["state_authority"] = authority
 
     self._latest_state = state
     await _persist_final_state(self, state)

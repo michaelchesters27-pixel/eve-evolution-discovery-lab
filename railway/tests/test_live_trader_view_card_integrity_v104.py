@@ -27,10 +27,10 @@ def test_eve_view_fails_closed_when_context_is_not_valid_and_fresh() -> None:
     tolerance = (_frontend() / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
 
     for source in (session, stops, tolerance):
-        assert "ctx.context_valid === true" in source
-        assert "ctx.fresh === true" in source
-        assert "dq.live_context_stale !== true" in source
-        assert "dq.trade_bias_blocked !== true" in source
+        assert "ctx.context_valid !== true" in source or "ctx.context_valid === true" in source
+        assert "ctx.fresh !== true" in source or "ctx.fresh === true" in source
+        assert "dq.live_context_stale === true" in source or "dq.live_context_stale !== true" in source
+        assert "dq.trade_bias_blocked === true" in source or "dq.trade_bias_blocked !== true" in source
 
     assert "WAIT — DATA NOT VALID" in session
     assert "Directional outlook, BOS/CHoCH, retrace zones and stop references must not be trusted" in session
@@ -76,7 +76,8 @@ def test_stop_cards_are_structural_references_not_claimed_safe_trade_stops() -> 
     assert "ALREADY PROTECTED" not in stops
     assert "price - safeAtr * 1.5" not in stops
     assert "price + safeAtr * 1.5" not in stops
-    assert "return {level:null, sources:[], available:false}" in stops
+    assert "ATR DATA INVALID" in stops
+    assert "safeAtr <= 0" in stops
 
 
 def test_eve_view_labels_explain_setup_and_magnet_semantics() -> None:
@@ -97,8 +98,8 @@ def test_eve_view_shows_pending_bos_level_and_zone_coordinates() -> None:
     assert "Next BOS level" in session
     assert "completed M5 close must finish" in session
     assert "max(2% ATR, 0.01)" in session
-    assert "${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}" in session
-    assert "${fmt(test.low)} – ${fmt(test.high)}" in tolerance
+    assert "${safe(fmtEdge(retrace.low))} – ${safe(fmtEdge(retrace.high))}" in session
+    assert "${fmtEdge(test.low)} – ${fmtEdge(test.high)}" in tolerance
 
 
 def test_eve_view_zone_labels_expose_side_strength_and_backing() -> None:
@@ -113,7 +114,7 @@ def test_eve_view_zone_labels_expose_side_strength_and_backing() -> None:
         assert "H1 BACKED" in source
         assert "M5 ONLY" in source
         assert "QUALITY" in source
-        assert "RETEST" in source
+        assert "TOUCH BAR" in source
         assert "FRESH" in source
         assert "USED" in source
 
@@ -128,7 +129,7 @@ def test_eve_view_always_lists_relevant_buy_and_sell_chart_zones() -> None:
     assert "chartZoneColumn(state, 'demand', 'BUY')" in session
     assert "chartZoneColumn(state, 'supply', 'SELL')" in session
     assert "${side} ZONES" in session
-    assert "SAME SNAPSHOT · NEAREST FIRST" in session
+    assert "LIVE PRICE + COMPLETED M5 MAP · NEAREST FIRST" in session
     assert "chartZoneRows(state, kind)" in session
     assert "state?.chart_zones?.[kind]" in session
     assert "state?.chart_zones || state?.zones || {}" not in session
@@ -139,7 +140,7 @@ def test_eve_view_always_lists_relevant_buy_and_sell_chart_zones() -> None:
     assert "H1 BACKED" in session
     assert "M5 ONLY" in session
     assert "QUALITY" in session
-    assert "RETEST" in session
+    assert "TOUCH BAR" in session
     assert "FRESH" in session and "USED" in session
     assert "Only AUTHORITATIVE TRADE ACTION is execution authority" in session
     assert "api('/live-trader')" not in session
@@ -158,7 +159,9 @@ def test_eve_view_chart_zones_have_zone_specific_sweep_aware_sl_refs() -> None:
     assert "SWEEP-PROTECTED STRUCTURAL REF" in session
     assert "LIQUIDITY-PROTECTED STRUCTURAL REF" in session
     assert "ZONE EDGE + ATR BUFFER" in session
-    assert "SL REF ${safe(fmt(zone.slRef?.level))}" in session
+    assert "SL REF UNAVAILABLE" in session
+    assert "ATR DATA INVALID" in session
+    assert "design parameters, not proven optimal stop settings" in session
     assert "Math.abs(level - edge) <= huntBand" in session
     assert "Math.abs(extreme - edge) <= huntBand" in session
     assert "Only AUTHORITATIVE TRADE ACTION is execution authority" in session
@@ -172,7 +175,10 @@ def test_chart_zone_panel_uses_persistent_valid_zone_feed() -> None:
     assert "UNDER PRESSURE" in session
     assert "BROKEN IF M5 CLOSES <" in session
     assert "BROKEN IF M5 CLOSES >" in session
+    backend = (Path(__file__).resolve().parents[2] / "railway" / "app" / "services" / "live_trader_authoritative_state_v94.py").read_text(encoding="utf-8")
     assert '"chart_zones": getattr(self, "_chart_zones_v95", zones)' in core
+    assert '"fallback_used": False' in backend
+    assert "strict_chart_zone_feed_unavailable" in backend
 
 
 def test_chart_zone_backend_uses_actual_zone_edge_not_trade_atr_tolerance() -> None:
@@ -196,15 +202,128 @@ def test_chart_zone_panel_is_easy_live_trading_cockpit() -> None:
     assert "DISTANCE" in session
     assert "INVALIDATION" in session
     assert "OPPOSING ZONE" in session
-    assert "M5 / M15 REACTION" in session
+    assert "CURRENT M5 / M15 STRUCTURE" in session
     assert "BROKEN IF M5 CLOSES <" in session
     assert "BROKEN IF M5 CLOSES >" in session
     assert "NEXT ${zone.opposing.side}" in session
     assert "GAP ${fmt(zone.opposing.gap)} PTS" in session
     assert "NEAREST</span>" in session
-    assert "STRONGEST</span>" in session
-    assert "SUPPORTING ${side} REACTION" in session
-    assert "PRESSURE AGAINST ${side}" in session
-    assert "MIXED / NO CONFIRMATION" in session
+    assert "BEST MTF RANK</span>" in session
+    assert "CURRENT STRUCTURE FAVOURS ${side}" in session
+    assert "CURRENT STRUCTURE IS AGAINST ${side}" in session
+    assert "MIXED CURRENT STRUCTURE" in session
     assert "state?.chart_zones?.[kind]" in session
     assert "state?.zones?.[kind]" not in session
+
+
+
+def test_public_copilot_fail_closed_countermeasures_are_present() -> None:
+    frontend = _frontend()
+    base = (frontend / "live_trader.js").read_text(encoding="utf-8")
+    session = (frontend / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
+    stops = (frontend / "live_trader_safe_stops_v48.js").read_text(encoding="utf-8")
+    tolerance = (frontend / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
+
+    assert "failClosedState" in base
+    assert "renderState(failClosedState(lastState" in base
+    assert "MAX_TICK_AGE_SECONDS = 90" in base
+    assert "MAX_DECISION_AGE_MINUTES = 15" in base
+    assert "live tick is too old or unavailable" in base
+    assert "ATR is unavailable" in base
+    assert "forceWait" in session
+    assert "DATA NOT VALID" in session
+    assert "PRICE TICK" in session and "COMPLETED M5" in session
+    assert "SAME SNAPSHOT" not in session
+    for source in (session, stops, tolerance):
+        assert "MAX_TICK_AGE_SECONDS = 90" in source
+        assert "MAX_DECISION_AGE_MINUTES = 15" in source
+
+
+def test_chart_zone_public_semantics_name_actual_metrics() -> None:
+    session = (_frontend() / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
+
+    assert "BEST MTF RANK" in session
+    assert "STRONGEST" not in session
+    assert "HEURISTIC QUALITY" in session
+    assert "TOUCH BAR" in session
+    assert "retest_metric" not in session  # backend provenance, not a fake UI claim
+    assert "CURRENT M5 / M15 STRUCTURE" in session
+    assert "REACTION</span>" not in session
+    assert "M5/M15 is current global structure, not proof that price reacted" in session
+    assert "item.low <= high && item.high >= low" in session
+    assert "gap:0" in session
+
+
+def test_chart_zone_objects_require_unique_ids_and_strict_provenance() -> None:
+    session = (_frontend() / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
+    tolerance = (_frontend() / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
+
+    assert "state?.chart_zones_status?.available !== true" in session
+    assert "window.eveChartZoneContractV99" in session
+    assert "idCounts.get(id) === 1" in session
+    assert "zoneKind === kind" in session
+    assert "typeof zone?.fresh === 'boolean'" in session
+    assert "ZONE DATA UNAVAILABLE" in session
+    assert "state?.chart_zones_status?.available !== true" in tolerance
+    assert "window.eveChartZoneContractV99" in tolerance
+    assert "contract.eligibleZones(state, kind)" in tolerance
+    assert "leftId.length > 0 && rightId.length > 0" in tolerance
+
+
+def test_exact_zone_confirmation_is_bound_to_source_zone() -> None:
+    session = (_frontend() / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
+    tolerance = (_frontend() / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
+
+    for source in (session, tolerance):
+        assert "source_zone" in source
+        assert "sourceZoneId" in source
+    assert "sourceZoneId === test.id" in tolerance
+    assert "test.wasInside === true" in tolerance
+    assert "APPROACHING ZONE — WAIT" in tolerance
+    assert "TEST WINDOW EXPIRED — WAIT" in tolerance
+    assert "ACTIVE 20 MIN AFTER BROWSER-OBSERVED ENTRY" in tolerance
+
+
+
+def test_browser_watchdog_expires_stale_actionable_display_without_new_api_state() -> None:
+    base = (_frontend() / "live_trader.js").read_text(encoding="utf-8")
+
+    assert "function enforceFreshness()" in base
+    assert "setInterval(enforceFreshness,5000)" in base
+    assert "window.addEventListener('focus', enforceFreshness)" in base
+    assert "visibilitychange" in base
+    assert "freshness watchdog:" in base
+
+
+
+def test_public_ui_cache_and_trade_zone_semantics_are_versioned() -> None:
+    frontend = _frontend()
+    index = (frontend / "index.html").read_text(encoding="utf-8")
+    base = (frontend / "live_trader.js").read_text(encoding="utf-8")
+
+    assert 'live_trader.js?v=99' in index
+    assert 'live_trader_session_outlook_v55.js?v=99' in index
+    assert 'live_trader_intelligence_meter.js?v=99' in index
+    assert "live_trader.css?v=99" in base
+    assert "TRADE-FACING DEMAND" in base
+    assert "TRADE-FACING SUPPLY" in base
+    assert "Internal execution candidates · not the chart map" in base
+    assert "TOUCH BAR" in base
+    assert "Heuristic quality score; not a win probability" in base
+    assert "validTradeZoneForDisplay" in base
+
+
+def test_backend_persists_reproducible_analysis_and_zone_score_lineage() -> None:
+    root = Path(__file__).resolve().parents[2]
+    core = (root / "railway" / "app" / "services" / "live_trader.py").read_text(encoding="utf-8")
+    zones = (root / "railway" / "app" / "services" / "live_trader_mtf_zones_v63.py").read_text(encoding="utf-8")
+
+    assert "analysis_input_signature" in core
+    assert "zone_source_sha256" in core
+    assert "source_contract" in core
+    assert "latest_row" in core
+    assert "origin_atr_14" in zones
+    assert "quality_version" in zones
+    assert "quality_inputs" in zones
+    assert "rank_version" in zones
+    assert "rank_inputs" in zones

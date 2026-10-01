@@ -4,7 +4,8 @@
 
   function applySessionCopy() {
     const panel = document.getElementById('ltSessionOutlookPanel');
-    const direction = String(panel?.querySelector('.lt-session-outlook-direction')?.textContent || '').trim().toLowerCase();
+    const direction = String(panel?.querySelector('.lt-session-outlook-direction')?.textContent || '')
+      .trim().toLowerCase().replace(/\s+lean$/, '');
     const flip = panel?.querySelector('.lt-session-outlook-flip');
     if (!flip || !['bullish', 'bearish'].includes(direction)) return;
 

@@ -1,7 +1,7 @@
 (() => {
   const css = document.createElement('link');
   css.rel = 'stylesheet';
-  css.href = 'live_trader.css?v=90';
+  css.href = 'live_trader.css?v=99';
   document.head.appendChild(css);
 
   const nav = document.querySelector('#nav');
@@ -45,8 +45,8 @@
       </div>
 
       <div class="lt-grid">
-        <article class="lt-card"><div class="panel-head"><div><p class="eyebrow">BEST DEMAND</p><h3>Zones EVE would consider buying</h3></div></div><div class="lt-zones" id="ltDemand"></div></article>
-        <article class="lt-card"><div class="panel-head"><div><p class="eyebrow">BEST SUPPLY</p><h3>Zones EVE would consider selling</h3></div></div><div class="lt-zones" id="ltSupply"></div></article>
+        <article class="lt-card"><div class="panel-head"><div><p class="eyebrow">TRADE-FACING DEMAND</p><h3>Internal execution candidates · not the chart map</h3></div></div><div class="lt-zones" id="ltDemand"></div></article>
+        <article class="lt-card"><div class="panel-head"><div><p class="eyebrow">TRADE-FACING SUPPLY</p><h3>Internal execution candidates · not the chart map</h3></div></div><div class="lt-zones" id="ltSupply"></div></article>
       </div>
 
       <article class="lt-card lt-trade-card">
@@ -80,15 +80,114 @@
 
   let pollTimer = null;
   let learningTimer = null;
+  let staleWatchdogTimer = null;
   let lastState = null;
   let recognition = null;
 
   const byId = id => document.getElementById(id);
-  const formatPrice = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—';
+  const MAX_CONTEXT_LAG_MINUTES = 10;
+  const MAX_TICK_AGE_SECONDS = 90;
+  const MAX_DECISION_AGE_MINUTES = 15;
+  const strictNumber = value => {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const formatPrice = value => {
+    const parsed = strictNumber(value);
+    return parsed == null ? '—' : parsed.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});
+  };
+  const formatPct = value => {
+    const parsed = strictNumber(value);
+    return parsed == null ? '—' : `${parsed.toFixed(3)}%`;
+  };
+  const formatZoneEdge = value => {
+    const parsed = strictNumber(value);
+    return parsed == null ? '—' : parsed.toLocaleString('en-GB',{minimumFractionDigits:3,maximumFractionDigits:3});
+  };
   const label = value => String(value || '—').replaceAll('_',' ').replace(/\b\w/g, c => c.toUpperCase());
-  const timeText = value => value ? new Date(value).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
-  const number = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const timeText = value => {
+    const ms = Date.parse(String(value || ''));
+    return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
+  };
+  const number = (value, fallback = 0) => {
+    const parsed = strictNumber(value);
+    return parsed == null ? fallback : parsed;
+  };
   const actionable = action => !['NO TRADE','WAIT',''].includes(String(action || '').toUpperCase());
+
+  function contextHealth(state) {
+    const feed = state?.feed || {};
+    const ctx = state?.live_context_freshness || {};
+    const dq = state?.bias?.data_quality || {};
+    const lag = strictNumber(ctx.context_lag_minutes ?? dq.live_context_lag_minutes);
+    const tickText = String(feed.last_tick_received_at || ctx.live_tick_at || feed.last_tick_at || '');
+    const decisionText = String(ctx.effective_decision_time || '');
+    const tickMs = Date.parse(tickText);
+    const decisionMs = Date.parse(decisionText);
+    const now = Date.now();
+    const tickAgeSeconds = Number.isFinite(tickMs) ? Math.max(0, (now - tickMs) / 1000) : null;
+    const decisionAgeMinutes = Number.isFinite(decisionMs) ? Math.max(0, (now - decisionMs) / 60000) : null;
+    const price = strictNumber(state?.price);
+    const atr = strictNumber(state?.market?.atr);
+
+    let reason = '';
+    if (feed.status !== 'live' || feed.connected !== true) reason = 'live feed unavailable';
+    else if (ctx.context_valid !== true || ctx.fresh !== true) reason = 'live context is not validated and fresh';
+    else if (dq.live_context_stale === true || dq.trade_bias_blocked === true) reason = 'data quality has blocked live trading context';
+    else if (lag == null || lag < 0 || lag > MAX_CONTEXT_LAG_MINUTES) reason = 'context lag is unavailable or outside the accepted range';
+    else if (tickAgeSeconds == null || tickAgeSeconds > MAX_TICK_AGE_SECONDS) reason = 'live tick is too old or unavailable';
+    else if (decisionAgeMinutes == null || decisionAgeMinutes > MAX_DECISION_AGE_MINUTES) reason = 'decision snapshot is too old or unavailable';
+    else if (price == null || price <= 0) reason = 'live price is unavailable';
+    else if (atr == null || atr <= 0) reason = 'ATR is unavailable';
+
+    return {valid:!reason, reason, lag, tickAgeSeconds, decisionAgeMinutes};
+  }
+
+  function failClosedState(source, reason) {
+    const state = source && typeof source === 'object' ? source : {};
+    const message = `DATA NOT VALID — ${reason || 'live service unavailable'}`;
+    return {
+      symbol: state.symbol || 'XAU/USD',
+      as_of: new Date().toISOString(),
+      price: null,
+      opinion: `EVE cannot provide a live trading view: ${reason || 'live service unavailable'}.`,
+      feed: {...(state.feed || {}), status:'offline', connected:false, tradable:false},
+      bias: {
+        ...(state.bias || {}),
+        overall:'neutral',
+        confidence:null,
+        data_quality:{
+          ...((state.bias || {}).data_quality || {}),
+          live_context_stale:true,
+          live_context_valid:false,
+          trade_bias_blocked:true,
+        },
+      },
+      market:{
+        ...(state.market || {}),
+        atr:null,
+        magnet:null,
+        return_12_pct:null,
+        return_48_pct:null,
+        fabric_time:null,
+      },
+      trade:{action:'WAIT', order_type:'none', side:null, reason:message, manual_only:true, automatic_order_placement:false},
+      setup:{status:'WAIT', reason:message},
+      zones:{demand:[], supply:[]},
+      chart_zones:{demand:[], supply:[]},
+      liquidity:{},
+      session_outlook:{},
+      live_context_freshness:{
+        ...((state.live_context_freshness) || {}),
+        fresh:false,
+        context_valid:false,
+        validation_error:reason || 'live service unavailable',
+        context_lag_minutes:null,
+      },
+      __display_fail_closed:true,
+    };
+  }
 
   function buildVoiceGovernor() {
     if (window.eveLiveVoice) return window.eveLiveVoice;
@@ -172,14 +271,36 @@
   const voice = buildVoiceGovernor();
   const speak = (text, options = {}) => voice.say(text, options);
 
+  function validTradeZoneForDisplay(zone, kind) {
+    const id = String(zone?.id || '').trim();
+    const zoneKind = String(zone?.kind || '').toLowerCase();
+    const low = strictNumber(zone?.low);
+    const high = strictNumber(zone?.high);
+    const quality = strictNumber(zone?.quality);
+    const retests = strictNumber(zone?.retests);
+    const status = String(zone?.status || '').toUpperCase();
+    return id.length > 0
+      && zoneKind === kind
+      && low != null && high != null && low > 0 && high > 0 && high >= low
+      && quality != null && quality >= 1 && quality <= 99
+      && retests != null && Number.isInteger(retests) && retests >= 0
+      && !['BROKEN','INVALID','EXPIRED'].includes(status);
+  }
+
   function zoneHtml(zone, kind) {
     const statusClass = String(zone.status || '').toLowerCase().replaceAll(' ','-');
-    return `<div class="lt-zone ${esc(kind)} ${esc(statusClass)}"><div><strong>${esc(formatPrice(zone.low))} – ${esc(formatPrice(zone.high))}</strong><small>${esc(zone.status || 'ACTIVE')} · ${esc(zone.fresh ? 'Fresh' : `${zone.retests || 0} retests`)} · departure ${esc(zone.departure_atr || '—')} ATR · ${esc(zone.distance_atr || '—')} ATR away</small></div><span class="quality">${esc(zone.quality_label || 'MEDIUM')} ${esc(zone.quality || '—')}</span></div>`;
+    const retests = strictNumber(zone.retests);
+    const touchText = retests === 0 ? 'FRESH · 0 TOUCH BARS' : `${retests} TOUCH BAR${retests === 1 ? '' : 'S'}`;
+    const quality = strictNumber(zone.quality);
+    return `<div class="lt-zone ${esc(kind)} ${esc(statusClass)}"><div><strong>${esc(formatZoneEdge(zone.low))} – ${esc(formatZoneEdge(zone.high))}</strong><small>${esc(zone.status || 'ACTIVE')} · ${esc(touchText)} · departure ${esc(zone.departure_atr ?? '—')} ATR · ${esc(zone.distance_atr ?? '—')} ATR away</small></div><span class="quality" title="Heuristic quality score; not a win probability">Q ${esc(quality == null ? '—' : Math.round(quality))}/100</span></div>`;
   }
 
   function renderZones(kind, zones) {
     const target = byId(kind === 'demand' ? 'ltDemand' : 'ltSupply');
-    target.innerHTML = zones?.length ? zones.slice(0,3).map(z => zoneHtml(z, kind)).join('') : `<div class="lt-empty">No ${esc(kind)} zone is clean and relevant enough right now.</div>`;
+    const valid = Array.isArray(zones) ? zones.filter(zone => validTradeZoneForDisplay(zone, kind)) : [];
+    target.innerHTML = valid.length
+      ? valid.slice(0,3).map(z => zoneHtml(z, kind)).join('')
+      : `<div class="lt-empty">No validated trade-facing ${esc(kind)} zone is available right now.</div>`;
   }
 
   function renderTrade(trade = {}) {
@@ -285,8 +406,13 @@
   }
 
   function renderState(state, allowSpeak = true) {
+    const health = contextHealth(state);
+    const displayState = health.valid || state?.__display_fail_closed === true
+      ? state
+      : failClosedState(state, health.reason);
     const previousState = lastState;
-    lastState = state;
+    lastState = displayState;
+    state = displayState;
     const feed = state.feed || {};
     byId('ltSymbol').textContent = state.symbol || 'XAU/USD';
     byId('ltPrice').textContent = formatPrice(state.price);
@@ -310,8 +436,8 @@
     byId('ltSetupGate').textContent = `Setup gate: ${state.setup?.status || 'WATCHING'}`;
     byId('ltMarketLine').innerHTML = [
       `ATR ${formatPrice(market.atr)}`,
-      `12-bar ${Number(market.return_12_pct || 0).toFixed(3)}%`,
-      `48-bar ${Number(market.return_48_pct || 0).toFixed(3)}%`,
+      `12-bar ${formatPct(market.return_12_pct)}`,
+      `48-bar ${formatPct(market.return_48_pct)}`,
       `Fabric ${timeText(market.fabric_time)}`
     ].map(x=>`<span>${esc(x)}</span>`).join('');
     renderZones('demand', state.zones?.demand || []);
@@ -382,8 +508,7 @@
       const state = await api('/live-trader');
       renderState(state, allowSpeak);
     } catch (error) {
-      byId('ltFeed').querySelector('b').textContent = 'OFFLINE';
-      byId('ltOpinion').textContent = `Micky, I cannot read the Live Trader service right now: ${error.message}`;
+      renderState(failClosedState(lastState, `API failure: ${error.message}`), false);
     }
   }
 
@@ -413,12 +538,26 @@
     }
   }
 
+  function enforceFreshness() {
+    if (!lastState || lastState.__display_fail_closed === true) return;
+    const health = contextHealth(lastState);
+    if (!health.valid) {
+      renderState(failClosedState(lastState, `freshness watchdog: ${health.reason}`), false);
+    }
+  }
+
   function startPolling() {
-    clearInterval(pollTimer);clearInterval(learningTimer);
+    clearInterval(pollTimer);clearInterval(learningTimer);clearInterval(staleWatchdogTimer);
     refreshLiveTrader(false);refreshLearning();loadConversation();
     pollTimer = setInterval(()=>refreshLiveTrader(true),2500);
     learningTimer = setInterval(refreshLearning,30000);
+    staleWatchdogTimer = setInterval(enforceFreshness,5000);
   }
+
+  window.addEventListener('focus', enforceFreshness);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) enforceFreshness();
+  });
 
   navButton.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('active',x===navButton));

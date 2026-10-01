@@ -4,6 +4,8 @@
 
   const CARD_INTEGRITY_VERSION = 'eve-live-view-card-integrity-v1';
   const MAX_CONTEXT_LAG_MINUTES = 10;
+  const MAX_TICK_AGE_SECONDS = 90;
+  const MAX_DECISION_AGE_MINUTES = 15;
   const LIVE_ZONE_MAX_DISTANCE_ATR = 1.8;
   const LIVE_ZONE_MIN_QUALITY = 58;
   const ZONE_SL_HUNT_BAND_ATR = 1.25;
@@ -122,6 +124,7 @@
   }
 
   function number(value) {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
   }
@@ -129,6 +132,11 @@
   function fmt(value) {
     const parsed = number(value);
     return parsed == null ? '—' : parsed.toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+
+  function fmtEdge(value) {
+    const parsed = number(value);
+    return parsed == null ? '—' : parsed.toLocaleString('en-GB', {minimumFractionDigits:3, maximumFractionDigits:3});
   }
 
   function utcClock(value) {
@@ -141,30 +149,37 @@
     const dq = state?.bias?.data_quality || {};
     const ctx = state?.live_context_freshness || {};
     const lag = number(ctx.context_lag_minutes ?? dq.live_context_lag_minutes);
-    const valid = feed.status === 'live'
-      && feed.connected === true
-      && ctx.context_valid === true
-      && ctx.fresh === true
-      && dq.live_context_stale !== true
-      && dq.trade_bias_blocked !== true
-      && lag != null
-      && lag >= 0
-      && lag <= MAX_CONTEXT_LAG_MINUTES;
+    const tick = feed.last_tick_received_at || ctx.live_tick_at || feed.last_tick_at;
+    const m5 = ctx.effective_latest_m5 || state?.market?.fabric_time;
+    const decision = ctx.effective_decision_time;
+    const tickMs = Date.parse(String(tick || ''));
+    const decisionMs = Date.parse(String(decision || ''));
+    const now = Date.now();
+    const tickAgeSeconds = Number.isFinite(tickMs) ? Math.max(0, (now - tickMs) / 1000) : null;
+    const decisionAgeMinutes = Number.isFinite(decisionMs) ? Math.max(0, (now - decisionMs) / 60000) : null;
+    const price = number(state?.price);
+    const atr = number(state?.market?.atr);
 
     let reason = '';
-    if (feed.status !== 'live' || feed.connected !== true) reason = 'Live price feed is not currently fresh.';
+    if (feed.status !== 'live' || feed.connected !== true) reason = 'Live price feed is unavailable.';
     else if (ctx.context_valid !== true) reason = `M5 context is not validated${ctx.validation_error ? `: ${ctx.validation_error}` : '.'}`;
     else if (ctx.fresh !== true || dq.live_context_stale === true) reason = 'M5/MTF context is stale.';
     else if (dq.trade_bias_blocked === true) reason = 'Trading bias is blocked by data quality.';
-    else if (lag == null || lag < 0 || lag > MAX_CONTEXT_LAG_MINUTES) reason = 'Context lag is outside the accepted live range.';
+    else if (lag == null || lag < 0 || lag > MAX_CONTEXT_LAG_MINUTES) reason = 'Context lag is unavailable or outside the accepted live range.';
+    else if (tickAgeSeconds == null || tickAgeSeconds > MAX_TICK_AGE_SECONDS) reason = 'Live tick timestamp is unavailable or too old.';
+    else if (decisionAgeMinutes == null || decisionAgeMinutes > MAX_DECISION_AGE_MINUTES) reason = 'Decision snapshot timestamp is unavailable or too old.';
+    else if (price == null || price <= 0) reason = 'Live price is unavailable.';
+    else if (atr == null || atr <= 0) reason = 'ATR is unavailable.';
 
     return {
-      valid,
+      valid: !reason,
       reason,
       lag,
-      tick: ctx.live_tick_at || feed.last_tick_at,
-      m5: ctx.effective_latest_m5 || state?.market?.fabric_time,
-      decision: ctx.effective_decision_time,
+      tick,
+      m5,
+      decision,
+      tickAgeSeconds,
+      decisionAgeMinutes,
     };
   }
 
@@ -203,7 +218,7 @@
 
   function retracePlan(state, direction) {
     const price = number(state?.price);
-    const atr = Math.max(number(state?.market?.atr) || 0, 0.01);
+    const atr = number(state?.market?.atr);
     const biasDirection = String(state?.bias?.overall || 'neutral').toLowerCase();
     const zones = state?.zones || {};
     const kind = direction === 'bearish' ? 'supply' : 'demand';
@@ -212,11 +227,17 @@
     const trade = state?.trade || {};
     const clear = trade?.clear_bias_gate?.clear === true;
     const action = String(trade.action || 'WAIT').toUpperCase();
+    const tradeSide = String(trade.side || '').toUpperCase();
     const actionable = !['', 'WAIT', 'NO TRADE'].includes(action);
+    const actionMatchesSide = tradeSide === side || action === side || action.startsWith(side);
 
-    if (price == null) return {available:false, reason:'Current price is unavailable.'};
+    if (price == null || price <= 0) return {available:false, reason:'Current price is unavailable.'};
+    if (atr == null || atr <= 0) return {available:false, reason:'ATR is unavailable; retrace geometry cannot be validated.'};
     if (biasDirection !== direction) {
       return {available:false, reason:`Session lean is ${direction.toUpperCase()} but trade bias is ${biasDirection.toUpperCase()}. No directional retrace plan is shown while they disagree.`};
+    }
+    if (actionable && !actionMatchesSide) {
+      return {available:false, reason:`Authoritative trade action is ${action}. ${side}-side retrace guidance is suppressed while execution authority points elsewhere.`};
     }
 
     const candidates = zonesForSide
@@ -229,7 +250,8 @@
       .filter(item => item.low != null && item.high != null && item.high >= item.low)
       .filter(item => item.zone?.fresh !== false)
       .filter(item => !['BROKEN','INVALID','EXPIRED'].includes(String(item.zone?.status || '').toUpperCase()))
-      .filter(item => item.quality == null || item.quality >= LIVE_ZONE_MIN_QUALITY)
+      .filter(item => String(item.zone?.id || '').trim().length > 0)
+      .filter(item => item.quality != null && item.quality >= LIVE_ZONE_MIN_QUALITY)
       .map(item => ({...item, distanceAtr:zoneDistanceAtr(item, price, atr)}))
       .filter(item => item.distanceAtr <= LIVE_ZONE_MAX_DISTANCE_ATR);
 
@@ -265,6 +287,7 @@
     return {
       available:true,
       title,
+      id:String(selected.zone?.id || ''),
       low:selected.low,
       high:selected.high,
       kind:kind.toUpperCase(),
@@ -302,7 +325,17 @@
     const executionClass = String(trade.execution_class || '');
     const actionable = !['', 'WAIT', 'NO TRADE'].includes(action);
     const specialistTrade = strategyKey === 'zone_retrace_v1' || executionClass === 'zone_retrace_confirmation';
-    const confirmed = actionable && specialistTrade &&
+    const sourceZone = trade?.source_zone || {};
+    const sourceZoneId = String(sourceZone?.id || '').trim();
+    const sourceLow = number(sourceZone?.low);
+    const sourceHigh = number(sourceZone?.high);
+    const exactSourceZone = sourceZoneId.length > 0
+      && sourceZoneId === retrace.id
+      && sourceLow != null
+      && sourceHigh != null
+      && Math.abs(sourceLow - retrace.low) <= 0.001
+      && Math.abs(sourceHigh - retrace.high) <= 0.001;
+    const confirmed = actionable && specialistTrade && exactSourceZone &&
       (tradeSide === retrace.side || action === retrace.side || action.startsWith(retrace.side));
 
     const desiredArrow = desired === 'bullish' ? '↑' : '↓';
@@ -341,8 +374,8 @@
         : retrace.m15Confluence
           ? 'M15 BACKED'
           : 'M5 ONLY';
-    const quality = retrace.quality == null ? 'QUALITY —' : `QUALITY ${Math.round(retrace.quality)}/100`;
-    const retests = `${retrace.retests} RETEST${retrace.retests === 1 ? '' : 'S'}`;
+    const quality = retrace.quality == null ? 'QUALITY —' : `HEURISTIC QUALITY ${Math.round(retrace.quality)}/100`;
+    const retests = `${retrace.retests} TOUCH BAR${retrace.retests === 1 ? '' : 'S'}`;
     const freshness = retrace.fresh ? 'FRESH' : 'USED';
     return `
       <div class="lt-zone-decision ${safe(decision.tone)}">
@@ -351,7 +384,7 @@
           <div class="lt-zone-decision-kicker">PRICE IS IN ${safe(retrace.kind)} · ZONE DECISION</div>
           <div class="lt-zone-decision-title">${safe(decision.title)}</div>
           <div class="lt-zone-decision-side">POTENTIAL ${safe(retrace.side)} ZONE</div>
-          <div class="lt-zone-decision-range">${safe(retrace.kind)} ${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
+          <div class="lt-zone-decision-range">${safe(retrace.kind)} ${safe(fmtEdge(retrace.low))} – ${safe(fmtEdge(retrace.high))}</div>
           <div class="lt-zone-decision-meta">${safe(backing)} · ${safe(quality)} · ${safe(retests)} · ${safe(freshness)}</div>
           <p class="lt-zone-decision-note">${safe(decision.note)}</p>
           <div class="lt-zone-decision-tfs">M5 ${safe(tfLabel(decision.m5))} · M15 ${safe(tfLabel(decision.m15))}</div>
@@ -371,8 +404,11 @@
   }
 
   function zoneSpecificSlReference(state, kind, low, high) {
-    const atr = Math.max(number(state?.market?.atr) || 0, 0.01);
-    const buffer = Math.max(atr * ZONE_SL_BUFFER_ATR, 0.01);
+    const atr = number(state?.market?.atr);
+    if (atr == null || atr <= 0) {
+      return {level:null, available:false, basis:'SL REF UNAVAILABLE', detail:'ATR DATA INVALID', usedSweep:false};
+    }
+    const buffer = atr * ZONE_SL_BUFFER_ATR;
     const huntBand = atr * ZONE_SL_HUNT_BAND_ATR;
     const liquidity = state?.liquidity || {};
     const buy = kind === 'demand';
@@ -423,6 +459,7 @@
     if (!candidates.length) {
       return {
         level:buy ? edge - buffer : edge + buffer,
+        available:true,
         basis:'ZONE EDGE + ATR BUFFER',
         detail:`No relevant liquidity/sweep level exists within ${ZONE_SL_HUNT_BAND_ATR.toFixed(2)} ATR beyond this zone.`,
         usedSweep:false,
@@ -437,6 +474,7 @@
     const labels = [...new Set(relevant.map(item => item.label))];
     return {
       level:buy ? anchor - buffer : anchor + buffer,
+      available:true,
       basis:usedSweep ? 'SWEEP-PROTECTED STRUCTURAL REF' : 'LIQUIDITY-PROTECTED STRUCTURAL REF',
       detail:`Beyond ${labels.join(' + ')} + ${ZONE_SL_BUFFER_ATR.toFixed(2)} ATR buffer.`,
       usedSweep,
@@ -450,14 +488,49 @@
     return 'M5 ONLY';
   }
 
-  function activeChartZones(state, kind) {
+  function strictChartZoneEligibility(state, kind) {
+    if (state?.chart_zones_status?.available !== true) return [];
+    const all = [
+      ...(Array.isArray(state?.chart_zones?.demand) ? state.chart_zones.demand : []),
+      ...(Array.isArray(state?.chart_zones?.supply) ? state.chart_zones.supply : []),
+    ];
+    const idCounts = new Map();
+    all.forEach(zone => {
+      const id = String(zone?.id || '').trim();
+      if (id) idCounts.set(id, (idCounts.get(id) || 0) + 1);
+    });
+
     const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
     return zones.filter(zone => {
+      const id = String(zone?.id || '').trim();
+      const zoneKind = String(zone?.kind || '').toLowerCase();
       const low = number(zone?.low);
       const high = number(zone?.high);
+      const quality = number(zone?.quality);
+      const rankScore = number(zone?.rank_score);
+      const retests = number(zone?.retests);
+      const originMs = Date.parse(String(zone?.origin_time || ''));
       const status = String(zone?.status || '').toUpperCase();
-      return low != null && high != null && high >= low && !['BROKEN','INVALID','EXPIRED'].includes(status);
+      return id.length > 0
+        && idCounts.get(id) === 1
+        && zoneKind === kind
+        && low != null && high != null && low > 0 && high > 0 && high >= low
+        && quality != null && quality >= 1 && quality <= 99
+        && rankScore != null && rankScore >= 0
+        && retests != null && Number.isInteger(retests) && retests >= 0
+        && typeof zone?.fresh === 'boolean'
+        && Number.isFinite(originMs)
+        && !['BROKEN','INVALID','EXPIRED'].includes(status);
     });
+  }
+
+  window.eveChartZoneContractV99 = Object.freeze({
+    eligibleZones: strictChartZoneEligibility,
+    version:'eve-chart-zone-browser-contract-v99',
+  });
+
+  function activeChartZones(state, kind) {
+    return strictChartZoneEligibility(state, kind);
   }
 
   function zoneDistanceLabel(price, low, high) {
@@ -467,7 +540,7 @@
     return `${fmt(low - price)} PTS ABOVE PRICE`;
   }
 
-  function zoneReactionRead(state, kind) {
+  function zoneStructureRead(state, kind) {
     const m5 = timeframeDirection(state, 'M5');
     const m15 = timeframeDirection(state, 'M15');
     const desired = kind === 'demand' ? 'bullish' : 'bearish';
@@ -476,31 +549,34 @@
     const tf = `M5 ${m5 ? m5.toUpperCase() : 'UNKNOWN'} · M15 ${m15 ? m15.toUpperCase() : 'UNKNOWN'}`;
 
     if (m5 === desired && m15 === desired) {
-      return {tone:'supporting', text:`${tf} · SUPPORTING ${side} REACTION`};
+      return {tone:'supporting', text:`${tf} · CURRENT STRUCTURE FAVOURS ${side}`};
     }
     if (m5 === opposite && m15 === opposite) {
-      return {tone:'against', text:`${tf} · PRESSURE AGAINST ${side}`};
+      return {tone:'against', text:`${tf} · CURRENT STRUCTURE IS AGAINST ${side}`};
     }
-    return {tone:'mixed', text:`${tf} · MIXED / NO CONFIRMATION`};
+    return {tone:'mixed', text:`${tf} · MIXED CURRENT STRUCTURE`};
   }
 
   function nearestOpposingZone(state, kind, low, high) {
     const oppositeKind = kind === 'demand' ? 'supply' : 'demand';
-    const opposing = activeChartZones(state, oppositeKind);
+    const opposing = activeChartZones(state, oppositeKind)
+      .map(zone => ({zone, low:number(zone?.low), high:number(zone?.high)}))
+      .filter(item => item.low != null && item.high != null);
     if (!opposing.length) return null;
 
+    const overlaps = opposing
+      .filter(item => item.low <= high && item.high >= low)
+      .map(item => ({...item, gap:0}))
+      .sort((a,b) => Math.abs(((a.low+a.high)/2)-((low+high)/2)) - Math.abs(((b.low+b.high)/2)-((low+high)/2)));
+    if (overlaps.length) return overlaps[0];
+
     const directional = opposing
-      .map(zone => ({zone, low:number(zone?.low), high:number(zone?.high)}))
-      .filter(item => item.low != null && item.high != null)
-      .filter(item => kind === 'demand' ? item.high >= high : item.low <= low)
+      .filter(item => kind === 'demand' ? item.low > high : item.high < low)
       .map(item => ({
         ...item,
-        gap: kind === 'demand'
-          ? Math.max(0, item.low - high)
-          : Math.max(0, low - item.high),
+        gap:kind === 'demand' ? item.low - high : low - item.high,
       }))
       .sort((a,b) => a.gap - b.gap);
-
     return directional[0] || null;
   }
 
@@ -515,7 +591,7 @@
     const m5 = timeframeDirection(state, 'M5');
     const m15 = timeframeDirection(state, 'M15');
     const zoneSummary = zone => zone
-      ? `${fmt(zone.low)}–${fmt(zone.high)} · ${zoneDistanceLabel(price, zone.low, zone.high)}`
+      ? `${fmtEdge(zone.low)}–${fmtEdge(zone.high)} · ${zoneDistanceLabel(price, zone.low, zone.high)}`
       : 'NONE';
 
     return `
@@ -524,7 +600,7 @@
         <div class="lt-chart-now-item"><span>TRADE ACTION</span><strong>${safe(action)}</strong></div>
         <div class="lt-chart-now-item"><span>NEAREST BUY</span><strong>${safe(zoneSummary(buy))}</strong></div>
         <div class="lt-chart-now-item"><span>NEAREST SELL</span><strong>${safe(zoneSummary(sell))}</strong></div>
-        <div class="lt-chart-now-item"><span>REACTION</span><strong>M5 ${safe((m5 || 'unknown').toUpperCase())} · M15 ${safe((m15 || 'unknown').toUpperCase())}</strong></div>
+        <div class="lt-chart-now-item"><span>CURRENT STRUCTURE</span><strong>M5 ${safe((m5 || 'unknown').toUpperCase())} · M15 ${safe((m15 || 'unknown').toUpperCase())}</strong></div>
       </div>`;
   }
 
@@ -549,14 +625,16 @@
           distance,
           distanceLabel:zoneDistanceLabel(price, low, high),
           quality:number(zone?.quality),
+          rankScore:number(zone?.rank_score),
           retests:Math.max(0, Number(zone?.retests || 0)),
           fresh:zone?.fresh === true,
+          originTime:String(zone?.origin_time || ''),
           backing:chartZoneBacking(zone),
           chartState:String(zone?.chart_state || zone?.status || 'ACTIVE').toUpperCase(),
           invalidationText:kind === 'demand'
-            ? `BROKEN IF M5 CLOSES < ${fmt(low)}`
-            : `BROKEN IF M5 CLOSES > ${fmt(high)}`,
-          reaction:zoneReactionRead(state, kind),
+            ? `BROKEN IF M5 CLOSES < ${fmtEdge(low)}`
+            : `BROKEN IF M5 CLOSES > ${fmtEdge(high)}`,
+          structureRead:zoneStructureRead(state, kind),
           opposing:opposing ? {
             side:kind === 'demand' ? 'SELL' : 'BUY',
             low:opposing.low,
@@ -575,53 +653,62 @@
     if (!rows.length) {
       return `<div class="lt-chart-zone-column ${side.toLowerCase()}"><h4>${side} ZONES</h4><div class="lt-chart-zone-empty">No current ${safe(kind)} zones are available from this snapshot.</div></div>`;
     }
-    const strongestQuality = Math.max(...rows.map(zone => zone.quality == null ? -1 : zone.quality));
+    const bestRankScore = Math.max(...rows.map(zone => zone.rankScore == null ? -1 : zone.rankScore));
     return `
       <div class="lt-chart-zone-column ${side.toLowerCase()}">
         <h4>${side} ZONES</h4>
         ${rows.map((zone, index) => {
-          const quality = zone.quality == null ? 'QUALITY —' : `QUALITY ${Math.round(zone.quality)}/100`;
-          const retests = `${zone.retests} RETEST${zone.retests === 1 ? '' : 'S'}`;
+          const quality = zone.quality == null ? 'HEURISTIC QUALITY —' : `HEURISTIC QUALITY ${Math.round(zone.quality)}/100`;
+          const rank = zone.rankScore == null ? 'RANK —' : `MTF RANK ${zone.rankScore.toFixed(2)}`;
+          const touches = `${zone.retests} TOUCH BAR${zone.retests === 1 ? '' : 'S'}`;
           const freshness = zone.fresh ? 'FRESH' : 'USED';
           const chartState = zone.chartState === 'UNDER PRESSURE' ? ' · UNDER PRESSURE' : zone.chartState === 'IN ZONE' ? ' · IN ZONE' : '';
           const badges = [
             index === 0 ? '<span class="lt-chart-zone-badge nearest">NEAREST</span>' : '',
-            zone.quality != null && zone.quality === strongestQuality ? '<span class="lt-chart-zone-badge strongest">STRONGEST</span>' : '',
+            zone.rankScore != null && zone.rankScore === bestRankScore ? '<span class="lt-chart-zone-badge strongest">BEST MTF RANK</span>' : '',
             zone.fresh ? '<span class="lt-chart-zone-badge fresh">FRESH</span>' : '<span class="lt-chart-zone-badge used">USED</span>',
           ].filter(Boolean).join('');
           const opposing = zone.opposing
-            ? `NEXT ${zone.opposing.side} ${fmt(zone.opposing.low)}–${fmt(zone.opposing.high)} · GAP ${fmt(zone.opposing.gap)} PTS`
+            ? `NEXT ${zone.opposing.side} ${fmtEdge(zone.opposing.low)}–${fmtEdge(zone.opposing.high)} · GAP ${fmt(zone.opposing.gap)} PTS`
             : `NO OPPOSING ${side === 'BUY' ? 'SELL' : 'BUY'} ZONE IN CURRENT MAP`;
           return `
             <div class="lt-chart-zone-row">
-              <div class="lt-chart-zone-price">${index + 1}. ${safe(fmt(zone.low))} – ${safe(fmt(zone.high))}</div>
+              <div class="lt-chart-zone-price">${index + 1}. ${safe(fmtEdge(zone.low))} – ${safe(fmtEdge(zone.high))}</div>
               <div class="lt-chart-zone-badges">${badges}</div>
-              <div class="lt-chart-zone-meta">${safe(zone.backing)} · ${safe(quality)} · ${safe(retests)} · ${safe(freshness)}${safe(chartState)}</div>
+              <div class="lt-chart-zone-meta">${safe(zone.backing)} · ${safe(quality)} · ${safe(rank)} · ${safe(touches)} · ${safe(freshness)}${safe(chartState)} · ORIGIN ${safe(utcClock(zone.originTime))} · ID ${safe(zone.id.slice(0,8))}</div>
               <div class="lt-chart-zone-live">
                 <div class="lt-chart-zone-fact"><span>DISTANCE</span><strong>${safe(zone.distanceLabel)}</strong></div>
                 <div class="lt-chart-zone-fact break"><span>INVALIDATION</span><strong>${safe(zone.invalidationText)}</strong></div>
                 <div class="lt-chart-zone-fact"><span>OPPOSING ZONE</span><strong>${safe(opposing)}</strong></div>
-                <div class="lt-chart-zone-fact reaction ${safe(zone.reaction?.tone || 'mixed')}"><span>M5 / M15 REACTION</span><strong>${safe(zone.reaction?.text || 'NO CONFIRMATION')}</strong></div>
+                <div class="lt-chart-zone-fact reaction ${safe(zone.structureRead?.tone || 'mixed')}"><span>CURRENT M5 / M15 STRUCTURE</span><strong>${safe(zone.structureRead?.text || 'STRUCTURE UNAVAILABLE')}</strong></div>
               </div>
-              <div class="lt-chart-zone-sl"><strong>SL REF ${safe(fmt(zone.slRef?.level))}</strong><small>${safe(zone.slRef?.basis || 'STRUCTURAL REF')} · ${safe(zone.slRef?.detail || '')}</small></div>
+              <div class="lt-chart-zone-sl"><strong>${zone.slRef?.available === false ? 'SL REF UNAVAILABLE' : `SL REF ${safe(fmt(zone.slRef?.level))}`}</strong><small>${safe(zone.slRef?.basis || 'STRUCTURAL REF')} · ${safe(zone.slRef?.detail || '')}</small></div>
             </div>`;
         }).join('')}
       </div>`;
   }
 
   function chartZonesHtml(state) {
+    if (state?.chart_zones_status?.available !== true) {
+      const error = String(state?.chart_zones_status?.error || 'strict chart-zone feed unavailable');
+      return `
+        <div class="lt-chart-zones">
+          <div class="lt-chart-zones-head"><strong>RELEVANT CHART ZONES</strong><small>UNAVAILABLE</small></div>
+          <div class="lt-chart-zone-empty">ZONE DATA UNAVAILABLE · ${safe(error)}. EVE will not substitute trade-facing zones.</div>
+        </div>`;
+    }
     return `
       <div class="lt-chart-zones">
         <div class="lt-chart-zones-head">
           <strong>RELEVANT CHART ZONES</strong>
-          <small>SAME SNAPSHOT · NEAREST FIRST</small>
+          <small>LIVE PRICE + COMPLETED M5 MAP · NEAREST FIRST</small>
         </div>
         ${zoneCockpitSummary(state)}
         <div class="lt-chart-zones-grid">
           ${chartZoneColumn(state, 'demand', 'BUY')}
           ${chartZoneColumn(state, 'supply', 'SELL')}
         </div>
-        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. Reaction describes M5/M15 context only. SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
+        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. M5/M15 is current global structure, not proof that price reacted to a particular zone. HEURISTIC QUALITY is not a win probability. FRESH means zero post-formation M5 touch bars. BACKED means overlap with an eligible H1/M15 zone, not directional confirmation. SL REF is zone-specific and sweep/liquidity-aware where relevant. Its 1.25 ATR search band and 0.22 ATR buffer are design parameters, not proven optimal stop settings. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
       </div>`;
   }
 
@@ -690,12 +777,16 @@
     return panel;
   }
 
-  function authorityHtml(state) {
+  function authorityHtml(state, integrity = null) {
     const trade = state?.trade || {};
-    const action = String(trade.action || 'WAIT').toUpperCase();
+    const forceWait = integrity && integrity.valid !== true;
+    const rawAction = String(trade.action || 'WAIT').toUpperCase();
+    const action = forceWait ? 'WAIT' : rawAction;
     const waiting = action === 'WAIT' || action === 'NO TRADE' || !action;
     const tone = waiting ? 'wait' : action.includes('SELL') ? 'sell' : 'buy';
-    const reason = String(trade.reason || state?.setup?.reason || '');
+    const reason = forceWait
+      ? `DATA NOT VALID — ${integrity?.reason || 'live context unavailable'}`
+      : String(trade.reason || state?.setup?.reason || '');
     return `
       <div class="lt-session-authority">
         <span>AUTHORITATIVE TRADE ACTION</span>
@@ -708,7 +799,7 @@
     if (!integrity.valid) {
       return `<div class="lt-session-integrity bad">DATA CHECK FAILED · ${safe(integrity.reason || 'Live context is not validated.')}</div>`;
     }
-    return `<div class="lt-session-integrity">DATA FRESH · SAME SNAPSHOT · M5 ${safe(utcClock(integrity.m5))} · DECISION ${safe(utcClock(integrity.decision))} · LAG ${safe(integrity.lag)}m</div>`;
+    return `<div class="lt-session-integrity">DATA FRESH · PRICE TICK ${safe(utcClock(integrity.tick))} · COMPLETED M5 ${safe(utcClock(integrity.m5))} · DECISION ${safe(utcClock(integrity.decision))} · CONTEXT LAG ${safe(integrity.lag)}m</div>`;
   }
 
   function renderInvalid(state, integrity) {
@@ -720,7 +811,7 @@
         <div><span>SESSION LEAN</span><div class="lt-session-outlook-direction wait">WAIT — DATA NOT VALID</div></div>
       </div>
       ${integrityHtml(integrity)}
-      ${authorityHtml(state)}
+      ${authorityHtml(state, integrity)}
       <p class="lt-session-outlook-note">Directional outlook, BOS/CHoCH, retrace zones and stop references must not be trusted until the live-context check is valid again.</p>`;
   }
 
@@ -741,7 +832,7 @@
       panel.innerHTML = `
         <span>SESSION LEAN</span>
         ${integrityHtml(integrity)}
-        ${authorityHtml(state)}
+        ${authorityHtml(state, integrity)}
         <div class="lt-session-outlook-meta">No directional session lean is currently available.</div>
         ${chartZonesHtml(state)}`;
       return;
@@ -775,14 +866,14 @@
 
     const retraceHtml = retrace?.available ? `
       <div class="lt-session-outlook-retrace">
-        <div class="lt-session-outlook-retrace-head"><span>${safe(retrace.title)}</span><small>SAME SNAPSHOT · AUTO-UPDATING</small></div>
-        <div class="lt-session-outlook-retrace-range ${safe(direction)}">${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
-        <div class="lt-session-outlook-retrace-meta">CURRENT ${safe(retrace.kind)}${retrace.quality == null ? '' : ` · QUALITY ${safe(Math.round(retrace.quality))}/100`} · ${safe(retrace.distanceAtr.toFixed(2))} ATR</div>
+        <div class="lt-session-outlook-retrace-head"><span>${safe(retrace.title)}</span><small>COMPLETED-M5 GEOMETRY · LIVE PRICE</small></div>
+        <div class="lt-session-outlook-retrace-range ${safe(direction)}">${safe(fmtEdge(retrace.low))} – ${safe(fmtEdge(retrace.high))}</div>
+        <div class="lt-session-outlook-retrace-meta">CURRENT ${safe(retrace.kind)}${retrace.quality == null ? '' : ` · HEURISTIC QUALITY ${safe(Math.round(retrace.quality))}/100`} · ${safe(retrace.distanceAtr.toFixed(2))} ATR</div>
         <p class="lt-session-outlook-retrace-note">${safe(retrace.note)}</p>
         ${zoneDecisionHtml(decision, retrace)}
       </div>` : `
       <div class="lt-session-outlook-retrace">
-        <div class="lt-session-outlook-retrace-head"><span>NO QUALIFIED RETRACE PLAN</span><small>SAME SNAPSHOT</small></div>
+        <div class="lt-session-outlook-retrace-head"><span>NO QUALIFIED RETRACE PLAN</span><small>COMPLETED-M5 CONTEXT</small></div>
         <p class="lt-session-outlook-retrace-note">${safe(retrace?.reason || 'No qualified current retrace zone is available.')}</p>
       </div>`;
 
@@ -793,7 +884,7 @@
       </div>
       <div class="lt-session-outlook-meta">${safe(conviction)} lean · ${safe(session)} session</div>
       ${integrityHtml(integrity)}
-      ${authorityHtml(state)}
+      ${authorityHtml(state, integrity)}
       <p class="lt-session-outlook-reasons">${momentumReasonsHtml(reasons)}</p>
       ${headwinds.length ? `<p class="lt-session-headwinds"><b>HEADWINDS / OPPOSING EVIDENCE</b><br>${safe(headwinds.join(' '))}</p>` : ''}
       ${structureHtml}
