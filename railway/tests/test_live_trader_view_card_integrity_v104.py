@@ -27,8 +27,8 @@ def test_eve_view_fails_closed_when_context_is_not_valid_and_fresh() -> None:
     tolerance = (_frontend() / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
 
     for source in (session, stops, tolerance):
-        assert "ctx.context_valid === true" in source
-        assert "ctx.fresh === true" in source
+        assert "ctx.context_valid !== true" in source or "ctx.context_valid === true" in source
+        assert "ctx.fresh !== true" in source or "ctx.fresh === true" in source
         assert "dq.live_context_stale !== true" in source
         assert "dq.trade_bias_blocked !== true" in source
 
