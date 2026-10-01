@@ -207,8 +207,8 @@
     if (reactionAtr >= EARLY_REACTION_ATR) return {
       tone: 'undecided',
       arrow: desiredArrow,
-      title: 'EARLY REJECTION — WAIT',
-      note: `Price has reacted about ${reactionAtr.toFixed(2)} ATR away from ${test.kind}. The reaction has started, but M5/M15 have not confirmed it yet.`,
+      title: 'BROWSER-OBSERVED MOVE — WAIT',
+      note: `Since this browser observed entry into the exact ${test.kind} zone, sampled price has moved about ${reactionAtr.toFixed(2)} ATR away. This is not reconstructed complete tick history; M5/M15 have not confirmed it yet.`,
       m5, m15,
     };
 
@@ -308,7 +308,7 @@
     const card = ensureCard(panel);
     card.className = `lt-zone-decision ${decision.tone}`;
     const tfLabel = value => ['bullish', 'bearish', 'neutral'].includes(value) ? value.toUpperCase() : 'UNKNOWN';
-    const position = test.inZone ? 'PRICE IS IN' : test.wasInside ? 'ZONE TOUCHED' : 'PRICE IS NEAR';
+    const position = test.inZone ? 'PRICE IS IN' : test.wasInside ? 'ZONE ENTRY OBSERVED' : 'PRICE IS NEAR';
     const side = test.kind === 'demand' ? 'BUY' : 'SELL';
     const backing = test.h1Confluence && test.m15Confluence
       ? 'H1 + M15 BACKED'
@@ -329,7 +329,7 @@
         <div class="lt-zone-decision-range">${test.kind.toUpperCase()} ${fmtEdge(test.low)} – ${fmtEdge(test.high)}</div>
         <div class="lt-zone-decision-meta">${backing} · ${quality} · ${retests} · ${freshness}</div>
         <p class="lt-zone-decision-note">${decision.note}</p>
-        <div class="lt-zone-decision-tfs">M5 ${tfLabel(decision.m5)} · M15 ${tfLabel(decision.m15)} · ${test.tracking ? 'ACTIVE FOR 20 MIN AFTER ACTUAL TOUCH' : test.expired ? 'WAITING FOR A NEW RETEST' : 'NOT YET TOUCHED'}</div>
+        <div class="lt-zone-decision-tfs">M5 ${tfLabel(decision.m5)} · M15 ${tfLabel(decision.m15)} · ${test.tracking ? 'ACTIVE 20 MIN AFTER BROWSER-OBSERVED ENTRY' : test.expired ? 'WAITING FOR A NEW RETEST' : 'NOT YET TOUCHED'}</div>
       </div>`;
   }
 
