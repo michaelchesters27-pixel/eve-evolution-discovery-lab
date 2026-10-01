@@ -289,7 +289,7 @@ def test_browser_watchdog_expires_stale_actionable_display_without_new_api_state
     base = (_frontend() / "live_trader.js").read_text(encoding="utf-8")
 
     assert "function enforceFreshness()" in base
-    assert "setInterval(enforceFreshness,5000)" in base
+    assert "setInterval(enforceFreshness, 5000)" in base
     assert "window.addEventListener('focus', enforceFreshness)" in base
     assert "visibilitychange" in base
     assert "freshness watchdog:" in base
@@ -301,10 +301,10 @@ def test_public_ui_cache_and_trade_zone_semantics_are_versioned() -> None:
     index = (frontend / "index.html").read_text(encoding="utf-8")
     base = (frontend / "live_trader.js").read_text(encoding="utf-8")
 
-    assert 'live_trader.js?v=100' in index
-    assert 'live_trader_session_outlook_v55.js?v=100' in index
-    assert 'live_trader_intelligence_meter.js?v=100' in index
-    assert "live_trader.css?v=100" in base
+    assert 'live_trader.js?v=101' in index
+    assert 'live_trader_session_outlook_v55.js?v=101' in index
+    assert 'live_trader_intelligence_meter.js?v=101' in index
+    assert "live_trader.css?v=101" in base
     assert "TRADE-FACING DEMAND" in base
     assert "TRADE-FACING SUPPLY" in base
     assert "Internal execution candidates · not the chart map" in base
@@ -357,3 +357,48 @@ def test_live_trader_state_remains_resident_across_internal_page_switches() -> N
     assert "RESTORED CACHED VIEW — WAITING FOR LIVE REFRESH" in base
     assert "__restored_cache:true" in base
     assert "state.__restored_cache === true" in base
+
+
+
+def test_live_trader_subpanels_do_not_reload_on_nav_return() -> None:
+    frontend = _frontend()
+
+    idempotent_pollers = [
+        "live_trader_academy.js",
+        "live_trader_events.js",
+        "live_trader_execution_intelligence.js",
+        "live_trader_intelligence_meter_core.js",
+        "live_trader_trade_skill_v87.js",
+        "live_trader_zone_truth_v49.js",
+    ]
+    for name in idempotent_pollers:
+        source = (frontend / name).read_text(encoding="utf-8")
+        assert "addEventListener('click', start)" in source
+        assert "clearInterval(timer);" not in source[source.index("function start()"):source.index("document.querySelector('[data-view=\"live-trader\"]')") if "document.querySelector('[data-view=\"live-trader\"]')" in source else len(source)]
+        if name == "live_trader_events.js":
+            assert "if (timer || learningProgressTimer) return;" in source
+        else:
+            assert "if (timer) return;" in source
+
+    resident_renderers = [
+        "live_trader_safe_stops_v48.js",
+        "live_trader_session_outlook_v55.js",
+        "live_trader_zone_decision_tolerance_v82.js",
+    ]
+    click_redraw = """document.querySelector('[data-view="live-trader"]')?.addEventListener('click', () => {
+    if (window.__eveLiveTraderState) render(window.__eveLiveTraderState);
+  });"""
+    for name in resident_renderers:
+        source = (frontend / name).read_text(encoding="utf-8")
+        assert click_redraw not in source
+        assert "eve:live-trader-state" in source
+
+
+def test_every_changed_direct_live_trader_script_is_cache_busted() -> None:
+    index = (_frontend() / "index.html").read_text(encoding="utf-8")
+
+    assert 'live_trader.js?v=101' in index
+    assert 'live_trader_events.js?v=101' in index
+    assert 'live_trader_session_outlook_v55.js?v=101' in index
+    assert 'live_trader_academy.js?v=101' in index
+    assert 'live_trader_intelligence_meter.js?v=101' in index
