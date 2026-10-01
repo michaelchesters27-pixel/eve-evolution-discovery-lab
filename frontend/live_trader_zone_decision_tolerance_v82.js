@@ -314,8 +314,8 @@
         : test.m15Confluence
           ? 'M15 BACKED'
           : 'M5 ONLY';
-    const quality = test.quality == null ? 'QUALITY —' : `QUALITY ${Math.round(test.quality)}/100`;
-    const retests = `${test.retests} RETEST${test.retests === 1 ? '' : 'S'}`;
+    const quality = test.quality == null ? 'HEURISTIC QUALITY —' : `HEURISTIC QUALITY ${Math.round(test.quality)}/100`;
+    const retests = `${test.retests} TOUCH BAR${test.retests === 1 ? '' : 'S'}`;
     const freshness = test.fresh ? 'FRESH' : 'USED';
     card.innerHTML = `
       <div class="lt-zone-decision-arrow" aria-hidden="true">${decision.arrow}</div>
