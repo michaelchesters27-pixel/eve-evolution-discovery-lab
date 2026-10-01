@@ -301,10 +301,10 @@ def test_public_ui_cache_and_trade_zone_semantics_are_versioned() -> None:
     index = (frontend / "index.html").read_text(encoding="utf-8")
     base = (frontend / "live_trader.js").read_text(encoding="utf-8")
 
-    assert 'live_trader.js?v=99' in index
-    assert 'live_trader_session_outlook_v55.js?v=99' in index
-    assert 'live_trader_intelligence_meter.js?v=99' in index
-    assert "live_trader.css?v=99" in base
+    assert 'live_trader.js?v=100' in index
+    assert 'live_trader_session_outlook_v55.js?v=100' in index
+    assert 'live_trader_intelligence_meter.js?v=100' in index
+    assert "live_trader.css?v=100" in base
     assert "TRADE-FACING DEMAND" in base
     assert "TRADE-FACING SUPPLY" in base
     assert "Internal execution candidates · not the chart map" in base
@@ -327,3 +327,27 @@ def test_backend_persists_reproducible_analysis_and_zone_score_lineage() -> None
     assert "quality_inputs" in zones
     assert "rank_version" in zones
     assert "rank_inputs" in zones
+
+
+
+def test_live_trader_state_remains_resident_across_internal_page_switches() -> None:
+    base = (_frontend() / "live_trader.js").read_text(encoding="utf-8")
+
+    # Once Live Trader has been opened, polling continues even while another EVE
+    # view is active. The old early-return that paused API snapshots is forbidden.
+    assert "if (!view.classList.contains('active') && allowSpeak) return;" not in base
+    assert "const liveTraderVisible = view.classList.contains('active')" in base
+    assert "renderState(state, allowSpeak && liveTraderVisible)" in base
+
+    # Returning to the page must not clear/restart all timers or blank the DOM.
+    assert "let pollingStarted = false" in base
+    assert "if (pollingStarted)" in base
+    assert "clearInterval(pollTimer)" not in base[base.index("function startPolling()"):base.index("window.addEventListener('focus'")]
+    assert "keep its hidden DOM resident" in base
+
+    # A short-lived session cache may restore only a still-valid live state.
+    assert "LIVE_STATE_CACHE_KEY" in base
+    assert "sessionStorage.setItem" in base
+    assert "restoreCachedState()" in base
+    assert "contextHealth(cached.state).valid" in base
+    assert "LIVE_STATE_CACHE_MAX_AGE_MS = MAX_TICK_AGE_SECONDS * 1000" in base
