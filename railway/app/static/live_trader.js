@@ -80,6 +80,7 @@
 
   let pollTimer = null;
   let learningTimer = null;
+  let staleWatchdogTimer = null;
   let lastState = null;
   let recognition = null;
 
@@ -511,12 +512,26 @@
     }
   }
 
+  function enforceFreshness() {
+    if (!lastState || lastState.__display_fail_closed === true) return;
+    const health = contextHealth(lastState);
+    if (!health.valid) {
+      renderState(failClosedState(lastState, `freshness watchdog: ${health.reason}`), false);
+    }
+  }
+
   function startPolling() {
-    clearInterval(pollTimer);clearInterval(learningTimer);
+    clearInterval(pollTimer);clearInterval(learningTimer);clearInterval(staleWatchdogTimer);
     refreshLiveTrader(false);refreshLearning();loadConversation();
     pollTimer = setInterval(()=>refreshLiveTrader(true),2500);
     learningTimer = setInterval(refreshLearning,30000);
+    staleWatchdogTimer = setInterval(enforceFreshness,5000);
   }
+
+  window.addEventListener('focus', enforceFreshness);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) enforceFreshness();
+  });
 
   navButton.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('active',x===navButton));
