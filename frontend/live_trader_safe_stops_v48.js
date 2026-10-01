@@ -269,7 +269,7 @@
     renderProtection(sellSweepValue, sellProtection);
 
     buy.title = refs.buy.sources.length
-      ? `Structural reference beyond: ${refs.buy.sources.join(', ')}. Informational only; use an authoritative published trade stop if EVE issues a trade.`
+      ? `Structural reference beyond: ${refs.buy.sources.join(', ')}. Informational only; the 1.25 ATR sweep band and 0.22 ATR buffer are design parameters, not proven optimal stops. Use an authoritative published trade stop if EVE issues a trade.`
       : 'No qualifying structural reference below current price.';
     sell.title = refs.sell.sources.length
       ? `Structural reference beyond: ${refs.sell.sources.join(', ')}. Informational only; use an authoritative published trade stop if EVE issues a trade.`
