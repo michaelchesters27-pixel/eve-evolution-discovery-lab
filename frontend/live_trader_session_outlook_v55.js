@@ -144,7 +144,7 @@
     const dq = state?.bias?.data_quality || {};
     const ctx = state?.live_context_freshness || {};
     const lag = number(ctx.context_lag_minutes ?? dq.live_context_lag_minutes);
-    const tick = ctx.live_tick_at || feed.last_tick_at;
+    const tick = feed.last_tick_received_at || ctx.live_tick_at || feed.last_tick_at;
     const m5 = ctx.effective_latest_m5 || state?.market?.fabric_time;
     const decision = ctx.effective_decision_time;
     const tickMs = Date.parse(String(tick || ''));
