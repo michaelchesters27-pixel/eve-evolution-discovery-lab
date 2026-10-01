@@ -20,6 +20,10 @@
     const parsed = num(value);
     return parsed == null ? '—' : parsed.toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
   };
+  const fmtEdge = value => {
+    const parsed = num(value);
+    return parsed == null ? '—' : parsed.toLocaleString('en-GB', {minimumFractionDigits:3, maximumFractionDigits:3});
+  };
 
   const tfDirection = (state, key) => {
     const item = state?.bias?.timeframes?.[key];
@@ -328,7 +332,7 @@
         <div class="lt-zone-decision-kicker">${position} ${test.kind.toUpperCase()} · ZONE DECISION</div>
         <div class="lt-zone-decision-title">${decision.title}</div>
         <div class="lt-zone-decision-side">POTENTIAL ${side} ZONE</div>
-        <div class="lt-zone-decision-range">${test.kind.toUpperCase()} ${fmt(test.low)} – ${fmt(test.high)}</div>
+        <div class="lt-zone-decision-range">${test.kind.toUpperCase()} ${fmtEdge(test.low)} – ${fmtEdge(test.high)}</div>
         <div class="lt-zone-decision-meta">${backing} · ${quality} · ${retests} · ${freshness}</div>
         <p class="lt-zone-decision-note">${decision.note}</p>
         <div class="lt-zone-decision-tfs">M5 ${tfLabel(decision.m5)} · M15 ${tfLabel(decision.m15)} · ${test.tracking ? 'ACTIVE FOR 20 MIN AFTER ACTUAL TOUCH' : test.expired ? 'WAITING FOR A NEW RETEST' : 'NOT YET TOUCHED'}</div>
