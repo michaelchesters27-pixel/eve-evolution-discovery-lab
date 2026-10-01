@@ -222,12 +222,17 @@
     const trade = state?.trade || {};
     const clear = trade?.clear_bias_gate?.clear === true;
     const action = String(trade.action || 'WAIT').toUpperCase();
+    const tradeSide = String(trade.side || '').toUpperCase();
     const actionable = !['', 'WAIT', 'NO TRADE'].includes(action);
+    const actionMatchesSide = tradeSide === side || action === side || action.startsWith(side);
 
     if (price == null || price <= 0) return {available:false, reason:'Current price is unavailable.'};
     if (atr == null || atr <= 0) return {available:false, reason:'ATR is unavailable; retrace geometry cannot be validated.'};
     if (biasDirection !== direction) {
       return {available:false, reason:`Session lean is ${direction.toUpperCase()} but trade bias is ${biasDirection.toUpperCase()}. No directional retrace plan is shown while they disagree.`};
+    }
+    if (actionable && !actionMatchesSide) {
+      return {available:false, reason:`Authoritative trade action is ${action}. ${side}-side retrace guidance is suppressed while execution authority points elsewhere.`};
     }
 
     const candidates = zonesForSide
@@ -277,6 +282,7 @@
     return {
       available:true,
       title,
+      id:String(selected.zone?.id || ''),
       low:selected.low,
       high:selected.high,
       kind:kind.toUpperCase(),
@@ -314,7 +320,17 @@
     const executionClass = String(trade.execution_class || '');
     const actionable = !['', 'WAIT', 'NO TRADE'].includes(action);
     const specialistTrade = strategyKey === 'zone_retrace_v1' || executionClass === 'zone_retrace_confirmation';
-    const confirmed = actionable && specialistTrade &&
+    const sourceZone = trade?.source_zone || {};
+    const sourceZoneId = String(sourceZone?.id || '').trim();
+    const sourceLow = number(sourceZone?.low);
+    const sourceHigh = number(sourceZone?.high);
+    const exactSourceZone = sourceZoneId.length > 0
+      && sourceZoneId === retrace.id
+      && sourceLow != null
+      && sourceHigh != null
+      && Math.abs(sourceLow - retrace.low) <= 0.001
+      && Math.abs(sourceHigh - retrace.high) <= 0.001;
+    const confirmed = actionable && specialistTrade && exactSourceZone &&
       (tradeSide === retrace.side || action === retrace.side || action.startsWith(retrace.side));
 
     const desiredArrow = desired === 'bullish' ? '↑' : '↓';
