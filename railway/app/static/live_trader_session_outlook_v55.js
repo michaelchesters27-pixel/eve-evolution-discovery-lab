@@ -708,7 +708,7 @@
           ${chartZoneColumn(state, 'demand', 'BUY')}
           ${chartZoneColumn(state, 'supply', 'SELL')}
         </div>
-        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. M5/M15 is current global structure, not proof that price reacted to a particular zone. HEURISTIC QUALITY is not a win probability. FRESH means zero post-formation M5 touch bars. BACKED means overlap with an eligible H1/M15 zone, not directional confirmation. SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
+        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. M5/M15 is current global structure, not proof that price reacted to a particular zone. HEURISTIC QUALITY is not a win probability. FRESH means zero post-formation M5 touch bars. BACKED means overlap with an eligible H1/M15 zone, not directional confirmation. SL REF is zone-specific and sweep/liquidity-aware where relevant. Its 1.25 ATR search band and 0.22 ATR buffer are design parameters, not proven optimal stop settings. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
       </div>`;
   }
 
