@@ -134,6 +134,11 @@
     return parsed == null ? '—' : parsed.toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
   }
 
+  function fmtEdge(value) {
+    const parsed = number(value);
+    return parsed == null ? '—' : parsed.toLocaleString('en-GB', {minimumFractionDigits:3, maximumFractionDigits:3});
+  }
+
   function utcClock(value) {
     const text = String(value || '');
     return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text) ? `${text.slice(11,16)} UTC` : '—';
@@ -379,7 +384,7 @@
           <div class="lt-zone-decision-kicker">PRICE IS IN ${safe(retrace.kind)} · ZONE DECISION</div>
           <div class="lt-zone-decision-title">${safe(decision.title)}</div>
           <div class="lt-zone-decision-side">POTENTIAL ${safe(retrace.side)} ZONE</div>
-          <div class="lt-zone-decision-range">${safe(retrace.kind)} ${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
+          <div class="lt-zone-decision-range">${safe(retrace.kind)} ${safe(fmtEdge(retrace.low))} – ${safe(fmtEdge(retrace.high))}</div>
           <div class="lt-zone-decision-meta">${safe(backing)} · ${safe(quality)} · ${safe(retests)} · ${safe(freshness)}</div>
           <p class="lt-zone-decision-note">${safe(decision.note)}</p>
           <div class="lt-zone-decision-tfs">M5 ${safe(tfLabel(decision.m5))} · M15 ${safe(tfLabel(decision.m15))}</div>
@@ -560,7 +565,7 @@
     const m5 = timeframeDirection(state, 'M5');
     const m15 = timeframeDirection(state, 'M15');
     const zoneSummary = zone => zone
-      ? `${fmt(zone.low)}–${fmt(zone.high)} · ${zoneDistanceLabel(price, zone.low, zone.high)}`
+      ? `${fmtEdge(zone.low)}–${fmtEdge(zone.high)} · ${zoneDistanceLabel(price, zone.low, zone.high)}`
       : 'NONE';
 
     return `
@@ -601,8 +606,8 @@
           backing:chartZoneBacking(zone),
           chartState:String(zone?.chart_state || zone?.status || 'ACTIVE').toUpperCase(),
           invalidationText:kind === 'demand'
-            ? `BROKEN IF M5 CLOSES < ${fmt(low)}`
-            : `BROKEN IF M5 CLOSES > ${fmt(high)}`,
+            ? `BROKEN IF M5 CLOSES < ${fmtEdge(low)}`
+            : `BROKEN IF M5 CLOSES > ${fmtEdge(high)}`,
           structureRead:zoneStructureRead(state, kind),
           opposing:opposing ? {
             side:kind === 'demand' ? 'SELL' : 'BUY',
@@ -630,19 +635,19 @@
           const quality = zone.quality == null ? 'HEURISTIC QUALITY —' : `HEURISTIC QUALITY ${Math.round(zone.quality)}/100`;
           const rank = zone.rankScore == null ? 'RANK —' : `MTF RANK ${zone.rankScore.toFixed(2)}`;
           const touches = `${zone.retests} TOUCH BAR${zone.retests === 1 ? '' : 'S'}`;
-          const freshness = zone.fresh ? 'FRESH / UNTOUCHED' : 'USED';
+          const freshness = zone.fresh ? 'FRESH' : 'USED';
           const chartState = zone.chartState === 'UNDER PRESSURE' ? ' · UNDER PRESSURE' : zone.chartState === 'IN ZONE' ? ' · IN ZONE' : '';
           const badges = [
             index === 0 ? '<span class="lt-chart-zone-badge nearest">NEAREST</span>' : '',
             zone.rankScore != null && zone.rankScore === bestRankScore ? '<span class="lt-chart-zone-badge strongest">BEST MTF RANK</span>' : '',
-            zone.fresh ? '<span class="lt-chart-zone-badge fresh">UNTOUCHED</span>' : '<span class="lt-chart-zone-badge used">USED</span>',
+            zone.fresh ? '<span class="lt-chart-zone-badge fresh">FRESH</span>' : '<span class="lt-chart-zone-badge used">USED</span>',
           ].filter(Boolean).join('');
           const opposing = zone.opposing
-            ? `NEXT ${zone.opposing.side} ${fmt(zone.opposing.low)}–${fmt(zone.opposing.high)} · GAP ${fmt(zone.opposing.gap)} PTS`
+            ? `NEXT ${zone.opposing.side} ${fmtEdge(zone.opposing.low)}–${fmtEdge(zone.opposing.high)} · GAP ${fmt(zone.opposing.gap)} PTS`
             : `NO OPPOSING ${side === 'BUY' ? 'SELL' : 'BUY'} ZONE IN CURRENT MAP`;
           return `
             <div class="lt-chart-zone-row">
-              <div class="lt-chart-zone-price">${index + 1}. ${safe(fmt(zone.low))} – ${safe(fmt(zone.high))}</div>
+              <div class="lt-chart-zone-price">${index + 1}. ${safe(fmtEdge(zone.low))} – ${safe(fmtEdge(zone.high))}</div>
               <div class="lt-chart-zone-badges">${badges}</div>
               <div class="lt-chart-zone-meta">${safe(zone.backing)} · ${safe(quality)} · ${safe(rank)} · ${safe(touches)} · ${safe(freshness)}${safe(chartState)} · ORIGIN ${safe(utcClock(zone.originTime))} · ID ${safe(zone.id.slice(0,8))}</div>
               <div class="lt-chart-zone-live">
@@ -677,7 +682,7 @@
           ${chartZoneColumn(state, 'demand', 'BUY')}
           ${chartZoneColumn(state, 'supply', 'SELL')}
         </div>
-        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. M5/M15 is current global structure, not proof that price reacted to a particular zone. HEURISTIC QUALITY is not a win probability. BACKED means overlap with an eligible H1/M15 zone, not directional confirmation. SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
+        <div class="lt-chart-zones-note">LIVE USE: draw these exact zones on your chart. Distance is from the current live price. Invalidation is the completed-M5 close that removes the zone. M5/M15 is current global structure, not proof that price reacted to a particular zone. HEURISTIC QUALITY is not a win probability. FRESH means zero post-formation M5 touch bars. BACKED means overlap with an eligible H1/M15 zone, not directional confirmation. SL REF is zone-specific and sweep/liquidity-aware where relevant. Only AUTHORITATIVE TRADE ACTION is execution authority.</div>
       </div>`;
   }
 
@@ -836,7 +841,7 @@
     const retraceHtml = retrace?.available ? `
       <div class="lt-session-outlook-retrace">
         <div class="lt-session-outlook-retrace-head"><span>${safe(retrace.title)}</span><small>COMPLETED-M5 GEOMETRY · LIVE PRICE</small></div>
-        <div class="lt-session-outlook-retrace-range ${safe(direction)}">${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}</div>
+        <div class="lt-session-outlook-retrace-range ${safe(direction)}">${safe(fmtEdge(retrace.low))} – ${safe(fmtEdge(retrace.high))}</div>
         <div class="lt-session-outlook-retrace-meta">CURRENT ${safe(retrace.kind)}${retrace.quality == null ? '' : ` · HEURISTIC QUALITY ${safe(Math.round(retrace.quality))}/100`} · ${safe(retrace.distanceAtr.toFixed(2))} ATR</div>
         <p class="lt-session-outlook-retrace-note">${safe(retrace.note)}</p>
         ${zoneDecisionHtml(decision, retrace)}
