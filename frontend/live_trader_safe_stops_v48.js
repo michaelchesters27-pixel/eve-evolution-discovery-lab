@@ -6,10 +6,19 @@
   if (!statusRow) return;
 
   const MAX_CONTEXT_LAG_MINUTES = 10;
-  const num = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
-  const formatPrice = value => Number.isFinite(Number(value))
-    ? Number(value).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2})
-    : '—';
+  const MAX_TICK_AGE_SECONDS = 90;
+  const MAX_DECISION_AGE_MINUTES = 15;
+  const num = (value, fallback = 0) => {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') return fallback;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  const formatPrice = value => {
+    const parsed = num(value, NaN);
+    return Number.isFinite(parsed)
+      ? parsed.toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2})
+      : '—';
+  };
 
   const style = document.createElement('style');
   style.textContent = `
@@ -46,6 +55,13 @@
     const dq = state?.bias?.data_quality || {};
     const ctx = state?.live_context_freshness || {};
     const lag = num(ctx.context_lag_minutes ?? dq.live_context_lag_minutes, NaN);
+    const tickMs = Date.parse(String(ctx.live_tick_at || feed.last_tick_at || ''));
+    const decisionMs = Date.parse(String(ctx.effective_decision_time || ''));
+    const now = Date.now();
+    const tickAgeSeconds = Number.isFinite(tickMs) ? Math.max(0, (now - tickMs) / 1000) : NaN;
+    const decisionAgeMinutes = Number.isFinite(decisionMs) ? Math.max(0, (now - decisionMs) / 60000) : NaN;
+    const price = num(state?.price, NaN);
+    const atr = num(state?.market?.atr, NaN);
     return feed.status === 'live'
       && feed.connected === true
       && ctx.context_valid === true
@@ -54,7 +70,15 @@
       && dq.trade_bias_blocked !== true
       && Number.isFinite(lag)
       && lag >= 0
-      && lag <= MAX_CONTEXT_LAG_MINUTES;
+      && lag <= MAX_CONTEXT_LAG_MINUTES
+      && Number.isFinite(tickAgeSeconds)
+      && tickAgeSeconds <= MAX_TICK_AGE_SECONDS
+      && Number.isFinite(decisionAgeMinutes)
+      && decisionAgeMinutes <= MAX_DECISION_AGE_MINUTES
+      && Number.isFinite(price)
+      && price > 0
+      && Number.isFinite(atr)
+      && atr > 0;
   }
 
   const candidate = (value, label, price, side, key = '') => {
@@ -66,9 +90,10 @@
   };
 
   function structuralReference(price, atr, candidates, side) {
-    const safeAtr = Math.max(num(atr), 0.01);
+    const safeAtr = num(atr, NaN);
+    if (!Number.isFinite(safeAtr) || safeAtr <= 0) return {level:null, sources:[], available:false, reason:'ATR DATA INVALID'};
     const clusterWidth = safeAtr * 0.75;
-    const buffer = Math.max(safeAtr * 0.22, 0.01);
+    const buffer = safeAtr * 0.22;
     const clean = candidates.filter(Boolean);
     if (!clean.length) return {level:null, sources:[], available:false};
 
@@ -92,9 +117,12 @@
 
   function safeStops(state) {
     const price = num(state?.price, NaN);
-    const atr = Math.max(num(state?.market?.atr), 0.01);
-    if (!Number.isFinite(price) || price <= 0) {
-      return {buy:{level:null,sources:[],available:false}, sell:{level:null,sources:[],available:false}};
+    const atr = num(state?.market?.atr, NaN);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(atr) || atr <= 0) {
+      return {
+        buy:{level:null,sources:[],available:false,reason:'PRICE OR ATR DATA INVALID'},
+        sell:{level:null,sources:[],available:false,reason:'PRICE OR ATR DATA INVALID'},
+      };
     }
 
     const zones = state?.zones || {};
@@ -165,12 +193,14 @@
   }
 
   function sweepProtection(state, safeRef, side) {
-    const atr = Math.max(num(state?.market?.atr), 0.01);
+    const atr = num(state?.market?.atr, NaN);
     const safeLevel = num(safeRef?.level, NaN);
-    if (!Number.isFinite(safeLevel) || safeRef?.available !== true) return {available:false, needed:false, level:null, sources:[]};
+    if (!Number.isFinite(atr) || atr <= 0 || !Number.isFinite(safeLevel) || safeRef?.available !== true) {
+      return {available:false, needed:false, level:null, sources:[]};
+    }
 
     const huntBand = atr * 1.25;
-    const buffer = Math.max(atr * 0.22, 0.01);
+    const buffer = atr * 0.22;
     const candidates = sweepLiquidityCandidates(state, side).filter(item => {
       if (side === 'below') return item.level < safeLevel && safeLevel - item.level <= huntBand;
       return item.level > safeLevel && item.level - safeLevel <= huntBand;
