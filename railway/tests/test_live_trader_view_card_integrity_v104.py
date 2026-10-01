@@ -98,8 +98,8 @@ def test_eve_view_shows_pending_bos_level_and_zone_coordinates() -> None:
     assert "Next BOS level" in session
     assert "completed M5 close must finish" in session
     assert "max(2% ATR, 0.01)" in session
-    assert "${safe(fmt(retrace.low))} – ${safe(fmt(retrace.high))}" in session
-    assert "${fmt(test.low)} – ${fmt(test.high)}" in tolerance
+    assert "${safe(fmtEdge(retrace.low))} – ${safe(fmtEdge(retrace.high))}" in session
+    assert "${fmtEdge(test.low)} – ${fmtEdge(test.high)}" in tolerance
 
 
 def test_eve_view_zone_labels_expose_side_strength_and_backing() -> None:
@@ -277,3 +277,14 @@ def test_exact_zone_confirmation_is_bound_to_source_zone() -> None:
     assert "APPROACHING ZONE — WAIT" in tolerance
     assert "TEST WINDOW EXPIRED — WAIT" in tolerance
     assert "ACTIVE FOR 20 MIN AFTER ACTUAL TOUCH" in tolerance
+
+
+
+def test_browser_watchdog_expires_stale_actionable_display_without_new_api_state() -> None:
+    base = (_frontend() / "live_trader.js").read_text(encoding="utf-8")
+
+    assert "function enforceFreshness()" in base
+    assert "setInterval(enforceFreshness,5000)" in base
+    assert "window.addEventListener('focus', enforceFreshness)" in base
+    assert "visibilitychange" in base
+    assert "freshness watchdog:" in base
