@@ -488,23 +488,49 @@
     return 'M5 ONLY';
   }
 
-  function activeChartZones(state, kind) {
+  function strictChartZoneEligibility(state, kind) {
     if (state?.chart_zones_status?.available !== true) return [];
-    const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
+    const all = [
+      ...(Array.isArray(state?.chart_zones?.demand) ? state.chart_zones.demand : []),
+      ...(Array.isArray(state?.chart_zones?.supply) ? state.chart_zones.supply : []),
+    ];
     const idCounts = new Map();
-    zones.forEach(zone => {
+    all.forEach(zone => {
       const id = String(zone?.id || '').trim();
       if (id) idCounts.set(id, (idCounts.get(id) || 0) + 1);
     });
+
+    const zones = Array.isArray(state?.chart_zones?.[kind]) ? state.chart_zones[kind] : [];
     return zones.filter(zone => {
       const id = String(zone?.id || '').trim();
+      const zoneKind = String(zone?.kind || '').toLowerCase();
       const low = number(zone?.low);
       const high = number(zone?.high);
+      const quality = number(zone?.quality);
+      const rankScore = number(zone?.rank_score);
+      const retests = number(zone?.retests);
+      const originMs = Date.parse(String(zone?.origin_time || ''));
       const status = String(zone?.status || '').toUpperCase();
-      return id.length > 0 && idCounts.get(id) === 1
+      return id.length > 0
+        && idCounts.get(id) === 1
+        && zoneKind === kind
         && low != null && high != null && low > 0 && high > 0 && high >= low
+        && quality != null && quality >= 1 && quality <= 99
+        && rankScore != null && rankScore >= 0
+        && retests != null && Number.isInteger(retests) && retests >= 0
+        && typeof zone?.fresh === 'boolean'
+        && Number.isFinite(originMs)
         && !['BROKEN','INVALID','EXPIRED'].includes(status);
     });
+  }
+
+  window.eveChartZoneContractV99 = Object.freeze({
+    eligibleZones: strictChartZoneEligibility,
+    version:'eve-chart-zone-browser-contract-v99',
+  });
+
+  function activeChartZones(state, kind) {
+    return strictChartZoneEligibility(state, kind);
   }
 
   function zoneDistanceLabel(price, low, high) {
