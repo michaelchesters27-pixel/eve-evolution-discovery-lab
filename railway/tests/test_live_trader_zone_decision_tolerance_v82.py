@@ -80,8 +80,10 @@ def test_zone_decision_confirmation_requires_exact_source_zone_and_touch():
 def test_zone_decision_rejects_bad_status_ids_atr_and_stale_wall_clock():
     root = _repo_root()
     source = (root / "frontend" / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
+    contract_source = (root / "frontend" / "live_trader_session_outlook_v55.js").read_text(encoding="utf-8")
 
-    assert "['BROKEN','INVALID','EXPIRED'].includes(status)" in source
+    assert "['BROKEN','INVALID','EXPIRED'].includes(status)" in contract_source
+    assert "idCounts.get(id) === 1" in contract_source
     assert "contract.eligibleZones(state, kind)" in source
     assert "atr == null || atr <= 0" in source
     assert "MAX_TICK_AGE_SECONDS = 90" in source
