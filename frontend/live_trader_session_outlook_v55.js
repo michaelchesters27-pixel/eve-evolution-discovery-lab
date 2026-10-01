@@ -900,8 +900,5 @@
   }
 
   window.addEventListener('eve:live-trader-state', consume);
-  document.querySelector('[data-view="live-trader"]')?.addEventListener('click', () => {
-    if (window.__eveLiveTraderState) render(window.__eveLiveTraderState);
-  });
   if (window.__eveLiveTraderState) render(window.__eveLiveTraderState);
 })();
