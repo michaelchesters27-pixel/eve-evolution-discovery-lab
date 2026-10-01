@@ -258,10 +258,14 @@ def test_chart_zone_objects_require_unique_ids_and_strict_provenance() -> None:
     tolerance = (_frontend() / "live_trader_zone_decision_tolerance_v82.js").read_text(encoding="utf-8")
 
     assert "state?.chart_zones_status?.available !== true" in session
+    assert "window.eveChartZoneContractV99" in session
     assert "idCounts.get(id) === 1" in session
+    assert "zoneKind === kind" in session
+    assert "typeof zone?.fresh === 'boolean'" in session
     assert "ZONE DATA UNAVAILABLE" in session
     assert "state?.chart_zones_status?.available !== true" in tolerance
-    assert "idCounts.get(id) !== 1" in tolerance
+    assert "window.eveChartZoneContractV99" in tolerance
+    assert "contract.eligibleZones(state, kind)" in tolerance
     assert "leftId.length > 0 && rightId.length > 0" in tolerance
 
 
