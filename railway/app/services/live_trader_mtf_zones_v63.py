@@ -136,8 +136,19 @@ def _confluence(zone: dict[str, Any], h1: list[dict[str, Any]], m15: list[dict[s
     result["mtf_confluence_count"] = int(bool(h1_best)) + int(bool(m15_best))
     result["h1_zone"] = h1_best
     result["m15_zone"] = m15_best
+    base_rank = _num(result.get("rank_score"), _num(result.get("quality")))
     result["mtf_rank_boost"] = round(boost, 2)
-    result["rank_score"] = round(_num(result.get("rank_score"), _num(result.get("quality"))) + boost, 2)
+    result["rank_score"] = round(base_rank + boost, 2)
+    result["rank_version"] = "eve-chart-zone-mtf-rank-v1"
+    result["rank_inputs"] = {
+        "base_rank": round(base_rank, 4),
+        "base_quality": _num(result.get("quality")),
+        "h1_quality": _num((h1_best or {}).get("quality")) if h1_best else None,
+        "m15_quality": _num((m15_best or {}).get("quality")) if m15_best else None,
+        "h1_confluence": bool(h1_best),
+        "m15_confluence": bool(m15_best),
+        "mtf_rank_boost": round(boost, 4),
+    }
     if h1_best and m15_best:
         result["zone_role"] = "H1_ZONE_M15_REFINEMENT_M5_EXECUTION"
     elif h1_best:
@@ -228,6 +239,21 @@ def _stable_chart_zone_pool(
                         "broke_prior_structure": bool(broke_structure),
                         "htf_alignment_count_at_refresh": int(alignment),
                         "retest_metric": "overlapping_m5_bars",
+                        "quality_version": "eve-chart-zone-quality-v1",
+                        "quality_inputs": {
+                            "base": 38,
+                            "departure_atr": round(departure, 6),
+                            "departure_cap": 3.5,
+                            "departure_weight": 11,
+                            "broke_prior_structure": bool(broke_structure),
+                            "structure_bonus": 18 if broke_structure else 0,
+                            "htf_alignment_count": int(alignment),
+                            "htf_alignment_weight": 4,
+                            "touch_bars": int(retests),
+                            "touch_bar_cap": 4,
+                            "touch_bar_penalty": 7,
+                            "result": round(quality, 6),
+                        },
                     })
                     demand.append(zone)
 
@@ -265,6 +291,21 @@ def _stable_chart_zone_pool(
                         "broke_prior_structure": bool(broke_structure),
                         "htf_alignment_count_at_refresh": int(alignment),
                         "retest_metric": "overlapping_m5_bars",
+                        "quality_version": "eve-chart-zone-quality-v1",
+                        "quality_inputs": {
+                            "base": 38,
+                            "departure_atr": round(departure, 6),
+                            "departure_cap": 3.5,
+                            "departure_weight": 11,
+                            "broke_prior_structure": bool(broke_structure),
+                            "structure_bonus": 18 if broke_structure else 0,
+                            "htf_alignment_count": int(alignment),
+                            "htf_alignment_weight": 4,
+                            "touch_bars": int(retests),
+                            "touch_bar_cap": 4,
+                            "touch_bar_penalty": 7,
+                            "result": round(quality, 6),
+                        },
                     })
                     supply.append(zone)
 
