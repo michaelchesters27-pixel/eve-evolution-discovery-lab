@@ -281,7 +281,7 @@ def test_exact_zone_confirmation_is_bound_to_source_zone() -> None:
     assert "test.wasInside === true" in tolerance
     assert "APPROACHING ZONE — WAIT" in tolerance
     assert "TEST WINDOW EXPIRED — WAIT" in tolerance
-    assert "ACTIVE FOR 20 MIN AFTER ACTUAL TOUCH" in tolerance
+    assert "ACTIVE 20 MIN AFTER BROWSER-OBSERVED ENTRY" in tolerance
 
 
 
